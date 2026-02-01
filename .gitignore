@@ -1,0 +1,33 @@
+# Build Artifacts
+build/
+bin/
+lib/
+*.o
+*.so
+*.dylib
+*.exe
+
+# IDE/Editor
+.vscode/
+.idea/
+.DS_Store
+
+# Seismic Data (NEVER COMMIT THESE)
+*.segy
+*.sgy
+*.dat
+data/
+
+# Python Tools
+__pycache__/
+*.pyc
+venv/
+
+# Benchmarks
+*.json
+*.csv
+
+# Local Developer Notes
+Full unrefinednotes.md
+BuildingNotes.md
+*notes.md

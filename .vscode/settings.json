@@ -1,0 +1,15 @@
+{
+  "cmake.useCMakePresets": "always",
+  "cmake.configureOnOpen": true,
+  "editor.formatOnSave": true,
+  "[cpp]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools"
+  },
+  "clangd.arguments": [
+    "--compile-commands-dir=${workspaceFolder}/build/gcc-debug"
+  ],
+  "files.associations": {
+    "*.tcc": "cpp",
+    "*.ipp": "cpp"
+  }
+}
