@@ -45,4 +45,55 @@ SegyBinaryHeader parse_binary_header(const void* buffer) {
     return header;
 }
 
+SegyTraceHeader parse_trace_header(const void* buffer) {
+    SegyTraceHeader header;
+    std::memcpy(&header, buffer, sizeof(SegyTraceHeader));
+
+    // Swap key 32-bit fields
+    header.trace_seq_line = swap_endian(header.trace_seq_line);
+    header.trace_seq_file = swap_endian(header.trace_seq_file);
+    header.field_record_number = swap_endian(header.field_record_number);
+    header.trace_number_field = swap_endian(header.trace_number_field);
+    header.energy_source_point = swap_endian(header.energy_source_point);
+    header.cdp_ensemble_number = swap_endian(header.cdp_ensemble_number);
+    header.trace_number_ensemble = swap_endian(header.trace_number_ensemble);
+    header.source_receiver_offset = swap_endian(header.source_receiver_offset);
+    header.receiver_elevation = swap_endian(header.receiver_elevation);
+    header.source_elevation = swap_endian(header.source_elevation);
+    header.source_depth = swap_endian(header.source_depth);
+    header.datum_elev_receiver = swap_endian(header.datum_elev_receiver);
+    header.datum_elev_source = swap_endian(header.datum_elev_source);
+    header.water_depth_source = swap_endian(header.water_depth_source);
+    header.water_depth_group = swap_endian(header.water_depth_group);
+    header.source_x = swap_endian(header.source_x);
+    header.source_y = swap_endian(header.source_y);
+    header.group_x = swap_endian(header.group_x);
+    header.group_y = swap_endian(header.group_y);
+
+    // Swap key 16-bit fields
+    header.trace_id_code = swap_endian(header.trace_id_code);
+    header.num_vert_summed = swap_endian(header.num_vert_summed);
+    header.num_horiz_stacked = swap_endian(header.num_horiz_stacked);
+    header.data_use = swap_endian(header.data_use);
+    header.scalar_elev = swap_endian(header.scalar_elev);
+    header.scalar_coord = swap_endian(header.scalar_coord);
+    header.coord_units = swap_endian(header.coord_units);
+    header.weathering_velocity = swap_endian(header.weathering_velocity);
+    header.subweathering_velocity = swap_endian(header.subweathering_velocity);
+    header.uphole_time_source = swap_endian(header.uphole_time_source);
+    header.uphole_time_group = swap_endian(header.uphole_time_group);
+    header.source_static_corr = swap_endian(header.source_static_corr);
+    header.group_static_corr = swap_endian(header.group_static_corr);
+    header.total_static = swap_endian(header.total_static);
+    header.lag_time_a = swap_endian(header.lag_time_a);
+    header.lag_time_b = swap_endian(header.lag_time_b);
+    header.delay_recording_time = swap_endian(header.delay_recording_time);
+    header.mute_time_start = swap_endian(header.mute_time_start);
+    header.mute_time_end = swap_endian(header.mute_time_end);
+    header.samples_this_trace = swap_endian(header.samples_this_trace);
+    header.sample_interval_us = swap_endian(header.sample_interval_us);
+
+    return header;
+}
+
 } // namespace basalt::io

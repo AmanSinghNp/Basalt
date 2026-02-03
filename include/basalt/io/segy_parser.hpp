@@ -14,4 +14,8 @@ std::string parse_text_header(const void* buffer);
 // Handles Big-Endian to Host-Endian conversion.
 SegyBinaryHeader parse_binary_header(const void* buffer);
 
+// Parses the 240-byte Trace header.
+// Handles Big-Endian to Host-Endian conversion.
+SegyTraceHeader parse_trace_header(const void* buffer);
+
 } // namespace basalt::io

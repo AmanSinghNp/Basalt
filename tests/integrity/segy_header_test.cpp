@@ -54,3 +54,26 @@ TEST(SegyHeaderTest, ParseBinaryHeader) {
     EXPECT_EQ(parsed.samples_per_trace, 1500);
     EXPECT_EQ(parsed.data_sample_format, 5);
 }
+
+TEST(SegyHeaderTest, ParseTraceHeader) {
+    // Simulated Big-Endian Trace Header
+    SegyTraceHeader be_header;
+    std::memset(&be_header, 0, sizeof(be_header));
+
+    auto to_be_i16 = [](int16_t v) { return swap_endian(v); };
+    auto to_be_u16 = [](uint16_t v) { return swap_endian(v); };
+    auto to_be_i32 = [](int32_t v) { return swap_endian(v); };
+
+    // Set key fields in Big-Endian format
+    be_header.source_receiver_offset = to_be_i32(1500);     // 1500 meters offset
+    be_header.delay_recording_time = to_be_i16(100);        // 100 ms delay
+    be_header.samples_this_trace = to_be_u16(2001);         // 2001 samples
+    be_header.trace_id_code = to_be_i16(1);                 // 1 = Production data
+
+    SegyTraceHeader parsed = parse_trace_header(&be_header);
+
+    EXPECT_EQ(parsed.source_receiver_offset, 1500);
+    EXPECT_EQ(parsed.delay_recording_time, 100);
+    EXPECT_EQ(parsed.samples_this_trace, 2001);
+    EXPECT_EQ(parsed.trace_id_code, 1);
+}
