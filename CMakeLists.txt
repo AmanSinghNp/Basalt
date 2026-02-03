@@ -50,6 +50,7 @@ include_directories(include)
 # The Core Engine Library
 add_library(basalt_core
     src/io/segy_parser.cpp
+    src/io/file_mapping.cpp
     src/utils/ebcdic.cpp
     # src/kernel/fft_avx.cpp  (To be created)
     src/core/arena.cpp
@@ -68,6 +69,7 @@ enable_testing()
 add_executable(basalt_tests
     tests/integrity/arena_test.cpp
     tests/integrity/segy_header_test.cpp
+    tests/integrity/file_mapping_test.cpp
 )
 target_link_libraries(basalt_tests PRIVATE basalt_core GTest::gtest_main)
 
