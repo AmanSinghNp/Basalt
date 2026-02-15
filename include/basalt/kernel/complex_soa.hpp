@@ -1,6 +1,7 @@
 #pragma once
 
 #include "basalt/arena.hpp"
+#include <cassert>
 #include <cstddef>
 #include <cstring>
 
@@ -24,13 +25,14 @@ struct ComplexSoA {
 
     /// Fill from real-valued data (imag = 0)
     void from_real(const float* src, size_t n) {
+        assert(n <= count && "from_real: n exceeds allocated count");
         std::memcpy(real, src, n * sizeof(float));
         std::memset(imag, 0, n * sizeof(float));
-        count = n;
     }
 
     /// Copy real part back to destination
     void to_real(float* dst, size_t n) const {
+        assert(n <= count && "to_real: n exceeds allocated count");
         std::memcpy(dst, real, n * sizeof(float));
     }
 

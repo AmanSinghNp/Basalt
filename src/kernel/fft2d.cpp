@@ -1,9 +1,7 @@
 #include "basalt/kernel/fft2d.hpp"
-#include "basalt/kernel/fft.hpp"
-#include "basalt/kernel/transpose.hpp"
+#include "basalt/kernel/fft_avx.hpp"
+#include "basalt/kernel/transpose_avx.hpp"
 #include <cassert>
-#include <iostream>
-#include <cstdio>
 
 namespace basalt::kernel {
 
@@ -18,9 +16,9 @@ void fft_rows(float* real, float* imag,
         float* row_imag = imag + r * cols;
 
         if (inverse) {
-            fft_inverse(row_real, row_imag, cols);
+            fft_inverse_avx(row_real, row_imag, cols);
         } else {
-            fft_forward(row_real, row_imag, cols);
+            fft_forward_avx(row_real, row_imag, cols);
         }
     }
 }
@@ -42,15 +40,15 @@ void fft2d_impl(float* real, float* imag,
 
     // --- Step 1: FFT along columns ---
     // Transpose: rows×cols → cols×rows (columns become rows)
-    transpose_tiled(real, tmp_real, rows, cols);
-    transpose_tiled(imag, tmp_imag, rows, cols);
+    transpose_tiled_avx(real, tmp_real, rows, cols);
+    transpose_tiled_avx(imag, tmp_imag, rows, cols);
 
     // Now tmp is cols×rows; each "row" was a column. FFT each row.
     fft_rows(tmp_real, tmp_imag, cols, rows, inverse);
 
     // Transpose back: cols×rows → rows×cols
-    transpose_tiled(tmp_real, real, cols, rows);
-    transpose_tiled(tmp_imag, imag, cols, rows);
+    transpose_tiled_avx(tmp_real, real, cols, rows);
+    transpose_tiled_avx(tmp_imag, imag, cols, rows);
 
     // --- Step 2: FFT along rows ---
     fft_rows(real, imag, rows, cols, inverse);
@@ -58,7 +56,7 @@ void fft2d_impl(float* real, float* imag,
 
 } // anonymous namespace
 
-// FORCE REBUILD 1
+
 void fft2d_forward(float* real, float* imag, 
                    size_t rows, size_t cols, 
                    basalt::MemoryArena& scratch) {

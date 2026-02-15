@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <cmath>
 
 namespace basalt::utils {
@@ -67,7 +68,7 @@ inline float ibm_to_ieee(uint32_t ibm) {
 
     float result;
     static_assert(sizeof(float) == sizeof(uint32_t), "float must be 32-bit");
-    __builtin_memcpy(&result, &ieee_bits, sizeof(float));
+    std::memcpy(&result, &ieee_bits, sizeof(float));
     return result;
 }
 
@@ -80,7 +81,7 @@ inline uint32_t ieee_to_ibm(float value) {
 
     uint32_t ieee_bits;
     static_assert(sizeof(float) == sizeof(uint32_t), "float must be 32-bit");
-    __builtin_memcpy(&ieee_bits, &value, sizeof(uint32_t));
+    std::memcpy(&ieee_bits, &value, sizeof(uint32_t));
 
     uint32_t sign = ieee_bits >> 31;
     int32_t  ieee_exp = static_cast<int32_t>((ieee_bits >> 23) & 0xFF);

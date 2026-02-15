@@ -1,0 +1,53 @@
+name: Basalt CI
+
+on:
+  push:
+    branches: [ "main", "dev" ]
+  pull_request:
+    branches: [ "main", "dev" ]
+
+jobs:
+  build-and-test:
+    name: Build & Test (${{ matrix.os }} - ${{ matrix.build_type }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        build_type: [Debug, Release]
+        include:
+          - build_type: Debug
+            cxx_flags: "-fsanitize=address,undefined -g -O0"
+            linker_flags: "-fsanitize=address,undefined"
+          - build_type: Release
+            cxx_flags: "-O3 -mavx2 -mfma"
+            linker_flags: ""
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Ninja (Linux)
+      if: runner.os == 'Linux'
+      run: sudo apt-get install -y ninja-build
+
+    - name: Configure CMake
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+          -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+          -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.linker_flags }}"
+
+    - name: Build
+      run: cmake --build build --config ${{ matrix.build_type }}
+
+    - name: Run Tests
+      run: |
+        cd build
+        ctest --output-on-failure -V
+
+    - name: Run Benchmarks (Release only)
+      if: matrix.build_type == 'Release'
+      run: |
+        cd build
+        ./fft_benchmark || true
+        ./fk_benchmark || true

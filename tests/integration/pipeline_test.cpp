@@ -2,7 +2,6 @@
 #include "basalt/filter/fk_filter.hpp"
 #include "basalt/kernel/complex_soa.hpp"
 #include "basalt/kernel/fft2d.hpp"
-#include <iostream>
 #include <vector>
 #include <cmath>
 #include <algorithm>
@@ -22,9 +21,9 @@ using namespace basalt::filter;
 void add_linear_event(ComplexSoA& data, size_t rows, size_t cols, 
                      double dt, double dx, double velocity, double t0, float amplitude) {
     double f_peak = 10.0; // 10 Hz Ricker to avoid spatial aliasing at 500m/s
-    std::cout << "add_linear_event: rows=" << rows << ", cols=" << cols << std::endl;
+
     for (size_t j = 0; j < cols; ++j) {
-        if (j % 50 == 0) std::cout << "  j=" << j << std::endl; 
+ 
         double offset = static_cast<double>(j) * dx;
         double arrival_time = t0 + offset / velocity;
         
@@ -37,15 +36,15 @@ void add_linear_event(ComplexSoA& data, size_t rows, size_t cols,
             float val = amplitude * (1.0 - 2.0 * M_PI * M_PI * f_peak * f_peak * t * t) * 
                         std::exp(-M_PI * M_PI * f_peak * f_peak * t * t);
             
-            size_t idx = j * rows + i;
+            size_t idx = i * cols + j;
             if (idx >= data.count) {
-                std::cout << "ERROR: idx " << idx << " out of bounds " << data.count << std::endl;
+                // Bounds check failure
                 return;
             }
             data.real[idx] += val;
         }
     }
-    std::cout << "add_linear_event: done." << std::endl;
+
 }
 
 // Measure total energy (sum of squares)
@@ -67,26 +66,15 @@ protected:
         params.dt = 0.002; // 2ms
         params.dx = 5.0;   // 5m (finer sampling)
         
-        std::cout << "SetUp: Allocating arena..." << std::endl;
-        size_t bytes = rows * cols * sizeof(float) * 2 + 4096; // Some padding
-        // Need scratch space for FFT2D (transposes)
-        // FFT2D uses its own arena or provided? 
-        // It allocates internally for transposes usually.
         // Let's create data arena.
+        size_t bytes = rows * cols * sizeof(float) * 2 + 4096; // Some padding
         data_arena = std::make_unique<basalt::MemoryArena>(bytes * 4); // ample space
         
-        std::cout << "SetUp: Creating SoA..." << std::endl;
         data = std::make_unique<ComplexSoA>(*data_arena, rows * cols);
         
-        std::cout << "Data Real: " << data->real << ", Imag: " << data->imag << std::endl;
-        if (!data->real || !data->imag) {
-            std::cerr << "ALLOCATION FAILED!" << std::endl;
-            exit(1);
-        }
-        
-        std::cout << "SetUp: Filling event..." << std::endl;
-        std::cout.flush();
-        
+        ASSERT_NE(data->real, nullptr) << "Arena allocation failed for real array";
+        ASSERT_NE(data->imag, nullptr) << "Arena allocation failed for imag array";
+
         // Params
         params.dt = 0.004;
         params.dx = 5.0;
@@ -108,31 +96,14 @@ TEST_F(PipelineTest, RejectsGroundRoll) {
     std::fill_n(data->imag, rows * cols, 0.0f);
     
     // Add Ground Roll (500 m/s)
-    std::cout << "TestBody: Calling add_linear_event..." << std::endl;
+
     add_linear_event(*data, rows, cols, params.dt, params.dx, 500.0, 0.1, 1.0f);
     
-    std::cout << "TestBody: Calculating energy..." << std::endl;
     double energy_in = total_energy(*data, rows * cols);
-    std::cout << "Energy In: " << energy_in << std::endl;
     ASSERT_GT(energy_in, 1.0); // Ensure we added something
     
     // 1. Forward FFT
-    // Need scratch arena? Tests indicate fft2d uses provided arena for transposes? 
-    // Wait, signature: void fft2d_forward(float* real, float* imag, size_t rows, size_t cols, MemoryArena& arena);
-    // We already have data_arena, but 'data' uses it. 
-    // We need a scratch arena for transposes if not provided?
-    // The signature requires an arena. 
-    // Let's assume we can reuse data_arena if it has space, or create a scratch one.
-    // The test Setup made data_arena large enough? "bytes * 4".
-    // But data is using it.
-    // Ideally use a separate scratch arena.
-    
-    // 1. Forward FFT
-    std::cout << "TestBody: Allocating scratch..." << std::endl;
     basalt::MemoryArena scratch(rows * cols * sizeof(float) * 2 + 4096);
-    std::cout << "TestBody: Scratch allocated." << std::endl;
-    
-    std::cout << "TestBody: calling fft2d_forward..." << std::endl;
     fft2d_forward(data->real, data->imag, rows, cols, scratch);
     
     // 2. Filter
@@ -160,20 +131,14 @@ TEST_F(PipelineTest, PreservesReflection) {
     double energy_in = total_energy(*data, rows * cols);
     
     // Pipeline
-    std::cout << "Allocating scratch..." << std::endl;
     basalt::MemoryArena scratch(rows * cols * sizeof(float) * 2 + 4096);
     
-    std::cout << "Running Forward FFT..." << std::endl;
     fft2d_forward(data->real, data->imag, rows, cols, scratch);
     
-    std::cout << "Running FK Filter..." << std::endl;
     apply_fk_filter(*data, rows, cols, params);
     
-    std::cout << "Running Inverse FFT..." << std::endl;
     scratch.reset();
     fft2d_inverse(data->real, data->imag, rows, cols, scratch);
-    
-    std::cout << "Pipeline complete." << std::endl;
     
     double energy_out = total_energy(*data, rows * cols);
     
@@ -198,7 +163,6 @@ TEST_F(PipelineTest, SmallGrid) {
     // 2. Add Mixed Event (Reflection + Ground Roll)
     // Reflection (3000 m/s) -> Should Pass
     add_linear_event(*data, rows, cols, params.dt, params.dx, 3000.0, 0.05, 1.0f);
-    double energy_refl = total_energy(*data, rows * cols);
     
     // Ground Roll (500 m/s) -> Should Mute
     // Add to separate buffer to measure? No, just run separate passes?

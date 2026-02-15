@@ -37,7 +37,6 @@ void apply_fk_filter(basalt::kernel::ComplexSoA& data,
     
     const __m256 v_steep = _mm256_set1_ps(steepness);
     const __m256 v_cut = _mm256_set1_ps(v_cut_pos);
-    const __m256 ones = _mm256_set1_ps(1.0f);
 
     for (size_t i = 0; i < rows; ++i) {
         // Frequency f
@@ -49,11 +48,6 @@ void apply_fk_filter(basalt::kernel::ComplexSoA& data,
         if (i <= rows / 2) {
             f = static_cast<double>(i) * df;
         } else {
-            f = static_cast<double>(static_cast<int>(i) - static_cast<int>(rows)) * df;
-        }
-        
-        // Handle Nyquist folding if i > rows/2
-        if (i > rows / 2) {
             f = static_cast<double>(static_cast<int>(i) - static_cast<int>(rows)) * df;
         }
 
@@ -121,8 +115,13 @@ void apply_fk_filter(basalt::kernel::ComplexSoA& data,
             // If |vel| = 0, x = -huge -> Sigmoid = 0 (Mute). Correct.
             // If |vel| = huge, x = +huge -> Sigmoid = 1 (Pass). Correct.
             
-            // Swap to v_cut - abs_vel to correct Pass/Mute logic found in testing
-            __m256 x = _mm256_sub_ps(v_cut, abs_vel);
+            // We want to MUTE if |vel| < v_cut.
+            // Sigmoid(x) should be 0 for low vel.
+            // Let x = (|vel| - v_cut) * steepness.
+            // If |vel| < v_cut, x < 0 -> Sigmoid -> 0 (Mute).
+            // If |vel| > v_cut, x > 0 -> Sigmoid -> 1 (Pass).
+            
+            __m256 x = _mm256_sub_ps(abs_vel, v_cut);
             x = _mm256_mul_ps(x, v_steep);
             
             // weight = sigmoid(x)

@@ -23,7 +23,7 @@ int main(int argc, char* argv[]) {
     // Critical: set FTZ/DAZ before any floating-point computation
     basalt::kernel::set_flush_to_zero();
 
-    std::cout << "Basalt: Seismic Processing Engine v0.2\n";
+    std::cout << "Basalt: Seismic Processing Engine v" << BASALT_VERSION << "\n";
     std::cout << "======================================\n";
     
     print_cpu_capabilities();
@@ -36,6 +36,7 @@ int main(int argc, char* argv[]) {
 
     if (argc < 2) {
         std::cout << "\nUsage: ./basalt <input.segy>\n";
+        std::cout << "NOTE: This CLI is currently a system check stub. Use Basalt as a library (see README).\n";
         return 1;
     }
 

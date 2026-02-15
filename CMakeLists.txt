@@ -6,6 +6,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 project(Basalt 
     VERSION 0.1.0 
     DESCRIPTION "High-Performance Seismic f-k Muter (x86_64 Optimized)"
+    HOMEPAGE_URL "https://github.com/AmanSinghNp/Basalt"
     LANGUAGES CXX C
 )
 
@@ -65,6 +66,7 @@ target_compile_options(basalt_core PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNI
 add_executable(basalt src/main.cpp)
 target_link_libraries(basalt PRIVATE basalt_core)
 target_compile_options(basalt PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
+target_compile_definitions(basalt PRIVATE BASALT_VERSION="${PROJECT_VERSION}")
 
 # --- 4. Installation ---
 install(TARGETS basalt DESTINATION bin)
