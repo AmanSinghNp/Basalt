@@ -1,5 +1,6 @@
 #include <iostream>
 #include <immintrin.h>
+#include "basalt/kernel/cpu_state.hpp"
 
 // Simple architecture check
 void print_cpu_capabilities() {
@@ -19,10 +20,19 @@ void print_cpu_capabilities() {
 }
 
 int main(int argc, char* argv[]) {
-    std::cout << "Basalt: Seismic Processing Engine v0.1\n";
+    // Critical: set FTZ/DAZ before any floating-point computation
+    basalt::kernel::set_flush_to_zero();
+
+    std::cout << "Basalt: Seismic Processing Engine v0.2\n";
     std::cout << "======================================\n";
     
     print_cpu_capabilities();
+
+    if (basalt::kernel::check_ftz_daz()) {
+        std::cout << "  [OK] FTZ/DAZ Enabled (denormals flushed to zero)\n";
+    } else {
+        std::cerr << "  [WARN] FTZ/DAZ flags not set!\n";
+    }
 
     if (argc < 2) {
         std::cout << "\nUsage: ./basalt <input.segy>\n";
