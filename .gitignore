@@ -6,11 +6,43 @@ lib/
 *.so
 *.dylib
 *.exe
+*.a
+*.dll
 
 # IDE/Editor
 .vscode/
 .idea/
 .DS_Store
+*.swp
+*~
+*.suo
+*.user
+
+# Caches
+.cache/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# OS/System Caches
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
 
 # Seismic Data (NEVER COMMIT THESE)
 *.segy
@@ -19,13 +51,19 @@ lib/
 data/
 
 # Python Tools
-__pycache__/
 *.pyc
+*.pyo
 venv/
+env/
+.env/
 
-# Benchmarks
+# Benchmarks / Logs
 *.json
+!CMakePresets.json
 *.csv
+*.log
+artifacts/stage1/
+tools/profiling/output/
 
 # Local Developer Notes
 Full unrefinednotes.md
