@@ -145,6 +145,25 @@ TEST(TransposeAvxTest, NonAlignedEdges) {
     }
 }
 
+TEST(TransposeAvxTest, CacheTileSizeVariants) {
+    constexpr size_t rows = 96;
+    constexpr size_t cols = 160;
+    std::vector<float> src(rows * cols);
+    for (size_t i = 0; i < src.size(); ++i) {
+        src[i] = static_cast<float>(i) * 0.5f;
+    }
+
+    std::vector<float> dst_scalar(rows * cols);
+    transpose_tiled(src.data(), dst_scalar.data(), rows, cols);
+
+    const std::vector<size_t> tile_sizes = {8, 17, 64, 128, 192};
+    for (size_t tile : tile_sizes) {
+        std::vector<float> dst_avx(rows * cols);
+        transpose_tiled_avx(src.data(), dst_avx.data(), rows, cols, tile);
+        EXPECT_EQ(dst_avx, dst_scalar) << "Mismatch with cache tile size " << tile;
+    }
+}
+
 // ---------- AVX FFT Impulse ----------
 
 TEST(FFTAvxTest, ImpulseResponse) {

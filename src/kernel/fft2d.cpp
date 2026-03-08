@@ -1,15 +1,17 @@
 #include "basalt/kernel/fft2d.hpp"
+#include "basalt/internal/fft2d_auto.hpp"
 #include "basalt/kernel/fft_avx.hpp"
 #include "basalt/kernel/transpose_avx.hpp"
+
 #include <cassert>
 
 namespace basalt::kernel {
 
 namespace {
 
-/// Apply 1D FFT to each row of a row-major rows×cols matrix (SoA).
+/// Apply 1D FFT to each row of a row-major rows x cols matrix (SoA).
 /// Rows are contiguous, so this is cache-friendly.
-void fft_rows(float* real, float* imag, 
+void fft_rows(float* real, float* imag,
               size_t rows, size_t cols, bool inverse) {
     for (size_t r = 0; r < rows; ++r) {
         float* row_real = real + r * cols;
@@ -23,50 +25,92 @@ void fft_rows(float* real, float* imag,
     }
 }
 
-void fft2d_impl(float* real, float* imag, 
-                size_t rows, size_t cols, 
-                basalt::MemoryArena& scratch, bool inverse) {
-    assert(rows > 0 && (rows & (rows - 1)) == 0 && "rows must be power of 2");
-    assert(cols > 0 && (cols & (cols - 1)) == 0 && "cols must be power of 2");
+void transpose_pair(const float* src_real, const float* src_imag,
+                    float* dst_real, float* dst_imag,
+                    size_t rows, size_t cols, size_t tile) {
+    transpose_tiled_avx(src_real, dst_real, rows, cols, tile);
+    transpose_tiled_avx(src_imag, dst_imag, rows, cols, tile);
+}
 
-    size_t total = rows * cols;
-    
-    // Allocate scratch buffers for transpose
+void fft2d_legacy_column_first(float* real, float* imag,
+                               size_t rows, size_t cols,
+                               basalt::MemoryArena& scratch,
+                               bool inverse, size_t tile) {
+    const size_t total = rows * cols;
     float* tmp_real = scratch.allocate_array<float>(total);
     float* tmp_imag = scratch.allocate_array<float>(total);
-    
-    // Check allocation (though allocate_array usually returns valid or throws/asserts if logic matches)
-    // Here we trust arena has space from caller check
 
-    // --- Step 1: FFT along columns ---
-    // Transpose: rows×cols → cols×rows (columns become rows)
-    transpose_tiled_avx(real, tmp_real, rows, cols);
-    transpose_tiled_avx(imag, tmp_imag, rows, cols);
-
-    // Now tmp is cols×rows; each "row" was a column. FFT each row.
+    transpose_pair(real, imag, tmp_real, tmp_imag, rows, cols, tile);
     fft_rows(tmp_real, tmp_imag, cols, rows, inverse);
-
-    // Transpose back: cols×rows → rows×cols
-    transpose_tiled_avx(tmp_real, real, cols, rows);
-    transpose_tiled_avx(tmp_imag, imag, cols, rows);
-
-    // --- Step 2: FFT along rows ---
+    transpose_pair(tmp_real, tmp_imag, real, imag, cols, rows, tile);
     fft_rows(real, imag, rows, cols, inverse);
 }
 
-} // anonymous namespace
+void fft2d_four_step_row_first(float* real, float* imag,
+                               size_t rows, size_t cols,
+                               basalt::MemoryArena& scratch,
+                               bool inverse, size_t tile) {
+    assert(rows > 0 && (rows & (rows - 1)) == 0 && "rows must be power of 2");
+    assert(cols > 0 && (cols & (cols - 1)) == 0 && "cols must be power of 2");
 
+    const size_t total = rows * cols;
+    float* tmp_real = scratch.allocate_array<float>(total);
+    float* tmp_imag = scratch.allocate_array<float>(total);
 
-void fft2d_forward(float* real, float* imag, 
-                   size_t rows, size_t cols, 
-                   basalt::MemoryArena& scratch) {
-    fft2d_impl(real, imag, rows, cols, scratch, false);
+    fft_rows(real, imag, rows, cols, inverse);
+    transpose_pair(real, imag, tmp_real, tmp_imag, rows, cols, tile);
+    fft_rows(tmp_real, tmp_imag, cols, rows, inverse);
+    transpose_pair(tmp_real, tmp_imag, real, imag, cols, rows, tile);
 }
 
-void fft2d_inverse(float* real, float* imag, 
-                   size_t rows, size_t cols, 
+void fft2d_impl(float* real, float* imag,
+                size_t rows, size_t cols,
+                basalt::MemoryArena& scratch, bool inverse,
+                const basalt::kernel::FFT2DConfig& config) {
+    assert(rows > 0 && (rows & (rows - 1)) == 0 && "rows must be power of 2");
+    assert(cols > 0 && (cols & (cols - 1)) == 0 && "cols must be power of 2");
+
+    const basalt::kernel::FFT2DConfig resolved = basalt::internal::resolved_fft2d_config(config, rows, cols);
+    const size_t tile = resolved.transpose_tile;
+    switch (resolved.schedule) {
+    case basalt::kernel::FFT2DSchedule::LegacyColumnFirst:
+        fft2d_legacy_column_first(real, imag, rows, cols, scratch, inverse, tile);
+        break;
+    case basalt::kernel::FFT2DSchedule::FourStepRowFirst:
+        fft2d_four_step_row_first(real, imag, rows, cols, scratch, inverse, tile);
+        break;
+    case basalt::kernel::FFT2DSchedule::Auto:
+        assert(false && "Auto schedule must be resolved before dispatch");
+        break;
+    }
+}
+
+} // namespace
+
+void fft2d_forward(float* real, float* imag,
+                   size_t rows, size_t cols,
                    basalt::MemoryArena& scratch) {
-    fft2d_impl(real, imag, rows, cols, scratch, true);
+    fft2d_forward(real, imag, rows, cols, scratch, FFT2DConfig{});
+}
+
+void fft2d_forward(float* real, float* imag,
+                   size_t rows, size_t cols,
+                   basalt::MemoryArena& scratch,
+                   const FFT2DConfig& config) {
+    fft2d_impl(real, imag, rows, cols, scratch, false, config);
+}
+
+void fft2d_inverse(float* real, float* imag,
+                   size_t rows, size_t cols,
+                   basalt::MemoryArena& scratch) {
+    fft2d_inverse(real, imag, rows, cols, scratch, FFT2DConfig{});
+}
+
+void fft2d_inverse(float* real, float* imag,
+                   size_t rows, size_t cols,
+                   basalt::MemoryArena& scratch,
+                   const FFT2DConfig& config) {
+    fft2d_impl(real, imag, rows, cols, scratch, true, config);
 }
 
 } // namespace basalt::kernel

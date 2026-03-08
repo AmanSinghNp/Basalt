@@ -156,3 +156,52 @@ TEST(FFT2DTest, EnergyPreservation) {
     EXPECT_NEAR(freq_energy, time_energy, time_energy * 1e-3)
         << "2D Parseval's theorem violated";
 }
+
+TEST(FFT2DTest, ScheduleVariantsMatch) {
+    constexpr size_t rows = 32;
+    constexpr size_t cols = 64;
+    constexpr size_t total = rows * cols;
+    constexpr size_t arena_bytes = total * 2 * sizeof(float) + 4096;
+
+    std::vector<float> input_real(total);
+    std::vector<float> input_imag(total, 0.0f);
+    for (size_t i = 0; i < total; ++i) {
+        input_real[i] = static_cast<float>(
+            std::sin(0.07 * static_cast<double>(i)) +
+            0.25 * std::cos(0.19 * static_cast<double>(i))
+        );
+    }
+
+    std::vector<float> legacy_real = input_real;
+    std::vector<float> legacy_imag = input_imag;
+    std::vector<float> four_real = input_real;
+    std::vector<float> four_imag = input_imag;
+    std::vector<float> auto_real = input_real;
+    std::vector<float> auto_imag = input_imag;
+
+    {
+        basalt::MemoryArena scratch(arena_bytes);
+        fft2d_forward(
+            legacy_real.data(), legacy_imag.data(), rows, cols, scratch,
+            FFT2DConfig{FFT2DSchedule::LegacyColumnFirst, 128}
+        );
+    }
+    {
+        basalt::MemoryArena scratch(arena_bytes);
+        fft2d_forward(
+            four_real.data(), four_imag.data(), rows, cols, scratch,
+            FFT2DConfig{FFT2DSchedule::FourStepRowFirst, 128}
+        );
+    }
+    {
+        basalt::MemoryArena scratch(arena_bytes);
+        fft2d_forward(auto_real.data(), auto_imag.data(), rows, cols, scratch);
+    }
+
+    for (size_t i = 0; i < total; ++i) {
+        EXPECT_NEAR(legacy_real[i], four_real[i], 1e-3f) << "Real mismatch at " << i;
+        EXPECT_NEAR(legacy_imag[i], four_imag[i], 1e-3f) << "Imag mismatch at " << i;
+        EXPECT_NEAR(auto_real[i], legacy_real[i], 1e-6f) << "Auto real mismatch at " << i;
+        EXPECT_NEAR(auto_imag[i], legacy_imag[i], 1e-6f) << "Auto imag mismatch at " << i;
+    }
+}

@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -16,6 +17,15 @@
 namespace basalt::kernel {
 
 namespace {
+
+struct TwiddleStage {
+    std::vector<float> real;
+    std::vector<float> imag;
+};
+
+struct TwiddlePlan {
+    std::vector<TwiddleStage> stages;
+};
 
 /// Reverse the bottom log2(n) bits of 'x'.
 size_t bit_reverse(size_t x, size_t log2n) {
@@ -36,6 +46,40 @@ size_t log2_of(size_t n) {
     return result;
 }
 
+const TwiddlePlan& twiddle_plan_for(size_t n, bool inverse) {
+    thread_local std::unordered_map<size_t, TwiddlePlan> forward_cache;
+    thread_local std::unordered_map<size_t, TwiddlePlan> inverse_cache;
+
+    auto& cache = inverse ? inverse_cache : forward_cache;
+    auto it = cache.find(n);
+    if (it != cache.end()) {
+        return it->second;
+    }
+
+    TwiddlePlan plan;
+    const size_t log2n = log2_of(n);
+    plan.stages.reserve(log2n + 1);
+    plan.stages.emplace_back();
+
+    for (size_t s = 1; s <= log2n; ++s) {
+        const size_t m = 1u << s;
+        const size_t half_m = m >> 1;
+        const double angle_step = (inverse ? 2.0 : -2.0) * M_PI / static_cast<double>(m);
+
+        TwiddleStage stage;
+        stage.real.resize(half_m);
+        stage.imag.resize(half_m);
+        for (size_t j = 0; j < half_m; ++j) {
+            const double angle = angle_step * static_cast<double>(j);
+            stage.real[j] = static_cast<float>(std::cos(angle));
+            stage.imag[j] = static_cast<float>(std::sin(angle));
+        }
+        plan.stages.push_back(std::move(stage));
+    }
+
+    return cache.emplace(n, std::move(plan)).first->second;
+}
+
 /// AVX2/FMA core FFT implementation.
 void fft_avx_impl(float* real, float* imag, size_t n, bool inverse) {
     assert(n > 0 && (n & (n - 1)) == 0 && "n must be a power of 2");
@@ -51,6 +95,7 @@ void fft_avx_impl(float* real, float* imag, size_t n, bool inverse) {
     }
 
     size_t log2n = log2_of(n);
+    const TwiddlePlan& twiddles = twiddle_plan_for(n, inverse);
 
     // --- Step 1: Bit-reversal permutation (memory-bound, scalar is fine) ---
     for (size_t i = 0; i < n; ++i) {
@@ -65,19 +110,9 @@ void fft_avx_impl(float* real, float* imag, size_t n, bool inverse) {
     for (size_t s = 1; s <= log2n; ++s) {
         size_t m = 1u << s;
         size_t half_m = m >> 1;
-
-        double angle_step = (inverse ? 2.0 : -2.0) * M_PI / static_cast<double>(m);
-
-        // Pre-compute twiddle factors for this stage
-        // Allocated once per stage (not per butterfly block)
-        std::vector<float> tw_real(half_m);
-        std::vector<float> tw_imag(half_m);
-
-        for (size_t j = 0; j < half_m; ++j) {
-            double angle = angle_step * static_cast<double>(j);
-            tw_real[j] = static_cast<float>(std::cos(angle));
-            tw_imag[j] = static_cast<float>(std::sin(angle));
-        }
+        const TwiddleStage& stage = twiddles.stages[s];
+        const float* tw_real = stage.real.data();
+        const float* tw_imag = stage.imag.data();
 
         // Process each block
         for (size_t k = 0; k < n; k += m) {
@@ -99,8 +134,8 @@ void fft_avx_impl(float* real, float* imag, size_t n, bool inverse) {
                     }
 
                     // Load twiddle factors
-                    __m256 wr = _mm256_loadu_ps(tw_real.data() + j);
-                    __m256 wi = _mm256_loadu_ps(tw_imag.data() + j);
+                    __m256 wr = _mm256_loadu_ps(tw_real + j);
+                    __m256 wi = _mm256_loadu_ps(tw_imag + j);
 
                     // Load even and odd elements
                     __m256 er = _mm256_loadu_ps(real + even_idx);
