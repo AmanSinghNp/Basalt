@@ -58,10 +58,12 @@ env/
 .env/
 
 # Benchmarks / Logs
-*.json
 !CMakePresets.json
-*.csv
 *.log
+benchmark.json
+benchmark.csv
+build/*.json
+build/*.csv
 artifacts/stage1/
 tools/profiling/output/
 

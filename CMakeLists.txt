@@ -12,8 +12,16 @@ project(Basalt
 
 # --- 1. Dependencies ---
 include(FetchContent)
+include(CMakePackageConfigHelpers)
+find_package(Threads REQUIRED)
+
+option(BASALT_ENABLE_LIBNUMA "Enable optional libnuma integration when available" ON)
+if(BASALT_ENABLE_LIBNUMA)
+    find_library(BASALT_NUMA_LIBRARY numa)
+endif()
 
 # Google Test
+set(INSTALL_GTEST OFF CACHE BOOL "Disable GoogleTest install rules for Basalt packaging" FORCE)
 FetchContent_Declare(
   googletest
   GIT_REPOSITORY https://github.com/google/googletest.git
@@ -33,8 +41,7 @@ else()
     list(APPEND BASALT_COMMON_FLAGS 
         -std=c++17 
         -O3 
-        -march=native 
-        -mtune=native 
+        -mtune=generic 
         -mavx2 
         -mfma 
     )
@@ -44,8 +51,6 @@ else()
 endif()
 
 # --- 3. Source Groups ---
-include_directories(include)
-
 # The Core Engine Library
 add_library(basalt_core
     src/io/segy_parser.cpp
@@ -59,8 +64,24 @@ add_library(basalt_core
     src/kernel/transpose_avx.cpp
     src/core/arena.cpp
     src/filter/fk_filter.cpp
+    src/filter/fk_filter_avx512.cpp
+    src/internal/batch_executor.cpp
+    src/internal/fft2d_auto.cpp
+    src/internal/numa_memory.cpp
+    src/internal/numa_topology.cpp
+    src/internal/thread_pool.cpp
+)
+target_include_directories(basalt_core
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
 )
 target_compile_options(basalt_core PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
+target_link_libraries(basalt_core PUBLIC Threads::Threads)
+if(BASALT_NUMA_LIBRARY)
+    target_link_libraries(basalt_core PUBLIC ${BASALT_NUMA_LIBRARY})
+    target_compile_definitions(basalt_core PRIVATE BASALT_HAS_LIBNUMA=1)
+endif()
 
 # The CLI Executable
 add_executable(basalt src/main.cpp)
@@ -69,7 +90,50 @@ target_compile_options(basalt PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FL
 target_compile_definitions(basalt PRIVATE BASALT_VERSION="${PROJECT_VERSION}")
 
 # --- 4. Installation ---
-install(TARGETS basalt DESTINATION bin)
+set(BASALT_INSTALL_CMAKEDIR "lib/cmake/Basalt")
+
+install(TARGETS basalt_core basalt
+    EXPORT BasaltTargets
+    ARCHIVE DESTINATION lib
+    LIBRARY DESTINATION lib
+    RUNTIME DESTINATION bin
+    INCLUDES DESTINATION include
+)
+
+install(
+    DIRECTORY include/basalt
+    DESTINATION include
+    FILES_MATCHING
+        PATTERN "*.hpp"
+        PATTERN "internal" EXCLUDE
+        PATTERN "internal/*" EXCLUDE
+)
+
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/BasaltConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/BasaltConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/BasaltConfig.cmake"
+    INSTALL_DESTINATION "${BASALT_INSTALL_CMAKEDIR}"
+)
+
+install(
+    EXPORT BasaltTargets
+    FILE BasaltTargets.cmake
+    NAMESPACE Basalt::
+    DESTINATION "${BASALT_INSTALL_CMAKEDIR}"
+)
+
+install(
+    FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/BasaltConfig.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/BasaltConfigVersion.cmake"
+    DESTINATION "${BASALT_INSTALL_CMAKEDIR}"
+)
 
 # --- 5. Testing ---
 enable_testing()
@@ -85,6 +149,8 @@ add_executable(basalt_tests
     tests/integrity/fft2d_test.cpp
     tests/integrity/fft_avx_test.cpp
     tests/integrity/fk_filter_test.cpp
+    tests/integrity/runtime_test.cpp
+    tests/integration/benchmark_contract_test.cpp
     tests/integration/pipeline_test.cpp
 )
 target_link_libraries(basalt_tests PRIVATE basalt_core GTest::gtest_main)
@@ -98,10 +164,15 @@ if(CMAKE_PROJECT_NAME STREQUAL "Basalt")
     add_executable(basalt_bench benchmarks/basalt_bench.cpp)
     target_link_libraries(basalt_bench PRIVATE basalt_core)
     target_compile_options(basalt_bench PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
+    target_compile_definitions(basalt_tests PRIVATE BASALT_BENCH_PATH="$<TARGET_FILE:basalt_bench>")
 
     add_executable(fft_benchmark benchmarks/fft_benchmark.cpp)
     target_link_libraries(fft_benchmark PRIVATE basalt_core)
     target_compile_options(fft_benchmark PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
+
+    add_executable(fft2d_schedule_benchmark benchmarks/fft2d_schedule_benchmark.cpp)
+    target_link_libraries(fft2d_schedule_benchmark PRIVATE basalt_core)
+    target_compile_options(fft2d_schedule_benchmark PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
 
     add_executable(fk_benchmark benchmarks/fk_benchmark.cpp)
     target_link_libraries(fk_benchmark PRIVATE basalt_core)
