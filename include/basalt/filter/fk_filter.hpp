@@ -1,6 +1,7 @@
 #pragma once
 
 #include "basalt/kernel/complex_soa.hpp"
+#include "basalt/kernel/simd_mode.hpp"
 
 namespace basalt::filter {
 
@@ -26,5 +27,13 @@ struct FKParams {
 void apply_fk_filter(basalt::kernel::ComplexSoA& data, 
                      size_t rows, size_t cols, 
                      const FKParams& params);
+
+/// Apply the F-K filter with an explicit SIMD preference.
+/// Requests are best-effort and fall back to the best supported path when the
+/// requested ISA is unavailable in the current build or on the current CPU.
+void apply_fk_filter(basalt::kernel::ComplexSoA& data,
+                     size_t rows, size_t cols,
+                     const FKParams& params,
+                     basalt::kernel::SimdMode simd_mode);
 
 } // namespace basalt::filter

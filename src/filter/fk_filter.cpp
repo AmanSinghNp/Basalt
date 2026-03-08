@@ -1,8 +1,11 @@
 #include "basalt/filter/fk_filter.hpp"
 #include "basalt/utils/fast_math.hpp"
 
-#include <cmath>
+#include "fk_filter_impl.hpp"
+
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <immintrin.h>
 
 #ifndef M_PI
@@ -11,148 +14,148 @@
 
 namespace basalt::filter {
 
-void apply_fk_filter(basalt::kernel::ComplexSoA& data, 
-                     size_t rows, size_t cols, 
-                     const FKParams& params) {
-    if (params.taper_width <= 0.0) return;
+namespace detail {
 
-    // Derived constants
-    // Frequency step df = 1 / (Nt * dt) — assuming rows is Nt (after padding)
-    // But rows/cols here are just dimensions. 
-    // Standard interpretation: 
-    // f axis goes from 0 to Nyquist. 
-    // k axis goes from -Nyquist to +Nyquist (or 0 to Nyquist then negative).
-    // Basalt's FFT layout: Standard positive frequencies 0..N/2.
-    // 2D FFT layout (centered vs uncentered):
-    // Usually FFT output is uncentered: 0..N/2 (pos), -N/2..-1 (neg).
-    // Let's assume standard FFT order:
-    // Rows (f): 0, 1, ..., N/2 (real input -> Hermitian, usually simplified)
-    // Cols (k): 0, 1, ..., N/2, -N/2+1, ..., -1.
+FKFilterExecutionPlan make_execution_plan(size_t rows, size_t cols) {
+    FKFilterExecutionPlan plan;
+    if (rows <= 256 && cols <= 256) {
+        plan.tile_rows = 32;
+        plan.tile_cols = 64;
+        plan.prefetch_distance = 8;
+    } else if (rows >= 2048 || cols >= 2048) {
+        plan.tile_rows = 32;
+        plan.tile_cols = 96;
+        plan.prefetch_distance = 24;
+    }
+    return plan;
+}
 
-    double df = 1.0 / (rows * params.dt);
-    double dk = 1.0 / (cols * params.dx);
+bool cpu_supports_avx512_filter() {
+#if (defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
+    return __builtin_cpu_supports("avx512f") &&
+           __builtin_cpu_supports("avx512vl") &&
+           __builtin_cpu_supports("avx512bw") &&
+           __builtin_cpu_supports("avx512dq");
+#else
+    return false;
+#endif
+}
 
-    float steepness = 10.0f / static_cast<float>(params.taper_width);
-    float v_cut_pos = static_cast<float>(params.mute_vel_max);
-    
+void apply_fk_filter_avx2(basalt::kernel::ComplexSoA& data,
+                          size_t rows, size_t cols,
+                          const FKParams& params,
+                          const FKFilterExecutionPlan& plan) {
+    const double df = 1.0 / (static_cast<double>(rows) * params.dt);
+    const double dk = 1.0 / (static_cast<double>(cols) * params.dx);
+
+    const float steepness = 10.0f / static_cast<float>(params.taper_width);
+    const float v_cut_pos = static_cast<float>(params.mute_vel_max);
     const __m256 v_steep = _mm256_set1_ps(steepness);
     const __m256 v_cut = _mm256_set1_ps(v_cut_pos);
+    const __m256 v_eps = _mm256_set1_ps(1e-6f);
 
-    for (size_t i = 0; i < rows; ++i) {
-        // Frequency f
-        // If real-to-complex transform, rows are 0 to N/2 usually.
-        // Let's assume full grid for generality or N rows.
-        // For f-k, f is usually positive.
-        // Frequency f
-        double f;
-        if (i <= rows / 2) {
-            f = static_cast<double>(i) * df;
-        } else {
-            f = static_cast<double>(static_cast<int>(i) - static_cast<int>(rows)) * df;
-        }
+    for (size_t tile_row = 0; tile_row < rows; tile_row += plan.tile_rows) {
+        const size_t row_end = std::min(tile_row + plan.tile_rows, rows);
 
-        // Avoid divide-by-zero at DC (v = f/k)
-        // At f=0, v=0 regardless of k (except k=0). 
-        // We want to pass f=0 usually? Or mute specific velocities?
-        // Let's protect f=0.
-        
-        for (size_t j = 0; j < cols; j += 8) {
-            // Wavenumber k for this block
-            // Handle wrapping: 0..N/2 is positive, N/2..N is negative
-            // We need a vector of k values
-            float k_vals[8];
-            for (int lane = 0; lane < 8; ++lane) {
-                size_t idx = j + lane;
-                if (idx < cols) {
-                    if (idx <= cols / 2) {
-                        k_vals[lane] = static_cast<float>(idx * dk);
-                    } else {
-                        k_vals[lane] = static_cast<float>((static_cast<int>(idx) - static_cast<int>(cols)) * dk);
+        for (size_t tile_col = 0; tile_col < cols; tile_col += plan.tile_cols) {
+            const size_t col_end = std::min(tile_col + plan.tile_cols, cols);
+
+            for (size_t i = tile_row; i < row_end; ++i) {
+                const __m256 vf = _mm256_set1_ps(detail::wrapped_frequency(i, rows, df));
+
+                for (size_t j = tile_col; j < col_end; j += 8) {
+                    const size_t next_prefetch = j + plan.prefetch_distance;
+                    if (next_prefetch < cols) {
+                        _mm_prefetch(
+                            reinterpret_cast<const char*>(data.real + i * cols + next_prefetch),
+                            _MM_HINT_T0
+                        );
+                        _mm_prefetch(
+                            reinterpret_cast<const char*>(data.imag + i * cols + next_prefetch),
+                            _MM_HINT_T0
+                        );
+                    } else if (i + 1 < row_end) {
+                        _mm_prefetch(
+                            reinterpret_cast<const char*>(data.real + (i + 1) * cols + tile_col),
+                            _MM_HINT_T0
+                        );
+                        _mm_prefetch(
+                            reinterpret_cast<const char*>(data.imag + (i + 1) * cols + tile_col),
+                            _MM_HINT_T0
+                        );
                     }
-                } else {
-                    k_vals[lane] = 1.0f; // Padding
-                }
-            }
-            __m256 vk = _mm256_loadu_ps(k_vals);
-            
-            // Add epsilon to k to avoid division by zero
-            // v = f / (k + eps)
-            const __m256 eps = _mm256_set1_ps(1e-6f);
-            // Sign of k to preserve velocity direction? 
-            // Velocity V = f / k. 
-            // If f is approx 0, V is 0. 
-            // If k is approx 0, V is infinite.
-            
-            // Mask for k near 0
-            // But simply adding eps is safer for branchless
-            __m256 vk_safe = _mm256_add_ps(vk, eps);
-            
-            __m256 vf = _mm256_set1_ps(static_cast<float>(f));
-            __m256 vel = _mm256_div_ps(vf, vk_safe);
-            
-            // We want to mute if |vel| < v_cut
-            // i.e. -v_cut < vel < v_cut
-            // Using sigmoid taper logic:
-            // Pass weight should be 0 inside mute zone, 1 outside.
-            // Let's use two sigmoids? or |vel|?
-            // Mute zone is centered at 0.
-            // Weight = Sigmoid( (|vel| - v_cut) * steepness )
-            // If |vel| >> v_cut, arg is large positive, Sigmoid -> 1 (Pass)
-            // If |vel| << v_cut, arg is large negative, Sigmoid -> 0 (Mute)
-            
-            // abs(vel) = vel & 0x7FFFFFFF
-            const __m256 sign_mask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
-            __m256 abs_vel = _mm256_and_ps(vel, sign_mask);
-            
-            // x = (|vel| - v_cut) * steepness
-            // We want to PASS velocities > v_cut (high velocity)
-            // or PASS velocities < v_cut (low velocity)?
-            // "Velocities inside [-vm, +vm] will be muted." -> Low velocities are muted.
-            // So if |vel| < v_cut, weight should be 0.
-            // If |vel| > v_cut, weight should be 1.
-            // Sigmoid(x) goes 0->1 as x goes -inf -> +inf.
-            // Let x = (|vel| - v_cut) * steepness.
-            // If |vel| = 0, x = -huge -> Sigmoid = 0 (Mute). Correct.
-            // If |vel| = huge, x = +huge -> Sigmoid = 1 (Pass). Correct.
-            
-            // We want to MUTE if |vel| < v_cut.
-            // Sigmoid(x) should be 0 for low vel.
-            // Let x = (|vel| - v_cut) * steepness.
-            // If |vel| < v_cut, x < 0 -> Sigmoid -> 0 (Mute).
-            // If |vel| > v_cut, x > 0 -> Sigmoid -> 1 (Pass).
-            
-            __m256 x = _mm256_sub_ps(abs_vel, v_cut);
-            x = _mm256_mul_ps(x, v_steep);
-            
-            // weight = sigmoid(x)
-            __m256 weight = basalt::utils::fast_sigmoid_avx(x);
-            
-            // Apply weight to real and imag
-            // Handle edge (non-8-aligned cols)
-            size_t remaining = cols - j;
-            if (remaining >= 8) {
-                // Load data
-                __m256 r = _mm256_loadu_ps(data.real + i * cols + j);
-                __m256 im = _mm256_loadu_ps(data.imag + i * cols + j);
-                
-                // Multiply
-                r = _mm256_mul_ps(r, weight);
-                im = _mm256_mul_ps(im, weight);
-                
-                // Store
-                _mm256_storeu_ps(data.real + i * cols + j, r);
-                _mm256_storeu_ps(data.imag + i * cols + j, im);
-            } else {
-                // Scalar tail fallback from vector result
-                alignas(32) float w[8];
-                _mm256_store_ps(w, weight);
-                for (size_t k = 0; k < remaining; ++k) {
-                    data.real[i * cols + j + k] *= w[k];
-                    data.imag[i * cols + j + k] *= w[k];
+
+                    alignas(32) std::array<float, 8> k_vals{};
+                    for (size_t lane = 0; lane < 8; ++lane) {
+                        const size_t index = j + lane;
+                        k_vals[lane] = index < cols
+                            ? detail::wrapped_wavenumber(index, cols, dk)
+                            : 1.0f;
+                    }
+
+                    const __m256 vk = _mm256_load_ps(k_vals.data());
+                    const __m256 vk_safe = _mm256_add_ps(vk, v_eps);
+                    const __m256 vel = _mm256_div_ps(vf, vk_safe);
+                    __m256 x = _mm256_sub_ps(detail::absolute_ps(vel), v_cut);
+                    x = _mm256_mul_ps(x, v_steep);
+                    const __m256 weight = basalt::utils::fast_sigmoid_avx(x);
+
+                    const size_t remaining = col_end - j;
+                    if (remaining >= 8) {
+                        const size_t offset = i * cols + j;
+                        __m256 real = _mm256_loadu_ps(data.real + offset);
+                        __m256 imag = _mm256_loadu_ps(data.imag + offset);
+                        real = _mm256_mul_ps(real, weight);
+                        imag = _mm256_mul_ps(imag, weight);
+                        _mm256_storeu_ps(data.real + offset, real);
+                        _mm256_storeu_ps(data.imag + offset, imag);
+                    } else {
+                        alignas(32) std::array<float, 8> weights{};
+                        _mm256_store_ps(weights.data(), weight);
+                        for (size_t lane = 0; lane < remaining; ++lane) {
+                            const size_t offset = i * cols + j + lane;
+                            data.real[offset] *= weights[lane];
+                            data.imag[offset] *= weights[lane];
+                        }
+                    }
                 }
             }
         }
-
     }
 }
+
+} // namespace detail
+
+void apply_fk_filter(basalt::kernel::ComplexSoA& data,
+                     size_t rows, size_t cols,
+                     const FKParams& params) {
+    apply_fk_filter(data, rows, cols, params, basalt::kernel::SimdMode::Auto);
+}
+
+void apply_fk_filter(basalt::kernel::ComplexSoA& data,
+                     size_t rows, size_t cols,
+                     const FKParams& params,
+                     basalt::kernel::SimdMode simd_mode) {
+    if (params.taper_width <= 0.0 || rows == 0 || cols == 0) {
+        return;
+    }
+
+    const detail::FKFilterExecutionPlan plan = detail::make_execution_plan(rows, cols);
+    const bool can_use_avx512 = simd_mode != basalt::kernel::SimdMode::AVX2 &&
+                                detail::cpu_supports_avx512_filter();
+
+    if (simd_mode == basalt::kernel::SimdMode::AVX512 && !can_use_avx512) {
+        detail::apply_fk_filter_avx2(data, rows, cols, params, plan);
+        return;
+    }
+
+    if ((simd_mode == basalt::kernel::SimdMode::AVX512 ||
+         (simd_mode == basalt::kernel::SimdMode::Auto && can_use_avx512))) {
+        detail::apply_fk_filter_avx512(data, rows, cols, params, plan);
+        return;
+    }
+
+    detail::apply_fk_filter_avx2(data, rows, cols, params, plan);
+}
+
 } // namespace basalt::filter
