@@ -1,0 +1,47 @@
+name: Stage 1 Profiling Dossier
+
+on:
+  workflow_dispatch:
+
+jobs:
+  profile-stage1:
+    name: Profile Stage 1 (Linux, Release)
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake ninja-build build-essential linux-tools-common linux-tools-generic
+
+    - name: Configure CMake
+      run: |
+        cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build
+      run: |
+        cmake --build build --config Release
+
+    - name: Run Tests
+      run: |
+        ctest --test-dir build --output-on-failure
+
+    - name: Run Stage 1 Profiling
+      run: |
+        bash tools/profiling/run_stage1.sh \
+          --bench-bin ./build/basalt_bench \
+          --out-root ./artifacts/stage1 \
+          --size 1024 \
+          --shots 100 \
+          --warmup 5 \
+          --seed 1337 \
+          --perf-repeats 3
+
+    - name: Upload Stage 1 Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: stage1-profiling-dossier
+        path: artifacts/stage1/
+        if-no-files-found: error
