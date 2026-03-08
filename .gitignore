@@ -17,6 +17,9 @@ lib/
 *~
 *.suo
 *.user
+.cursor/
+.antigravity/
+.cursorrules
 
 # Caches
 .cache/
