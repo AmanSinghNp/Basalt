@@ -1,7 +1,8 @@
-#include "basalt/arena.hpp"
 #include "basalt/filter/fk_filter.hpp"
-#include "basalt/kernel/complex_soa.hpp"
-#include "basalt/kernel/fft2d.hpp"
+#include "basalt/internal/batch_executor.hpp"
+#include "basalt/internal/fft2d_auto.hpp"
+#include "basalt/internal/numa_memory.hpp"
+#include "basalt/kernel/simd_mode.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -13,75 +14,228 @@
 #include <iostream>
 #include <numeric>
 #include <random>
+#include <sstream>
 #include <string>
 #include <vector>
 
 namespace {
 
-struct Config {
-    size_t size = 1024;
-    size_t shots = 100;
-    size_t warmup = 5;
-    uint32_t seed = 1337;
-    std::string json_out;
+enum class NumaMode {
+    Off,
+    Auto
 };
 
-struct Stats {
+struct Config {
+    std::vector<size_t> sizes{1024};
+    std::vector<size_t> threads{1};
+    std::vector<basalt::kernel::SimdMode> simd_modes{basalt::kernel::SimdMode::Auto};
+    std::vector<NumaMode> numa_modes{NumaMode::Off};
+    std::vector<basalt::internal::MemoryPolicy> memory_policies{basalt::internal::MemoryPolicy::BindWorkerBuffers};
+    size_t shots = 64;
+    size_t warmup = 8;
+    uint32_t seed = 1337;
+    std::string json_out;
+    std::string csv_out;
+};
+
+struct ResultRow {
+    size_t size = 0;
+    size_t thread_count = 1;
+    basalt::kernel::SimdMode simd_mode = basalt::kernel::SimdMode::Auto;
+    NumaMode numa_mode = NumaMode::Off;
     double total_seconds = 0.0;
     double mean_ms = 0.0;
-    double stddev_ms = 0.0;
     double p50_ms = 0.0;
     double p95_ms = 0.0;
     double p99_ms = 0.0;
     double throughput_gb_s = 0.0;
-    double bytes_per_shot = 0.0;
     uint64_t checksum_real = 0;
     uint64_t checksum_imag = 0;
+    basalt::kernel::FFT2DSchedule fft_schedule = basalt::kernel::FFT2DSchedule::Auto;
+    size_t fft_tile = 128;
+    basalt::internal::MemoryPolicy memory_policy = basalt::internal::MemoryPolicy::Default;
+    size_t numa_nodes = 1;
+    std::vector<uint64_t> preferred_node_counts;
+    std::vector<uint64_t> worker_home_node_counts;
+    std::vector<uint64_t> local_queue_executions_per_node;
+    std::vector<uint64_t> remote_steals_from_node;
 };
 
 bool is_power_of_two(size_t n) {
     return n != 0 && (n & (n - 1)) == 0;
 }
 
-bool parse_u64(const std::string& value, size_t& out) {
-    try {
-        size_t idx = 0;
-        unsigned long long parsed = std::stoull(value, &idx);
-        if (idx != value.size()) return false;
-        out = static_cast<size_t>(parsed);
-        return true;
-    } catch (...) {
-        return false;
+uint64_t fnv1a_hash_bytes(const unsigned char* data, size_t count, uint64_t seed) {
+    uint64_t hash = seed;
+    for (size_t i = 0; i < count; ++i) {
+        hash ^= static_cast<uint64_t>(data[i]);
+        hash *= 1099511628211ULL;
     }
+    return hash;
 }
 
-bool parse_u32(const std::string& value, uint32_t& out) {
-    try {
-        size_t idx = 0;
-        unsigned long parsed = std::stoul(value, &idx);
-        if (idx != value.size()) return false;
-        out = static_cast<uint32_t>(parsed);
-        return true;
-    } catch (...) {
-        return false;
+uint64_t hash_floats(const float* data, size_t count, uint64_t seed = 1469598103934665603ULL) {
+    return fnv1a_hash_bytes(reinterpret_cast<const unsigned char*>(data), count * sizeof(float), seed);
+}
+
+template <typename T>
+bool parse_unsigned_list(const std::string& text, std::vector<T>& out) {
+    std::stringstream stream(text);
+    std::string token;
+    out.clear();
+    while (std::getline(stream, token, ',')) {
+        if (token.empty()) {
+            continue;
+        }
+        try {
+            const auto value = static_cast<T>(std::stoull(token));
+            out.push_back(value);
+        } catch (...) {
+            return false;
+        }
     }
+    return !out.empty();
+}
+
+bool parse_simd_list(const std::string& text, std::vector<basalt::kernel::SimdMode>& out) {
+    std::stringstream stream(text);
+    std::string token;
+    out.clear();
+    while (std::getline(stream, token, ',')) {
+        if (token == "auto") {
+            out.push_back(basalt::kernel::SimdMode::Auto);
+        } else if (token == "avx2") {
+            out.push_back(basalt::kernel::SimdMode::AVX2);
+        } else if (token == "avx512") {
+            out.push_back(basalt::kernel::SimdMode::AVX512);
+        } else {
+            return false;
+        }
+    }
+    return !out.empty();
+}
+
+bool parse_numa_list(const std::string& text, std::vector<NumaMode>& out) {
+    std::stringstream stream(text);
+    std::string token;
+    out.clear();
+    while (std::getline(stream, token, ',')) {
+        if (token == "off") {
+            out.push_back(NumaMode::Off);
+        } else if (token == "auto") {
+            out.push_back(NumaMode::Auto);
+        } else {
+            return false;
+        }
+    }
+    return !out.empty();
+}
+
+bool parse_memory_policy_list(const std::string& text,
+                              std::vector<basalt::internal::MemoryPolicy>& out) {
+    std::stringstream stream(text);
+    std::string token;
+    out.clear();
+    while (std::getline(stream, token, ',')) {
+        if (token == "default") {
+            out.push_back(basalt::internal::MemoryPolicy::Default);
+        } else if (token == "bind-worker-buffers") {
+            out.push_back(basalt::internal::MemoryPolicy::BindWorkerBuffers);
+        } else if (token == "bind-inputs-if-possible") {
+            out.push_back(basalt::internal::MemoryPolicy::BindInputsIfPossible);
+        } else {
+            return false;
+        }
+    }
+    return !out.empty();
+}
+
+const char* simd_mode_name(basalt::kernel::SimdMode mode) {
+    switch (mode) {
+    case basalt::kernel::SimdMode::Auto: return "auto";
+    case basalt::kernel::SimdMode::AVX2: return "avx2";
+    case basalt::kernel::SimdMode::AVX512: return "avx512";
+    }
+    return "unknown";
+}
+
+const char* numa_mode_name(NumaMode mode) {
+    return mode == NumaMode::Auto ? "auto" : "off";
+}
+
+const char* memory_policy_name(basalt::internal::MemoryPolicy policy) {
+    switch (policy) {
+    case basalt::internal::MemoryPolicy::Default: return "default";
+    case basalt::internal::MemoryPolicy::BindWorkerBuffers: return "bind-worker-buffers";
+    case basalt::internal::MemoryPolicy::BindInputsIfPossible: return "bind-inputs-if-possible";
+    }
+    return "unknown";
+}
+
+const char* schedule_name(basalt::kernel::FFT2DSchedule schedule) {
+    switch (schedule) {
+    case basalt::kernel::FFT2DSchedule::Auto: return "auto";
+    case basalt::kernel::FFT2DSchedule::LegacyColumnFirst: return "legacy-column-first";
+    case basalt::kernel::FFT2DSchedule::FourStepRowFirst: return "four-step-row-first";
+    }
+    return "unknown";
+}
+
+std::string join_counts(const std::vector<uint64_t>& values) {
+    std::ostringstream out;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out << '|';
+        }
+        out << values[i];
+    }
+    return out.str();
+}
+
+void write_json_counts(std::ostream& out, const std::vector<uint64_t>& values) {
+    out << '[';
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out << ", ";
+        }
+        out << values[i];
+    }
+    out << ']';
+}
+
+double percentile_ms(std::vector<double> values, double p) {
+    if (values.empty()) {
+        return 0.0;
+    }
+    std::sort(values.begin(), values.end());
+    if (values.size() == 1) {
+        return values.front();
+    }
+    const double pos = p * static_cast<double>(values.size() - 1);
+    const size_t lo = static_cast<size_t>(std::floor(pos));
+    const size_t hi = static_cast<size_t>(std::ceil(pos));
+    const double weight = pos - static_cast<double>(lo);
+    return values[lo] * (1.0 - weight) + values[hi] * weight;
 }
 
 void print_usage() {
     std::cout
         << "Usage: basalt_bench [options]\n"
-        << "Options:\n"
-        << "  --size <N>        Grid size (NxN, power of two). Default: 1024\n"
-        << "  --shots <N>       Timed shots. Default: 100\n"
-        << "  --warmup <N>      Warmup shots. Default: 5\n"
+        << "  --sizes <csv>     Grid sizes. Default: 1024\n"
+        << "  --threads <csv>   Thread counts. Default: 1\n"
+        << "  --simd <csv>      SIMD modes: auto,avx2,avx512. Default: auto\n"
+        << "  --numa <csv>      NUMA modes: off,auto. Default: off\n"
+        << "  --memory-policy <csv> Memory policy: default,bind-worker-buffers,bind-inputs-if-possible\n"
+        << "  --shots <N>       Timed shots. Default: 64\n"
+        << "  --warmup <N>      Warmup shots. Default: 8\n"
         << "  --seed <N>        RNG seed. Default: 1337\n"
-        << "  --json-out <path> Write machine-readable JSON summary.\n"
-        << "  --help            Show this help.\n";
+        << "  --json-out <path> JSON output path\n"
+        << "  --csv-out <path>  CSV output path\n";
 }
 
 bool parse_args(int argc, char** argv, Config& cfg) {
     for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
+        const std::string arg = argv[i];
         auto require_value = [&](const char* name) -> const char* {
             if (i + 1 >= argc) {
                 std::cerr << "Missing value for " << name << "\n";
@@ -94,141 +248,79 @@ bool parse_args(int argc, char** argv, Config& cfg) {
         if (arg == "--help") {
             print_usage();
             return false;
+        } else if (arg == "--sizes" || arg == "--size") {
+            const char* value = require_value("--sizes");
+            if (value == nullptr || !parse_unsigned_list(value, cfg.sizes)) {
+                return false;
+            }
+        } else if (arg == "--threads") {
+            const char* value = require_value("--threads");
+            if (value == nullptr || !parse_unsigned_list(value, cfg.threads)) {
+                return false;
+            }
+        } else if (arg == "--simd") {
+            const char* value = require_value("--simd");
+            if (value == nullptr || !parse_simd_list(value, cfg.simd_modes)) {
+                return false;
+            }
+        } else if (arg == "--numa") {
+            const char* value = require_value("--numa");
+            if (value == nullptr || !parse_numa_list(value, cfg.numa_modes)) {
+                return false;
+            }
+        } else if (arg == "--memory-policy") {
+            const char* value = require_value("--memory-policy");
+            if (value == nullptr || !parse_memory_policy_list(value, cfg.memory_policies)) {
+                return false;
+            }
+        } else if (arg == "--shots") {
+            const char* value = require_value("--shots");
+            if (value == nullptr) return false;
+            cfg.shots = static_cast<size_t>(std::stoull(value));
+        } else if (arg == "--warmup") {
+            const char* value = require_value("--warmup");
+            if (value == nullptr) return false;
+            cfg.warmup = static_cast<size_t>(std::stoull(value));
+        } else if (arg == "--seed") {
+            const char* value = require_value("--seed");
+            if (value == nullptr) return false;
+            cfg.seed = static_cast<uint32_t>(std::stoul(value));
+        } else if (arg == "--json-out") {
+            const char* value = require_value("--json-out");
+            if (value == nullptr) return false;
+            cfg.json_out = value;
+        } else if (arg == "--csv-out") {
+            const char* value = require_value("--csv-out");
+            if (value == nullptr) return false;
+            cfg.csv_out = value;
+        } else {
+            std::cerr << "Unknown argument: " << arg << "\n";
+            return false;
         }
-        if (arg == "--size") {
-            const char* v = require_value("--size");
-            if (!v || !parse_u64(v, cfg.size)) return false;
-            continue;
-        }
-        if (arg == "--shots") {
-            const char* v = require_value("--shots");
-            if (!v || !parse_u64(v, cfg.shots)) return false;
-            continue;
-        }
-        if (arg == "--warmup") {
-            const char* v = require_value("--warmup");
-            if (!v || !parse_u64(v, cfg.warmup)) return false;
-            continue;
-        }
-        if (arg == "--seed") {
-            const char* v = require_value("--seed");
-            if (!v || !parse_u32(v, cfg.seed)) return false;
-            continue;
-        }
-        if (arg == "--json-out") {
-            const char* v = require_value("--json-out");
-            if (!v) return false;
-            cfg.json_out = v;
-            continue;
-        }
+    }
 
-        std::cerr << "Unknown argument: " << arg << "\n";
-        return false;
+    for (size_t size : cfg.sizes) {
+        if (!is_power_of_two(size)) {
+            std::cerr << "All sizes must be powers of two.\n";
+            return false;
+        }
     }
     return true;
 }
 
-double percentile_ms(const std::vector<double>& latencies, double p) {
-    if (latencies.empty()) return 0.0;
-    std::vector<double> sorted = latencies;
-    std::sort(sorted.begin(), sorted.end());
-
-    if (sorted.size() == 1) return sorted.front();
-
-    double pos = p * static_cast<double>(sorted.size() - 1);
-    size_t lo = static_cast<size_t>(std::floor(pos));
-    size_t hi = static_cast<size_t>(std::ceil(pos));
-    double weight = pos - static_cast<double>(lo);
-    return sorted[lo] * (1.0 - weight) + sorted[hi] * weight;
-}
-
-uint64_t fnv1a_hash_floats(const float* data, size_t count, uint64_t seed = 1469598103934665603ULL) {
-    const auto* bytes = reinterpret_cast<const unsigned char*>(data);
-    size_t total = count * sizeof(float);
-    uint64_t h = seed;
-    for (size_t i = 0; i < total; ++i) {
-        h ^= static_cast<uint64_t>(bytes[i]);
-        h *= 1099511628211ULL;
-    }
-    return h;
-}
-
-std::string to_hex(uint64_t value) {
-    std::ostringstream oss;
-    oss << "0x" << std::hex << std::setw(16) << std::setfill('0') << value;
-    return oss.str();
-}
-
-void write_json(std::ostream& out, const Config& cfg, const Stats& s) {
-    out << std::fixed << std::setprecision(6);
-    out << "{\n";
-    out << "  \"config\": {\n";
-    out << "    \"size\": " << cfg.size << ",\n";
-    out << "    \"shots\": " << cfg.shots << ",\n";
-    out << "    \"warmup\": " << cfg.warmup << ",\n";
-    out << "    \"seed\": " << cfg.seed << ",\n";
-    out << "    \"bytes_per_shot\": " << s.bytes_per_shot << "\n";
-    out << "  },\n";
-    out << "  \"summary\": {\n";
-    out << "    \"total_seconds\": " << s.total_seconds << ",\n";
-    out << "    \"mean_ms\": " << s.mean_ms << ",\n";
-    out << "    \"stddev_ms\": " << s.stddev_ms << ",\n";
-    out << "    \"p50_ms\": " << s.p50_ms << ",\n";
-    out << "    \"p95_ms\": " << s.p95_ms << ",\n";
-    out << "    \"p99_ms\": " << s.p99_ms << ",\n";
-    out << "    \"throughput_gb_s\": " << s.throughput_gb_s << "\n";
-    out << "  },\n";
-    out << "  \"determinism\": {\n";
-    out << "    \"checksum_real\": \"" << to_hex(s.checksum_real) << "\",\n";
-    out << "    \"checksum_imag\": \"" << to_hex(s.checksum_imag) << "\"\n";
-    out << "  }\n";
-    out << "}\n";
-}
-
-} // namespace
-
-int main(int argc, char** argv) {
-    for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--help") {
-            print_usage();
-            return 0;
-        }
-    }
-
-    Config cfg;
-    if (!parse_args(argc, argv, cfg)) {
-        return 1;
-    }
-
-    if (!is_power_of_two(cfg.size)) {
-        std::cerr << "--size must be a non-zero power of two.\n";
-        return 1;
-    }
-    if (cfg.shots == 0) {
-        std::cerr << "--shots must be > 0.\n";
-        return 1;
-    }
-
-    const size_t rows = cfg.size;
-    const size_t cols = cfg.size;
-    const size_t total = rows * cols;
-
-    const size_t data_arena_bytes = total * sizeof(float) * 2 + 8192;
-    const size_t scratch_arena_bytes = total * sizeof(float) * 2 + 8192;
-
-    basalt::MemoryArena data_arena(data_arena_bytes);
-    basalt::kernel::ComplexSoA data(data_arena, total);
-    if (!data.real || !data.imag) {
-        std::cerr << "Failed to allocate benchmark buffers.\n";
-        return 1;
-    }
-
-    basalt::MemoryArena scratch(scratch_arena_bytes);
-
+ResultRow run_case(size_t size,
+                   size_t thread_count,
+                   basalt::kernel::SimdMode simd_mode,
+                   NumaMode numa_mode,
+                   basalt::internal::MemoryPolicy memory_policy,
+                   size_t shots,
+                   size_t warmup,
+                   uint32_t seed) {
+    const size_t total = size * size;
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
     std::vector<float> input_real(total);
     std::vector<float> input_imag(total);
-    std::mt19937 rng(cfg.seed);
-    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
     for (size_t i = 0; i < total; ++i) {
         input_real[i] = dist(rng);
         input_imag[i] = dist(rng);
@@ -241,75 +333,217 @@ int main(int argc, char** argv) {
     params.mute_vel_max = 1500.0;
     params.taper_width = 200.0;
 
-    auto run_pipeline_once = [&]() {
-        std::memcpy(data.real, input_real.data(), total * sizeof(float));
-        std::memcpy(data.imag, input_imag.data(), total * sizeof(float));
+    const basalt::kernel::FFT2DConfig fft_config = basalt::internal::resolved_fft2d_config(
+        basalt::kernel::FFT2DConfig{}, size, size
+    );
 
-        scratch.reset();
-        basalt::kernel::fft2d_forward(data.real, data.imag, rows, cols, scratch);
-        basalt::filter::apply_fk_filter(data, rows, cols, params);
-        scratch.reset();
-        basalt::kernel::fft2d_inverse(data.real, data.imag, rows, cols, scratch);
+    const size_t chunk_size = std::max<size_t>(1, std::min<size_t>(shots, thread_count <= 1 ? 1 : thread_count * 2));
+    auto run_pass = [&](size_t shot_count, bool collect_results, ResultRow& row) {
+        basalt::internal::BatchExecutor executor({
+            thread_count,
+            true,
+            numa_mode == NumaMode::Auto,
+            memory_policy,
+            size,
+            size,
+            std::max<size_t>(256, chunk_size * 4),
+            simd_mode
+        });
+
+        std::vector<float> output_real(chunk_size * total);
+        std::vector<float> output_imag(chunk_size * total);
+        std::vector<double> latencies;
+        uint64_t checksum_real = 1469598103934665603ULL;
+        uint64_t checksum_imag = 1099511628211ULL;
+        basalt::internal::BatchExecutionStats last_stats;
+
+        const auto total_start = std::chrono::high_resolution_clock::now();
+        for (size_t begin = 0; begin < shot_count; begin += chunk_size) {
+            const size_t current = std::min(chunk_size, shot_count - begin);
+            std::vector<basalt::internal::BatchJob> jobs;
+            jobs.reserve(current);
+            for (size_t slot = 0; slot < current; ++slot) {
+                jobs.push_back({
+                    input_real.data(),
+                    input_imag.data(),
+                    output_real.data() + slot * total,
+                    output_imag.data() + slot * total,
+                    size,
+                    size,
+                    static_cast<size_t>(-1),
+                    params,
+                    fft_config
+                });
+            }
+
+            std::vector<double> chunk_latencies;
+            const auto stats = executor.run(jobs, collect_results ? &chunk_latencies : nullptr);
+            last_stats = stats;
+            if (collect_results) {
+                latencies.insert(latencies.end(), chunk_latencies.begin(), chunk_latencies.end());
+                for (size_t slot = 0; slot < current; ++slot) {
+                    checksum_real = hash_floats(output_real.data() + slot * total, total, checksum_real);
+                    checksum_imag = hash_floats(output_imag.data() + slot * total, total, checksum_imag);
+                }
+            }
+        }
+        const auto total_end = std::chrono::high_resolution_clock::now();
+
+        if (collect_results) {
+            const std::chrono::duration<double> elapsed = total_end - total_start;
+            row.total_seconds = elapsed.count();
+            row.mean_ms = latencies.empty() ? 0.0
+                : std::accumulate(latencies.begin(), latencies.end(), 0.0) / static_cast<double>(latencies.size());
+            row.p50_ms = percentile_ms(latencies, 0.50);
+            row.p95_ms = percentile_ms(latencies, 0.95);
+            row.p99_ms = percentile_ms(latencies, 0.99);
+            row.throughput_gb_s = (static_cast<double>(total) * sizeof(float) * 2.0 * static_cast<double>(shot_count))
+                                  / row.total_seconds / 1e9;
+            row.checksum_real = checksum_real;
+            row.checksum_imag = checksum_imag;
+            row.numa_nodes = last_stats.thread_pool.node_count;
+            row.memory_policy = last_stats.memory_policy;
+            row.preferred_node_counts = last_stats.preferred_node_counts;
+            row.worker_home_node_counts = last_stats.thread_pool.worker_home_node_counts;
+            row.local_queue_executions_per_node = last_stats.thread_pool.local_queue_executions_per_node;
+            row.remote_steals_from_node = last_stats.thread_pool.remote_steals_from_node;
+        }
+        return last_stats.thread_pool;
     };
 
-    for (size_t i = 0; i < cfg.warmup; ++i) {
-        run_pipeline_once();
+    ResultRow row;
+    row.size = size;
+    row.thread_count = thread_count;
+    row.simd_mode = simd_mode;
+    row.numa_mode = numa_mode;
+    row.memory_policy = memory_policy;
+    row.fft_schedule = fft_config.schedule;
+    row.fft_tile = fft_config.transpose_tile;
+
+    if (warmup > 0) {
+        run_pass(warmup, false, row);
+    }
+    const auto pool_stats = run_pass(shots, true, row);
+    row.numa_nodes = pool_stats.node_count;
+    return row;
+}
+
+void write_csv(std::ostream& out, const std::vector<ResultRow>& rows) {
+    out << "size,threads,simd,numa,memory_policy,fft_schedule,fft_tile,total_seconds,mean_ms,p50_ms,p95_ms,p99_ms,throughput_gb_s,checksum_real,checksum_imag,numa_nodes,preferred_node_counts,worker_home_node_counts,local_queue_executions_per_node,remote_steals_from_node\n";
+    for (const ResultRow& row : rows) {
+        out << row.size << ','
+            << row.thread_count << ','
+            << simd_mode_name(row.simd_mode) << ','
+            << numa_mode_name(row.numa_mode) << ','
+            << memory_policy_name(row.memory_policy) << ','
+            << schedule_name(row.fft_schedule) << ','
+            << row.fft_tile << ','
+            << row.total_seconds << ','
+            << row.mean_ms << ','
+            << row.p50_ms << ','
+            << row.p95_ms << ','
+            << row.p99_ms << ','
+            << row.throughput_gb_s << ','
+            << row.checksum_real << ','
+            << row.checksum_imag << ','
+            << row.numa_nodes << ','
+            << join_counts(row.preferred_node_counts) << ','
+            << join_counts(row.worker_home_node_counts) << ','
+            << join_counts(row.local_queue_executions_per_node) << ','
+            << join_counts(row.remote_steals_from_node) << '\n';
+    }
+}
+
+void write_json(std::ostream& out, const std::vector<ResultRow>& rows) {
+    out << std::fixed << std::setprecision(6);
+    out << "{\n  \"results\": [\n";
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const ResultRow& row = rows[i];
+        out << "    {\n"
+            << "      \"size\": " << row.size << ",\n"
+            << "      \"threads\": " << row.thread_count << ",\n"
+            << "      \"simd\": \"" << simd_mode_name(row.simd_mode) << "\",\n"
+            << "      \"numa\": \"" << numa_mode_name(row.numa_mode) << "\",\n"
+            << "      \"memory_policy\": \"" << memory_policy_name(row.memory_policy) << "\",\n"
+            << "      \"fft_schedule\": \"" << schedule_name(row.fft_schedule) << "\",\n"
+            << "      \"fft_tile\": " << row.fft_tile << ",\n"
+            << "      \"total_seconds\": " << row.total_seconds << ",\n"
+            << "      \"mean_ms\": " << row.mean_ms << ",\n"
+            << "      \"p50_ms\": " << row.p50_ms << ",\n"
+            << "      \"p95_ms\": " << row.p95_ms << ",\n"
+            << "      \"p99_ms\": " << row.p99_ms << ",\n"
+            << "      \"throughput_gb_s\": " << row.throughput_gb_s << ",\n"
+            << "      \"checksum_real\": " << row.checksum_real << ",\n"
+            << "      \"checksum_imag\": " << row.checksum_imag << ",\n"
+            << "      \"numa_nodes\": " << row.numa_nodes << ",\n"
+            << "      \"preferred_node_counts\": ";
+        write_json_counts(out, row.preferred_node_counts);
+        out << ",\n"
+            << "      \"worker_home_node_counts\": ";
+        write_json_counts(out, row.worker_home_node_counts);
+        out << ",\n"
+            << "      \"local_queue_executions_per_node\": ";
+        write_json_counts(out, row.local_queue_executions_per_node);
+        out << ",\n"
+            << "      \"remote_steals_from_node\": ";
+        write_json_counts(out, row.remote_steals_from_node);
+        out << "\n"
+            << "    }" << (i + 1 == rows.size() ? "" : ",") << "\n";
+    }
+    out << "  ]\n}\n";
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    Config cfg;
+    if (!parse_args(argc, argv, cfg)) {
+        return 1;
     }
 
-    std::vector<double> latencies_ms;
-    latencies_ms.reserve(cfg.shots);
-
-    auto total_start = std::chrono::high_resolution_clock::now();
-    for (size_t i = 0; i < cfg.shots; ++i) {
-        auto start = std::chrono::high_resolution_clock::now();
-        run_pipeline_once();
-        auto end = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double, std::milli> elapsed_ms = end - start;
-        latencies_ms.push_back(elapsed_ms.count());
+    std::vector<ResultRow> results;
+    for (size_t size : cfg.sizes) {
+        for (size_t threads : cfg.threads) {
+            for (basalt::kernel::SimdMode simd_mode : cfg.simd_modes) {
+                for (NumaMode numa_mode : cfg.numa_modes) {
+                    for (basalt::internal::MemoryPolicy memory_policy : cfg.memory_policies) {
+                        if (threads == 1 && numa_mode == NumaMode::Auto) {
+                            continue;
+                        }
+                        const ResultRow row = run_case(
+                            size, threads, simd_mode, numa_mode, memory_policy, cfg.shots, cfg.warmup, cfg.seed
+                        );
+                        results.push_back(row);
+                        std::cout << std::fixed << std::setprecision(4)
+                                  << "size=" << row.size
+                                  << " threads=" << row.thread_count
+                                  << " simd=" << simd_mode_name(row.simd_mode)
+                                  << " numa=" << numa_mode_name(row.numa_mode)
+                                  << " policy=" << memory_policy_name(row.memory_policy)
+                                  << " fft=" << schedule_name(row.fft_schedule)
+                                  << "/" << row.fft_tile
+                                  << " mean_ms=" << row.mean_ms
+                                  << " p99_ms=" << row.p99_ms
+                                  << " throughput_gb_s=" << row.throughput_gb_s
+                                  << " local=" << join_counts(row.local_queue_executions_per_node)
+                                  << " remote=" << join_counts(row.remote_steals_from_node)
+                                  << "\n";
+                    }
+                }
+            }
+        }
     }
-    auto total_end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> total_elapsed = total_end - total_start;
 
-    Stats stats;
-    stats.total_seconds = total_elapsed.count();
-    stats.bytes_per_shot = static_cast<double>(total) * sizeof(float) * 2.0;
-    stats.mean_ms = std::accumulate(latencies_ms.begin(), latencies_ms.end(), 0.0) /
-                    static_cast<double>(latencies_ms.size());
-    stats.p50_ms = percentile_ms(latencies_ms, 0.50);
-    stats.p95_ms = percentile_ms(latencies_ms, 0.95);
-    stats.p99_ms = percentile_ms(latencies_ms, 0.99);
-
-    double sq_sum = 0.0;
-    for (double v : latencies_ms) {
-        double d = v - stats.mean_ms;
-        sq_sum += d * d;
+    if (!cfg.csv_out.empty()) {
+        std::ofstream csv(cfg.csv_out, std::ios::trunc);
+        write_csv(csv, results);
+    } else {
+        write_csv(std::cout, results);
     }
-    stats.stddev_ms = std::sqrt(sq_sum / static_cast<double>(latencies_ms.size()));
-    stats.throughput_gb_s =
-        (stats.bytes_per_shot * static_cast<double>(cfg.shots)) / stats.total_seconds / 1e9;
-
-    stats.checksum_real = fnv1a_hash_floats(data.real, total);
-    stats.checksum_imag = fnv1a_hash_floats(data.imag, total, stats.checksum_real);
-
-    std::cout << std::fixed << std::setprecision(4)
-              << "basalt_bench size=" << cfg.size
-              << " shots=" << cfg.shots
-              << " warmup=" << cfg.warmup
-              << " mean_ms=" << stats.mean_ms
-              << " p95_ms=" << stats.p95_ms
-              << " p99_ms=" << stats.p99_ms
-              << " throughput_gb_s=" << stats.throughput_gb_s
-              << "\n";
 
     if (!cfg.json_out.empty()) {
-        std::ofstream json_file(cfg.json_out, std::ios::trunc);
-        if (!json_file) {
-            std::cerr << "Failed to open JSON output path: " << cfg.json_out << "\n";
-            return 1;
-        }
-        write_json(json_file, cfg, stats);
-    } else {
-        write_json(std::cout, cfg, stats);
+        std::ofstream json(cfg.json_out, std::ios::trunc);
+        write_json(json, results);
     }
 
     return 0;
