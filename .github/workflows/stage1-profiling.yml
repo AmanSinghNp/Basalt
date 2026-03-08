@@ -15,6 +15,29 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y cmake ninja-build build-essential linux-tools-common linux-tools-generic
+        sudo apt-get install -y "linux-tools-$(uname -r)" || true
+
+    - name: Resolve perf Binary
+      run: |
+        PERF_BIN=""
+        if command -v perf >/dev/null 2>&1; then
+          PERF_BIN="$(command -v perf)"
+        fi
+        if [ -z "$PERF_BIN" ] && [ -x "/usr/lib/linux-tools/$(uname -r)/perf" ]; then
+          PERF_BIN="/usr/lib/linux-tools/$(uname -r)/perf"
+        fi
+        if [ -z "$PERF_BIN" ] && [ -x "/usr/lib/linux-tools-$(uname -r)/perf" ]; then
+          PERF_BIN="/usr/lib/linux-tools-$(uname -r)/perf"
+        fi
+        if [ -z "$PERF_BIN" ]; then
+          PERF_BIN="$(ls /usr/lib/linux-tools*/perf 2>/dev/null | head -n 1 || true)"
+        fi
+        echo "PERF_BIN=$PERF_BIN" >> "$GITHUB_ENV"
+        if [ -n "$PERF_BIN" ] && [ -x "$PERF_BIN" ]; then
+          "$PERF_BIN" --version || true
+        else
+          echo "perf binary could not be resolved; fallback behavior will be used."
+        fi
 
     - name: Configure CMake
       run: |

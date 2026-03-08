@@ -226,12 +226,12 @@ unsupported = env.get("UNSUPPORTED_EVENTS", "")
 unsupported_list = [x for x in unsupported.split(";") if x]
 
 event_groups = {
-    "IPC": env.get("GROUP_IPC", ""),
-    "Cache": env.get("GROUP_CACHE", ""),
-    "DRAM": env.get("GROUP_DRAM", ""),
-    "SIMD": env.get("GROUP_SIMD", ""),
-    "Branch": env.get("GROUP_BRANCH", ""),
-    "Faults": env.get("GROUP_FAULTS", ""),
+    "IPC": (env.get("GROUP_IPC", ""), env.get("GROUP_IPC_SOURCE", "empty")),
+    "Cache": (env.get("GROUP_CACHE", ""), env.get("GROUP_CACHE_SOURCE", "empty")),
+    "DRAM": (env.get("GROUP_DRAM", ""), env.get("GROUP_DRAM_SOURCE", "empty")),
+    "SIMD": (env.get("GROUP_SIMD", ""), env.get("GROUP_SIMD_SOURCE", "empty")),
+    "Branch": (env.get("GROUP_BRANCH", ""), env.get("GROUP_BRANCH_SOURCE", "empty")),
+    "Faults": (env.get("GROUP_FAULTS", ""), env.get("GROUP_FAULTS_SOURCE", "empty")),
 }
 
 def fmt_value(v, pct=False):
@@ -250,7 +250,9 @@ with open(dossier_path, "w", encoding="utf-8") as f:
     f.write("# Basalt Stage 1 Profiling Dossier\n\n")
     f.write(f"- Generated (UTC): {datetime.now(timezone.utc).isoformat()}\n")
     f.write(f"- Run directory: `{run_dir}`\n")
+    f.write(f"- perf binary: `{env.get('PERF_BIN', '') or 'N/A'}`\n")
     f.write(f"- perf available: `{env.get('PERF_AVAILABLE', '0')}`\n\n")
+    f.write(f"- perf list available: `{env.get('PERF_LIST_AVAILABLE', '0')}`\n\n")
 
     f.write("## Workload Configuration\n\n")
     f.write(f"- size: `{p_cfg.get('size', 'N/A')}`\n")
@@ -269,10 +271,10 @@ with open(dossier_path, "w", encoding="utf-8") as f:
     f.write("\n")
 
     f.write("## Selected Counter Groups\n\n")
-    f.write("| Group | Selected Events |\n")
-    f.write("|---|---|\n")
-    for name, events in event_groups.items():
-        f.write(f"| {name} | `{events if events else 'N/A'}` |\n")
+    f.write("| Group | Source | Selected Events |\n")
+    f.write("|---|---|---|\n")
+    for name, (events, source) in event_groups.items():
+        f.write(f"| {name} | `{source}` | `{events if events else 'N/A'}` |\n")
     f.write("\n")
 
     f.write("## Threshold Evaluation\n\n")

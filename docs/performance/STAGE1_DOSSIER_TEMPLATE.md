@@ -9,7 +9,9 @@ Use this template for every Stage 1 baseline collection run.
 - Runner / Host:
 - CPU model:
 - Kernel version:
+- perf binary path:
 - perf available:
+- perf list available:
 
 ## Workload Configuration
 - Grid size:
@@ -29,14 +31,14 @@ Use this template for every Stage 1 baseline collection run.
 | Cachegrind (optional) |  |  |
 
 ## Selected Event Groups
-| Group | Selected Events |
-|---|---|
-| IPC |  |
-| Cache |  |
-| DRAM |  |
-| SIMD |  |
-| Branch |  |
-| Faults |  |
+| Group | Source | Selected Events |
+|---|---|---|
+| IPC | canonical/fallback/empty |  |
+| Cache | canonical/fallback/empty |  |
+| DRAM | canonical/fallback/empty |  |
+| SIMD | canonical/fallback/empty |  |
+| Branch | canonical/fallback/empty |  |
+| Faults | canonical/fallback/empty |  |
 
 ## Benchmark Summary
 | Metric | Primary | Repeat |

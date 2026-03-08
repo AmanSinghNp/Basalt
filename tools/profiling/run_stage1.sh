@@ -56,6 +56,18 @@ source "$RUN_DIR/resolved_events.env"
 
 echo "Running Stage 1 profiling in: $RUN_DIR"
 
+{
+  echo "PERF_BIN=${PERF_BIN:-}"
+  echo "PERF_AVAILABLE=${PERF_AVAILABLE:-0}"
+  echo "PERF_LIST_AVAILABLE=${PERF_LIST_AVAILABLE:-0}"
+  echo "GROUP_IPC_SOURCE=${GROUP_IPC_SOURCE:-empty}"
+  echo "GROUP_CACHE_SOURCE=${GROUP_CACHE_SOURCE:-empty}"
+  echo "GROUP_DRAM_SOURCE=${GROUP_DRAM_SOURCE:-empty}"
+  echo "GROUP_SIMD_SOURCE=${GROUP_SIMD_SOURCE:-empty}"
+  echo "GROUP_BRANCH_SOURCE=${GROUP_BRANCH_SOURCE:-empty}"
+  echo "GROUP_FAULTS_SOURCE=${GROUP_FAULTS_SOURCE:-empty}"
+} > "$RUN_DIR/profiling_capabilities.txt"
+
 run_bench() {
   local label="$1"
   "$BENCH_BIN" \
@@ -74,6 +86,7 @@ run_bench "benchmark_repeat"
 run_perf_group() {
   local group="$1"
   local events="$2"
+  local source="$3"
   local status_file="$RAW_DIR/perf_${group}.status"
   local csv_file="$RAW_DIR/perf_${group}.csv"
   local stdout_file="$RAW_DIR/perf_${group}.stdout.log"
@@ -84,12 +97,12 @@ run_perf_group() {
     return 0
   fi
   if [[ -z "$events" ]]; then
-    echo "skipped: no supported counters resolved" > "$status_file"
+    echo "skipped: no counters resolved (source=${source})" > "$status_file"
     return 0
   fi
 
   set +e
-  perf stat -x, -r "$PERF_REPEATS" -e "$events" -- \
+  "$PERF_BIN" stat -x, -r "$PERF_REPEATS" -e "$events" -- \
     "$BENCH_BIN" \
       --size "$SIZE" \
       --shots "$SHOTS" \
@@ -102,23 +115,24 @@ run_perf_group() {
   set -e
 
   if [[ $rc -ne 0 ]]; then
-    echo "failed: perf exited with code $rc" > "$status_file"
+    echo "failed: perf exited with code $rc (source=${source})" > "$status_file"
     {
       echo "perf command failed for group: $group"
       echo "events: $events"
+      echo "source: $source"
       echo "exit_code: $rc"
     } > "$error_file"
   else
-    echo "ok" > "$status_file"
+    echo "ok (source=${source})" > "$status_file"
   fi
 }
 
-run_perf_group "ipc" "$GROUP_IPC"
-run_perf_group "cache" "$GROUP_CACHE"
-run_perf_group "dram" "$GROUP_DRAM"
-run_perf_group "simd" "$GROUP_SIMD"
-run_perf_group "branch" "$GROUP_BRANCH"
-run_perf_group "faults" "$GROUP_FAULTS"
+run_perf_group "ipc" "$GROUP_IPC" "${GROUP_IPC_SOURCE:-empty}"
+run_perf_group "cache" "$GROUP_CACHE" "${GROUP_CACHE_SOURCE:-empty}"
+run_perf_group "dram" "$GROUP_DRAM" "${GROUP_DRAM_SOURCE:-empty}"
+run_perf_group "simd" "$GROUP_SIMD" "${GROUP_SIMD_SOURCE:-empty}"
+run_perf_group "branch" "$GROUP_BRANCH" "${GROUP_BRANCH_SOURCE:-empty}"
+run_perf_group "faults" "$GROUP_FAULTS" "${GROUP_FAULTS_SOURCE:-empty}"
 
 bash "$COLLECT_SCRIPT" "$RUN_DIR"
 
