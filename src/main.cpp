@@ -19,7 +19,7 @@ void print_cpu_capabilities() {
     #endif
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char*[]) {
     // Critical: set FTZ/DAZ before any floating-point computation
     basalt::kernel::set_flush_to_zero();
 
@@ -36,7 +36,7 @@ int main(int argc, char* argv[]) {
 
     if (argc < 2) {
         std::cout << "\nUsage: ./basalt <input.segy>\n";
-        std::cout << "NOTE: This CLI is currently a system check stub. Use Basalt as a library (see README).\n";
+        std::cout << "NOTE: This executable is currently a diagnostics stub. Use the basalt_core library or benchmark tools (see README).\n";
         return 1;
     }
 

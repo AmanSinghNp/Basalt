@@ -7,11 +7,16 @@ namespace basalt {
 
 class MemoryArena {
 public:
+    using DeallocatorFn = void(*)(void*);
+
     explicit MemoryArena(size_t size);
+    MemoryArena(void* memory_block, size_t size, DeallocatorFn deallocator);
     ~MemoryArena();
 
     MemoryArena(const MemoryArena&) = delete;
     MemoryArena& operator=(const MemoryArena&) = delete;
+    MemoryArena(MemoryArena&& other) noexcept;
+    MemoryArena& operator=(MemoryArena&& other) noexcept;
 
     [[nodiscard]] void* allocate(size_t size, size_t alignment = 64);
     void reset();
@@ -34,6 +39,7 @@ private:
     void* m_memory_block = nullptr;
     size_t m_total_size = 0;
     size_t m_offset = 0;
+    DeallocatorFn m_deallocator = nullptr;
 };
 
 } // namespace basalt

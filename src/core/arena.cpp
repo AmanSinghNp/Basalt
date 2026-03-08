@@ -32,15 +32,60 @@ namespace {
     }
 }
 
-MemoryArena::MemoryArena(size_t size) : m_total_size(size), m_offset(0) {
+MemoryArena::MemoryArena(size_t size)
+    : m_total_size(size), m_offset(0), m_deallocator(&aligned_deallocate) {
     m_memory_block = aligned_allocate(size);
     if (!m_memory_block) {
         throw std::bad_alloc();
     }
 }
 
+MemoryArena::MemoryArena(void* memory_block, size_t size, DeallocatorFn deallocator)
+    : m_memory_block(memory_block),
+      m_total_size(size),
+      m_offset(0),
+      m_deallocator(deallocator) {
+    if (!m_memory_block) {
+        throw std::bad_alloc();
+    }
+}
+
 MemoryArena::~MemoryArena() {
-    aligned_deallocate(m_memory_block);
+    if (m_deallocator && m_memory_block) {
+        m_deallocator(m_memory_block);
+    }
+}
+
+MemoryArena::MemoryArena(MemoryArena&& other) noexcept
+    : m_memory_block(other.m_memory_block),
+      m_total_size(other.m_total_size),
+      m_offset(other.m_offset),
+      m_deallocator(other.m_deallocator) {
+    other.m_memory_block = nullptr;
+    other.m_total_size = 0;
+    other.m_offset = 0;
+    other.m_deallocator = nullptr;
+}
+
+MemoryArena& MemoryArena::operator=(MemoryArena&& other) noexcept {
+    if (this == &other) {
+        return *this;
+    }
+
+    if (m_deallocator && m_memory_block) {
+        m_deallocator(m_memory_block);
+    }
+
+    m_memory_block = other.m_memory_block;
+    m_total_size = other.m_total_size;
+    m_offset = other.m_offset;
+    m_deallocator = other.m_deallocator;
+
+    other.m_memory_block = nullptr;
+    other.m_total_size = 0;
+    other.m_offset = 0;
+    other.m_deallocator = nullptr;
+    return *this;
 }
 
 void* MemoryArena::allocate(size_t size, size_t alignment) {
