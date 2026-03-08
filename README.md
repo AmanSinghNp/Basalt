@@ -1,45 +1,42 @@
 # Basalt
-**High-performance seismic f-k muting library for x86_64**
+
+High-performance seismic f-k muting library for x86_64 systems.
 
 ![Build Status](https://github.com/AmanSinghNp/Basalt/actions/workflows/build.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
-Basalt is a C++ library for seismic f-k filtering with an architecture-aware implementation: tiled FFT scheduling, SIMD-dispatched filtering, aligned arena allocation, and an internal throughput runtime for multi-shot benchmarking.
+## Overview
 
-The primary product is the `basalt_core` library. The `basalt` executable is a small diagnostics stub, and the benchmark binaries are the main operational entrypoints for performance work.
+Basalt is a C++ library for seismic frequency-wavenumber filtering with an implementation designed around cache efficiency, aligned memory access, SIMD execution, and reproducible benchmarking.
 
-## Current Status
-- Cache-aware 2D FFT scheduling is implemented with locked auto-tuning defaults.
-- The f-k filter supports `auto`, `avx2`, and `avx512` SIMD selection.
-- The AVX-512 path currently applies only to the f-k filter, not the FFT.
-- Internal batch execution, thread-pool scheduling, and NUMA-aware worker placement exist for throughput benchmarking.
-- PMU-backed certification still requires representative self-hosted Linux hardware.
+The project provides:
 
-Detailed benchmark/reporting guidance lives in [PERFORMANCE.md](./PERFORMANCE.md).
+- a core library, `basalt_core`
+- benchmark tools for FFT, filter, and end-to-end pipeline evaluation
+- installation and CMake package support for downstream consumers
+- correctness and regression coverage across FFT, transpose, filtering, runtime, and I/O components
 
-## Architecture
-Basalt’s current design is split into a few focused layers:
+## Features
 
-1. **I/O and parsing**: file mapping and SEG-Y parsing.
-2. **Memory**: 64-byte aligned arena allocation with reusable scratch storage.
-3. **Kernel layer**: FFT, tiled transpose, and SIMD-aware filtering.
-4. **Internal runtime**: task queue, thread pool, NUMA topology detection, and batch execution for benchmark sweeps.
-5. **Benchmark/reporting tools**: latency/throughput sweeps and schedule comparison.
-
-`include/basalt/internal` contains implementation internals and is not part of the supported public API.
+- 64-byte aligned arena allocator for predictable scratch memory usage
+- 1D and 2D FFT kernels with tiled transpose support
+- automatic 2D FFT schedule selection with tuned defaults
+- SIMD-dispatched f-k filtering with AVX2 and optional AVX-512 execution paths
+- internal batch execution runtime for threaded and NUMA-aware benchmark sweeps
+- CSV and JSON benchmark output for automation and reporting
 
 ## Requirements
-- OS: Windows (MSVC), Linux (GCC/Clang), macOS on AVX2-capable x86_64 environments
-- Compiler: C++17
-- Build system: CMake 3.15+
-- Hardware baseline: x86_64 CPU with AVX2 and FMA
 
-### AVX-512 support
-- GCC/Clang builds can use the optimized AVX-512 f-k filter path when the CPU supports the required feature set.
-- MSVC and non-supporting builds safely fall back to AVX2 behavior when `SimdMode::AVX512` is requested.
-- FFT kernels remain AVX2-only in this pass.
+- C++17
+- CMake 3.15 or newer
+- x86_64 CPU with AVX2 and FMA support
+- Supported toolchains:
+  - Windows: MSVC or MinGW
+  - Linux: GCC or Clang
+  - macOS: Clang on AVX2-capable x86_64 environments
 
 ## Build
+
 ```bash
 mkdir build
 cd build
@@ -48,35 +45,15 @@ cmake --build . --config Release
 ```
 
 ## Install
-Basalt installs the `basalt_core` library, public headers, and CMake package metadata for downstream consumers.
+
+Basalt installs the `basalt_core` library, public headers, and CMake package metadata.
 
 ```bash
 cmake --install . --config Release --prefix <install-prefix>
 ```
 
-## Tests
-```bash
-ctest --output-on-failure
-```
+## Usage
 
-## Benchmarks
-Available benchmark binaries:
-- `basalt_bench`: end-to-end sweep across size, thread count, SIMD mode, NUMA mode, and memory policy
-- `fft2d_schedule_benchmark`: compare FFT schedule/tile choices
-- `fft_benchmark`: focused 1D FFT checks
-- `fk_benchmark`: focused filter benchmark
-
-Example:
-
-```bash
-./basalt_bench --sizes 256,512,1024 --threads 1,2,4 --simd auto,avx2,avx512 --numa off,auto --memory-policy bind-worker-buffers,bind-inputs-if-possible --csv-out benchmark.csv --json-out benchmark.json
-```
-
-`basalt_bench` emits:
-- CSV with flat per-row counters encoded as `|`-delimited lists
-- JSON with the same counters emitted as numeric arrays
-
-## Library Usage
 ```cpp
 #include <basalt/arena.hpp>
 #include <basalt/filter/fk_filter.hpp>
@@ -99,18 +76,53 @@ basalt::filter::FKParams params;
 params.mute_vel_min = -1500.0;
 params.mute_vel_max = 1500.0;
 params.taper_width = 100.0;
+
 basalt::filter::apply_fk_filter(data, rows, cols, params);
 
 scratch.reset();
 basalt::kernel::fft2d_inverse(data.real, data.imag, rows, cols, scratch, fft_config);
 ```
 
-## CLI
-`basalt` is currently a diagnostics/demo executable. It reports CPU state and build assumptions; it is not yet a production processing CLI.
+## Testing
+
+```bash
+ctest --output-on-failure
+```
+
+## Benchmark Tools
+
+Basalt includes several benchmark executables:
+
+- `basalt_bench` for end-to-end matrix sweeps across size, threads, SIMD mode, NUMA mode, and memory policy
+- `fft2d_schedule_benchmark` for comparing 2D FFT scheduling strategies
+- `fft_benchmark` for focused FFT benchmarking
+- `fk_benchmark` for focused filter benchmarking
+
+Example:
+
+```bash
+./basalt_bench --sizes 256,512,1024 --threads 1,2,4 --simd auto,avx2,avx512 --numa off,auto --memory-policy bind-worker-buffers,bind-inputs-if-possible --csv-out benchmark.csv --json-out benchmark.json
+```
+
+Benchmark output:
+
+- CSV uses flat `|`-delimited counter fields for locality metrics
+- JSON emits those same metrics as numeric arrays
+
+## Project Layout
+
+- `include/basalt/` public headers
+- `src/` library implementation
+- `benchmarks/` performance tools
+- `tests/` integrity and integration coverage
+- `tools/` profiling and workflow helpers
+- `PERFORMANCE.md` benchmark methodology and reporting notes
 
 ## Documentation
-- [PERFORMANCE.md](./PERFORMANCE.md): benchmark methodology, reporting fields, and current optimization status
-- `optimisation*.md`: engineering planning/reference material
+
+- [PERFORMANCE.md](./PERFORMANCE.md)
+- [CHANGELOG.md](./CHANGELOG.md)
 
 ## License
-MIT License
+
+MIT License. See [LICENSE](./LICENSE).
