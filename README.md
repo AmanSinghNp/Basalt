@@ -4,6 +4,8 @@ High-performance seismic f-k muting library for x86_64 systems.
 
 ![Build Status](https://github.com/AmanSinghNp/Basalt/actions/workflows/build.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
+[![DOI](https://zenodo.org/badge/1147137556.svg)](https://doi.org/10.5281/zenodo.18907551)
+
 
 ## Overview
 
