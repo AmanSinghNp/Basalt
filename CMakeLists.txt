@@ -70,11 +70,17 @@ add_library(basalt_core
     src/internal/numa_memory.cpp
     src/internal/numa_topology.cpp
     src/internal/thread_pool.cpp
+    src/fk/fk_pipeline.cpp
+    src/io/segy_file.cpp
 )
 target_include_directories(basalt_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+)
+# Vendored pocketfft (BSD-3), header-only. SYSTEM so project warnings stay quiet.
+target_include_directories(basalt_core SYSTEM PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/pocketfft>
 )
 target_compile_options(basalt_core PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
 target_link_libraries(basalt_core PUBLIC Threads::Threads)
@@ -152,6 +158,9 @@ add_executable(basalt_tests
     tests/integrity/runtime_test.cpp
     tests/integration/benchmark_contract_test.cpp
     tests/integration/pipeline_test.cpp
+    tests/integrity/fk_pipeline_test.cpp
+    tests/integrity/segy_file_test.cpp
+    tests/integration/cli_test.cpp
 )
 target_link_libraries(basalt_tests PRIVATE basalt_core GTest::gtest_main)
 target_compile_options(basalt_tests PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
@@ -165,6 +174,11 @@ if(CMAKE_PROJECT_NAME STREQUAL "Basalt")
     target_link_libraries(basalt_bench PRIVATE basalt_core)
     target_compile_options(basalt_bench PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
     target_compile_definitions(basalt_tests PRIVATE BASALT_BENCH_PATH="$<TARGET_FILE:basalt_bench>")
+    target_compile_definitions(basalt_tests PRIVATE BASALT_CLI_PATH="$<TARGET_FILE:basalt>")
+
+    add_executable(fk_gather_bench benchmarks/fk_gather_bench.cpp)
+    target_link_libraries(fk_gather_bench PRIVATE basalt_core)
+    target_compile_options(fk_gather_bench PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
 
     add_executable(fft_benchmark benchmarks/fft_benchmark.cpp)
     target_link_libraries(fft_benchmark PRIVATE basalt_core)
