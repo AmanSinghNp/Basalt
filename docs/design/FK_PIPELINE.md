@@ -78,7 +78,12 @@ struct FKMuteParams {
 };
 
 // Throws std::invalid_argument on invalid params (dt <= 0, dx <= 0, v_min >= v_max,
-// taper outside [0,1), pad_factor < 1, ntraces == 0, nsamples == 0, null pointers).
+// taper outside [0,1), pad_factor < 1, ntraces == 0, nsamples == 0, null pointers), on a
+// padded grid whose element count overflows size_t, and when the frequency step
+// 1 / (ns_pad * dt) or the wavenumber step 1 / (ntr_pad * dx) is not a positive finite value
+// (dt or dx so large that the product overflows, or so small that the reciprocal does).
+// Such an input is rejected rather than filtered, because every bin would otherwise collapse
+// onto f = 0 or k = 0 (or become NaN).
 // `in` and `out` may alias (in-place is allowed).
 void fk_filter_gather(const float* in, float* out,
                       size_t ntraces, size_t nsamples,
@@ -100,9 +105,13 @@ Steps:
 1. Validate params.
 2. Padded sizes: `ntr_pad = pocketfft good_size_cmplx(ceil(ntraces * pad_factor))`,
    `ns_pad = good_size_real(ceil(nsamples * pad_factor))`. Any size works (no power-of-2 requirement).
-3. Copy input into a zeroed `ntr_pad x ns_pad` buffer (top-left), applying the edge cosine
+3. Copy input into the top-left of an `ntr_pad x ns_pad` buffer, applying the edge cosine
    tapers (Hann half-window: weight for the i-th trace from the edge, i = 0..N-1, is
-   `0.5 - 0.5*cos(pi*(i + 1)/(N + 1))`). Tapers are not undone afterwards.
+   `0.5 - 0.5*cos(pi*(i + 1)/(N + 1))`). Every data sample is written as
+   `in * wt[trace] * ws[sample]`; the padding is zeroed, namely columns `ntraces .. ns_pad-1`
+   of each data row and rows `ntraces .. ntr_pad-1`. Every element is therefore written before
+   it is read, and the buffer need not be zeroed beforehand. When the start and end tapers of a
+   line overlap (`len < 2N`), their weights multiply. Tapers are not undone afterwards.
 4. Real-to-complex 2D FFT with pocketfft (`r2c` over axes {0, 1}, time axis last), forward.
 5. Multiply each complex bin by `fk_mute_weight(f_j, k_i, params)`. Weights must be computed
    once per call per (i, j) or cached; no per-bin trig in a hot loop beyond that.
