@@ -33,8 +33,8 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 - Project version is 0.2.0 (CMake project version, `basalt --version`, Python `basalt.__version__`)
 - README rewritten around the pipeline, the `basalt` CLI, the Python package and the C++ package; the legacy
   power-of-two API is documented in its own section
-- Legacy `apply_fk_filter` now uses smooth, two-sided band edges and no longer adds an epsilon to the velocity
-  divisor. Its output differs from 0.1.0; the changes are listed under Fixed
+- Legacy `apply_fk_filter` output differs from 0.1.0. The causes are the signed band and the DC and `k = 0`
+  handling listed under Fixed, which change which bins are muted and how the velocity divisor is computed
 
 ### Fixed
 

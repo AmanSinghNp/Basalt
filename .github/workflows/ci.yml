@@ -16,8 +16,12 @@ jobs:
         os: [ubuntu-latest]
         build_type: [Debug, Release]
         include:
+          # -fno-sanitize-recover=undefined makes a UBSan finding abort the test run, so the job fails.
+          # Without it UBSan prints the report and continues, and the job still passes.
+          # Note: BASALT_COMMON_FLAGS in CMakeLists.txt appends -O3 after CMAKE_CXX_FLAGS, so the -O0
+          # below does not reach project targets and this configuration is optimised.
           - build_type: Debug
-            cxx_flags: "-fsanitize=address,undefined -g -O0"
+            cxx_flags: "-fsanitize=address,undefined -fno-sanitize-recover=undefined -g -O0"
             linker_flags: "-fsanitize=address,undefined"
           - build_type: Release
             cxx_flags: "-O3 -mavx2 -mfma"

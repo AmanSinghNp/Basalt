@@ -14,6 +14,7 @@ The f-k pipeline accepts gathers of any size, not only powers of two. It uses a 
 
 ## Requirements
 
+- C++17 compiler
 - x86-64 CPU with AVX2 and FMA support
 - CMake 3.15 or newer (3.18 or newer for `BASALT_BUILD_PYTHON`)
 - Supported toolchains:
@@ -76,7 +77,9 @@ cmake --build build -j
 ```
 
 Or install the package into the active environment with `pip install .`, which builds the
-extension with scikit-build-core.
+extension with scikit-build-core. The build configures the whole project, including the tests and
+benchmarks, and fetches GoogleTest from GitHub while it configures. `pip install .` therefore needs
+network access to github.com, even when you only want the Python package.
 
 This example builds a synthetic gather with two linear events, filters it, and writes and reads
 a SEG-Y file. Save it as `example.py`:
@@ -206,18 +209,23 @@ returns the weight of any single f-k bin for the same parameters.
 
 Each f-k sample has apparent velocity `v = -f / k`, so an event whose arrival time rises with trace
 position (`t = t0 + x / V` with `V > 0`) has `v = +V`, and one whose time falls has `v = -V`.
-`FKMode::Reject` mutes the samples whose velocity lies in `[v_min, v_max]` and keeps the rest, and
-`FKMode::Pass` keeps only that band, with raised-cosine edges of half-width `0.5 * taper * |edge|`.
+`FKMode::Reject` mutes the samples whose velocity lies between `v_min` and `v_max` and keeps the rest,
+and `FKMode::Pass` keeps only that band, with raised-cosine edges of half-width `0.5 * taper * |edge|`.
+With `taper = 0` the edges are hard and the boundary convention is not stated in the contract (see
+[docs/design/FK_PIPELINE.md](docs/design/FK_PIPELINE.md), section 3).
 The full definition, including the `k = 0` and DC cases, is in
 [docs/design/FK_PIPELINE.md](docs/design/FK_PIPELINE.md), sections 2 and 3.
 
 ## Performance
 
 In the measurements in [PERFORMANCE.md](PERFORMANCE.md), the f-k pipeline is faster than numpy's
-2D FFT round trip at every size and thread count tested. Single-threaded, it is roughly on par
-with `scipy.fft`, sometimes a little ahead and sometimes a little behind. With four threads
-`scipy.fft` was ahead in those runs. The numbers come from one 4-vCPU cloud VM and are indicative,
-not certified. Methodology, hardware and caveats are in [PERFORMANCE.md](PERFORMANCE.md).
+2D FFT round trip at every gather size and every Basalt thread count tested. numpy runs single-threaded
+in these comparisons. Single-threaded, Basalt is roughly on par with `scipy.fft` but slightly behind
+it in most runs: 17 percent slower at 240x1001 and 16 percent slower at 2048x2048 in the Python
+harness, both outside run-to-run spread, and behind in 15 of 18 invocations at 1024x1024. At
+1001x1500 the two are tied. With four threads `scipy.fft` was ahead in those runs. The numbers come
+from one 4-vCPU cloud VM and are indicative, not certified. Methodology, hardware and caveats are in
+[PERFORMANCE.md](PERFORMANCE.md).
 
 ## Legacy power-of-two API
 
@@ -287,8 +295,9 @@ With `-DBASALT_BUILD_PYTHON=ON`, `ctest` also runs the Python tests, which need 
 In an AddressSanitizer build, run `basalt_tests` directly with `ASAN_OPTIONS=allocator_may_return_null=1`
 set. Without it, `CliRuntime.OversizedPadReportsOutOfMemory` fails, because the oversized allocation
 aborts instead of raising `std::bad_alloc`. `ctest` sets this variable itself.
-Continuous integration builds Release and a sanitizer (AddressSanitizer and UBSan, Debug) configuration
-on Linux, and has a separate job for the Python bindings. See
+Continuous integration builds Release and a sanitizer configuration on Linux (AddressSanitizer and UBSan,
+with `CMAKE_BUILD_TYPE=Debug`; UBSan findings fail the job). The project's `-O3` flag still applies to
+that build, so it is optimised, not unoptimised. CI also has a separate job for the Python bindings. See
 [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 ## Benchmark tools
