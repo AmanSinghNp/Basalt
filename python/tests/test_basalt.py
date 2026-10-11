@@ -293,6 +293,16 @@ def test_non_integer_counts_raise_value_error():
     assert out.shape == gather.shape
 
 
+def test_counts_up_to_2_pow_64_minus_1_are_accepted():
+    gather = np.ones((4, 8), dtype=np.float32)
+    # Edge tapers wider than the gather are clamped to its length, so huge counts are valid.
+    for kwargs in (dict(edge_taper_traces=2 ** 63), dict(edge_taper_samples=2 ** 64 - 1)):
+        out = basalt.fk_filter(gather, 0.004, 25.0, **kwargs)
+        assert out.shape == gather.shape and np.all(np.isfinite(out)), kwargs
+    _raises(ValueError, basalt.fk_filter, gather, 0.004, 25.0, edge_taper_samples=2 ** 64)
+    _raises(ValueError, basalt.fk_filter, gather, 0.004, 25.0, edge_taper_traces=-2 ** 63)
+
+
 def test_unconvertible_gather_raises_value_error():
     _raises(ValueError, basalt.fk_filter, [[1.0, 2.0], [3.0]], 0.004, 25.0)   # ragged list
     _raises(ValueError, basalt.fk_filter, "abcd", 0.004, 25.0)                # string

@@ -55,9 +55,9 @@ FKMode parse_mode(const py::handle mode) {
     throw std::invalid_argument("mode must be 'reject' or 'pass', got '" + text + "'");
 }
 
-// Converts an integer argument (threads, edge tapers) to a non-negative size. Any object with
+// Converts an integer argument (threads, edge tapers) to a size in 0 .. 2**64-1. Any object with
 // __index__ is accepted (Python int, numpy integers); bool, float and str are rejected, and so
-// are negative values and values that do not fit in 64 bits. All of these are ValueError.
+// are negative values and values of 2**64 or more. All of these are ValueError.
 size_t to_count(const py::handle value, const char* name) {
     if (py::isinstance<py::bool_>(value) || !PyIndex_Check(value.ptr())) {
         throw std::invalid_argument(std::string(name) + " must be an integer");
@@ -66,14 +66,12 @@ size_t to_count(const py::handle value, const char* name) {
     if (!index) {
         throw py::error_already_set();
     }
-    int overflow = 0;
-    const long long count = PyLong_AsLongLongAndOverflow(index.ptr(), &overflow);
-    if (count == -1 && PyErr_Occurred()) {
-        throw py::error_already_set();
-    }
-    if (overflow != 0 || count < 0) {
-        throw std::invalid_argument(std::string(name) +
-                                    " must be an integer >= 0 that fits in 64 bits");
+    // PyLong_AsUnsignedLongLong raises OverflowError for negative values and values >= 2**64.
+    // The error is cleared and reported as ValueError; ULLONG_MAX itself is a valid count.
+    const unsigned long long count = PyLong_AsUnsignedLongLong(index.ptr());
+    if (count == static_cast<unsigned long long>(-1) && PyErr_Occurred()) {
+        PyErr_Clear();
+        throw std::invalid_argument(std::string(name) + " must be an integer in 0..2**64-1");
     }
     return static_cast<size_t>(count);
 }

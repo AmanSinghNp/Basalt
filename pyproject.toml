@@ -7,11 +7,15 @@ name = "basalt-fk"
 version = "0.2.0"
 description = "Seismic f-k velocity-band muting with SEG-Y I/O (pybind11 bindings for basalt)"
 readme = "README.md"
-requires-python = ">=3.13"   # the only interpreter the wheel is built and tested for
+requires-python = ">=3.9"
 dependencies = ["numpy"]
 classifiers = [
     "Programming Language :: C++",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering",
 ]
