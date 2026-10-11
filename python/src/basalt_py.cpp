@@ -245,7 +245,11 @@ PYBIND11_MODULE(_basalt, m) {
     m.doc() = "basalt f-k mute filter and SEG-Y I/O (C++ core). Use the 'basalt' package.";
 
     m.def("fk_filter", &basalt::filter_gather,
-          "Filter a 2D gather (ntraces, nsamples) in f-k space and return a new float32 array.",
+          "Filter a 2D gather (ntraces, nsamples) in f-k space and return a new float32 array.\n\n"
+          "data is converted to C-contiguous float32. Complex data keeps only the real part "
+          "(numpy emits ComplexWarning). NaN or inf samples, and output that overflows float32 "
+          "(for example data near 1e36), raise ValueError. Float parameters accept any real "
+          "number (bool counts as 0 or 1); a non-numeric value raises TypeError.",
           py::arg("data"), py::arg("dt"), py::arg("dx"),
           py::arg("v_min") = -1500.0, py::arg("v_max") = 1500.0, py::arg("taper") = 0.1,
           py::arg("mode") = "reject", py::arg("pad_factor") = 1.5,
