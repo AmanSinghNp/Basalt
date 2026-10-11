@@ -53,7 +53,13 @@ void apply_fk_filter_avx2(basalt::kernel::ComplexSoA& data,
     const __m256 v_min = _mm256_set1_ps(static_cast<float>(params.mute_vel_min));
     const __m256 v_max = _mm256_set1_ps(static_cast<float>(params.mute_vel_max));
     const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 half = _mm256_set1_ps(0.5f);
     const __m256 zero = _mm256_setzero_ps();
+    const __m256 all_lanes = _mm256_castsi256_ps(_mm256_set1_epi32(-1));
+    const __m256i lane_index = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
+    // Even sizes have a Nyquist row (f = +f_N) and a Nyquist column (k = +k_N).
+    const bool has_nyquist_col = (cols % 2) == 0;
+    const size_t nyquist_col = cols / 2;
 
     for (size_t tile_row = 0; tile_row < rows; tile_row += plan.tile_rows) {
         const size_t row_end = std::min(tile_row + plan.tile_rows, rows);
@@ -63,6 +69,7 @@ void apply_fk_filter_avx2(basalt::kernel::ComplexSoA& data,
 
             for (size_t i = tile_row; i < row_end; ++i) {
                 const __m256 vf = _mm256_set1_ps(detail::wrapped_frequency(i, rows, df));
+                const bool row_is_nyquist = (rows % 2) == 0 && i == rows / 2;
 
                 for (size_t j = tile_col; j < col_end; j += 8) {
                     const size_t next_prefetch = j + plan.prefetch_distance;
@@ -106,7 +113,27 @@ void apply_fk_filter_avx2(basalt::kernel::ComplexSoA& data,
                         _mm256_mul_ps(_mm256_sub_ps(vel, v_min), v_steep));
                     const __m256 fall = basalt::utils::fast_sigmoid_avx(
                         _mm256_mul_ps(_mm256_sub_ps(v_max, vel), v_steep));
-                    const __m256 inside = _mm256_mul_ps(rise, fall);
+                    __m256 inside = _mm256_mul_ps(rise, fall);
+                    // Nyquist bins are their own alias of both signs (f_N = -f_N, k_N = -k_N),
+                    // so their velocity is ambiguous. They use the mean of the weights at v and -v,
+                    // which makes w(f, k) == w(-f, -k) hold for every bin and any band.
+                    const bool nyquist_col_here = has_nyquist_col && nyquist_col >= j &&
+                                                  nyquist_col - j < 8;
+                    if (row_is_nyquist || nyquist_col_here) {
+                        const __m256 mirror_vel = _mm256_sub_ps(zero, vel);
+                        const __m256 mirror_rise = basalt::utils::fast_sigmoid_avx(
+                            _mm256_mul_ps(_mm256_sub_ps(mirror_vel, v_min), v_steep));
+                        const __m256 mirror_fall = basalt::utils::fast_sigmoid_avx(
+                            _mm256_mul_ps(_mm256_sub_ps(v_max, mirror_vel), v_steep));
+                        const __m256 mirror_inside = _mm256_mul_ps(mirror_rise, mirror_fall);
+                        const __m256 mean_inside = _mm256_mul_ps(
+                            half, _mm256_add_ps(inside, mirror_inside));
+                        const __m256 nyquist_lanes = row_is_nyquist
+                            ? all_lanes
+                            : _mm256_castsi256_ps(_mm256_cmpeq_epi32(
+                                  lane_index, _mm256_set1_epi32(static_cast<int>(nyquist_col - j))));
+                        inside = _mm256_blendv_ps(inside, mean_inside, nyquist_lanes);
+                    }
                     const __m256 mute_weight = _mm256_sub_ps(one, inside);
                     const __m256 weight = _mm256_blendv_ps(mute_weight, one, k_is_zero);
 

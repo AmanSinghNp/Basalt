@@ -38,7 +38,11 @@ void apply_fk_filter_avx512_impl(basalt::kernel::ComplexSoA& data,
     const __m512 v_min = _mm512_set1_ps(static_cast<float>(params.mute_vel_min));
     const __m512 v_max = _mm512_set1_ps(static_cast<float>(params.mute_vel_max));
     const __m512 one = _mm512_set1_ps(1.0f);
+    const __m512 half = _mm512_set1_ps(0.5f);
     const __m512 zero = _mm512_setzero_ps();
+    // Even sizes have a Nyquist row (f = +f_N) and a Nyquist column (k = +k_N).
+    const bool has_nyquist_col = (cols % 2) == 0;
+    const size_t nyquist_col = cols / 2;
 
     for (size_t tile_row = 0; tile_row < rows; tile_row += plan.tile_rows) {
         const size_t row_end = std::min(tile_row + plan.tile_rows, rows);
@@ -48,6 +52,7 @@ void apply_fk_filter_avx512_impl(basalt::kernel::ComplexSoA& data,
 
             for (size_t i = tile_row; i < row_end; ++i) {
                 const __m512 vf = _mm512_set1_ps(wrapped_frequency(i, rows, df));
+                const bool row_is_nyquist = (rows % 2) == 0 && i == rows / 2;
 
                 for (size_t j = tile_col; j < col_end; j += 16) {
                     const size_t next_prefetch = j + plan.prefetch_distance;
@@ -86,7 +91,25 @@ void apply_fk_filter_avx512_impl(basalt::kernel::ComplexSoA& data,
                         _mm512_mul_ps(_mm512_sub_ps(vel, v_min), v_steep));
                     const __m512 fall = fast_sigmoid_avx512_split(
                         _mm512_mul_ps(_mm512_sub_ps(v_max, vel), v_steep));
-                    const __m512 inside = _mm512_mul_ps(rise, fall);
+                    __m512 inside = _mm512_mul_ps(rise, fall);
+                    // Nyquist bins use the mean of the weights at v and -v (see fk_filter.cpp), so
+                    // that w(f, k) == w(-f, -k) holds for every bin and any band.
+                    const bool nyquist_col_here = has_nyquist_col && nyquist_col >= j &&
+                                                  nyquist_col - j < 16;
+                    if (row_is_nyquist || nyquist_col_here) {
+                        const __m512 mirror_vel = _mm512_sub_ps(zero, vel);
+                        const __m512 mirror_rise = fast_sigmoid_avx512_split(
+                            _mm512_mul_ps(_mm512_sub_ps(mirror_vel, v_min), v_steep));
+                        const __m512 mirror_fall = fast_sigmoid_avx512_split(
+                            _mm512_mul_ps(_mm512_sub_ps(v_max, mirror_vel), v_steep));
+                        const __m512 mirror_inside = _mm512_mul_ps(mirror_rise, mirror_fall);
+                        const __m512 mean_inside = _mm512_mul_ps(
+                            half, _mm512_add_ps(inside, mirror_inside));
+                        const __mmask16 nyquist_lanes = row_is_nyquist
+                            ? static_cast<__mmask16>(0xFFFF)
+                            : static_cast<__mmask16>(1u << static_cast<unsigned>(nyquist_col - j));
+                        inside = _mm512_mask_mov_ps(inside, nyquist_lanes, mean_inside);
+                    }
                     const __m512 mute_weight = _mm512_sub_ps(one, inside);
                     const __m512 weight = _mm512_mask_mov_ps(mute_weight, k_is_zero, one);
                     const size_t offset = i * cols + j;

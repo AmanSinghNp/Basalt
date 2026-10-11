@@ -38,6 +38,11 @@ struct FKParams {
 /// Bins with k == 0 (the zero-wavenumber column, which includes DC) have v = +/-inf and are
 /// always kept (w = 1), independent of the band. Exact zero is tested with a lane mask.
 ///
+/// Nyquist bins (even sizes only: the row f = +f_N and the column k = +k_N) are their own
+/// alias of both signs, so their velocity is ambiguous. Their weight is the mean of the
+/// weights at v and -v. This keeps w(f, k) == w(-f, -k) for every bin and any band, so the
+/// inverse transform of a real gather stays real for asymmetric bands too.
+///
 /// The call is a no-op (data unchanged) when taper_width <= 0, mute_vel_min >= mute_vel_max,
 /// or rows == 0 or cols == 0.
 void apply_fk_filter(basalt::kernel::ComplexSoA& data,

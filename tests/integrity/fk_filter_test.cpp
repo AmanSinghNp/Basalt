@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <algorithm>
+#include <complex>
 #include <numeric>
 #include <random>
 
@@ -67,8 +68,28 @@ double reference_weight(double f, double k, double vmin, double vmax, double tap
     return 1.0 - rise * fall;
 }
 
-// Old symmetric behaviour: weight = sigmoid((|v| - cut) * s) with cut = vmax.
-double legacy_symmetric_weight(double v, double cut, double taper_width) {
+// Expected weight of grid bin (i, j) including the Nyquist convention: the Nyquist row and
+// column (even sizes) are their own alias of both signs, so their weight is the mean of the
+// weights at f and -f (equivalently v and -v). All other bins use reference_weight directly.
+double expected_weight(size_t i, size_t j, size_t rows, size_t cols,
+                       double df, double dk, const FKParams& params) {
+    const double f = wrapped_axis(i, rows, df);
+    const double k = wrapped_axis(j, cols, dk);
+    const bool nyquist_row = rows % 2 == 0 && i == rows / 2;
+    const bool nyquist_col = cols % 2 == 0 && j == cols / 2;
+    const double direct = reference_weight(f, k, params.mute_vel_min, params.mute_vel_max,
+                                           params.taper_width);
+    if (!nyquist_row && !nyquist_col) {
+        return direct;
+    }
+    const double mirror = reference_weight(-f, k, params.mute_vel_min, params.mute_vel_max,
+                                           params.taper_width);
+    return 0.5 * (direct + mirror);
+}
+
+// Reference for a symmetric band: weight = sigmoid((|v| - cut) * s) with cut = vmax.
+// Written independently of the filter and without any epsilon.
+double abs_velocity_weight(double v, double cut, double taper_width) {
     const double s = 10.0 / taper_width;
     return 1.0 / (1.0 + std::exp(-(std::abs(v) - cut) * s));
 }
@@ -197,11 +218,14 @@ TEST(FKFilterTest, AsymmetricBandMutesOnlyIntendedSign) {
         const double f = wrapped_axis(i, rows, df);
         for (size_t j = 0; j < cols; ++j) {
             const double k = wrapped_axis(j, cols, dk);
-            const double expected = reference_weight(f, k, params.mute_vel_min,
-                                                     params.mute_vel_max, params.taper_width);
+            const double expected = expected_weight(i, j, rows, cols, df, dk, params);
             max_err = std::max(max_err, std::abs(static_cast<double>(out[i * cols + j]) - expected));
 
-            if (k != 0.0) {
+            // Nyquist row/column bins have no sign of their own (see
+            // AsymmetricBandWeightsAreHermitianIncludingNyquist), so the one-sided checks below
+            // apply to all other bins only.
+            const bool nyquist = (rows % 2 == 0 && i == rows / 2) || (cols % 2 == 0 && j == cols / 2);
+            if (k != 0.0 && !nyquist) {
                 const double v = f / k;
                 if (v > 600.0 && v < 1900.0) {
                     ++inside_positive;
@@ -302,7 +326,7 @@ TEST(FKFilterTest, EmptyBandIsNoOp) {
     }
 }
 
-TEST(FKFilterTest, SymmetricDefaultMatchesLegacyBehaviour) {
+TEST(FKFilterTest, SymmetricDefaultMatchesAbsVelocityReference) {
     constexpr size_t rows = 64;
     constexpr size_t cols = 64;
     const FKParams params = make_params(-1500.0, 1500.0, 100.0);
@@ -317,13 +341,17 @@ TEST(FKFilterTest, SymmetricDefaultMatchesLegacyBehaviour) {
         for (size_t j = 0; j < cols; ++j) {
             const double k = wrapped_axis(j, cols, dk);
             if (k == 0.0) {
-                continue; // k == 0 is kept now; the old code used v = f / 1e-6 and also kept it
+                // The k == 0 column has its own contract (weight exactly 1), covered by
+                // ZeroWavenumberColumnIsPreserved, so it is not compared against |v| here.
+                continue;
             }
-            const double legacy = legacy_symmetric_weight(f / k, params.mute_vel_max, params.taper_width);
-            max_err = std::max(max_err, std::abs(static_cast<double>(out[i * cols + j]) - legacy));
+            const double reference = abs_velocity_weight(f / k, params.mute_vel_max, params.taper_width);
+            max_err = std::max(max_err, std::abs(static_cast<double>(out[i * cols + j]) - reference));
         }
     }
-    EXPECT_LT(max_err, 1e-4) << "Symmetric default drifted from the legacy |v| mute";
+    // Checks the symmetric band against the |v| sigmoid in double precision, so the bound
+    // covers only the fast-sigmoid approximation. It is not a comparison with an earlier binary.
+    EXPECT_LT(max_err, 1e-4) << "Symmetric default drifted from the |v| sigmoid reference";
 
     // Far below the cut: muted. Far above: passed.
     for (size_t i = 0; i < rows; ++i) {
@@ -365,11 +393,8 @@ TEST(FKFilterTest, AsymmetricBandAvx2MatchesScalarReferenceOnRandomSpectrum) {
 
     double max_err = 0.0;
     for (size_t i = 0; i < rows; ++i) {
-        const double f = wrapped_axis(i, rows, df);
         for (size_t j = 0; j < cols; ++j) {
-            const double k = wrapped_axis(j, cols, dk);
-            const double w = reference_weight(f, k, params.mute_vel_min, params.mute_vel_max,
-                                              params.taper_width);
+            const double w = expected_weight(i, j, rows, cols, df, dk, params);
             const size_t idx = i * cols + j;
             max_err = std::max(max_err, std::abs(static_cast<double>(data.real[idx]) - w * real_in[idx]));
             max_err = std::max(max_err, std::abs(static_cast<double>(data.imag[idx]) - w * imag_in[idx]));
@@ -425,4 +450,100 @@ TEST(FKFilterSimdAgreementTest, Avx512WeightsMatchAvx2WithinTolerance) {
             EXPECT_NEAR(a512.imag[idx], a2.imag[idx], 1e-6f) << "imag mismatch at idx " << idx;
         }
     }
+}
+
+TEST(FKFilterTest, AsymmetricBandWeightsAreHermitianIncludingNyquist) {
+    // The Nyquist row and column (even sizes) are their own alias of both signs, so a
+    // one-sided weight would break w(f, k) == w(-f, -k) there and make the inverse complex.
+    constexpr size_t rows = 64;
+    constexpr size_t cols = 128;
+    const FKParams params = make_params(-700.0, 1900.0, 150.0);
+
+    const std::vector<float> paths[] = {
+        filter_ones(rows, cols, params, SimdMode::AVX2),
+        filter_ones(rows, cols, params, SimdMode::Auto),
+    };
+    for (const std::vector<float>& out : paths) {
+        double max_asym = 0.0;
+        for (size_t i = 0; i < rows; ++i) {
+            const size_t mi = (rows - i) % rows;
+            for (size_t j = 0; j < cols; ++j) {
+                const size_t mj = (cols - j) % cols;
+                max_asym = std::max(max_asym, std::abs(static_cast<double>(out[i * cols + j]) -
+                                                       static_cast<double>(out[mi * cols + mj])));
+            }
+        }
+        EXPECT_LT(max_asym, 1e-6) << "weight is not Hermitian-symmetric";
+    }
+}
+
+TEST(FKFilterTest, AsymmetricBandKeepsRealGatherReal) {
+    // Forward 2D DFT of a real gather, filter, inverse DFT. The output must stay real
+    // for an asymmetric band, which includes the Nyquist row and column (even sizes).
+    constexpr size_t rows = 16;   // samples / frequency axis
+    constexpr size_t cols = 32;   // traces / wavenumber axis
+    constexpr size_t total = rows * cols;
+    const double pi = 3.14159265358979323846;
+    const FKParams params = make_params(-700.0, 1900.0, 150.0);
+
+    std::mt19937 rng(11);
+    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+    std::vector<double> gather(total);                    // gather[x * rows + t]
+    for (double& value : gather) {
+        value = dist(rng);
+    }
+
+    // Naive forward DFT: X(i, j) = sum_x sum_t d(x, t) exp(-2 pi i (i t / rows + j x / cols)).
+    std::vector<std::complex<double>> spectrum(total);
+    for (size_t i = 0; i < rows; ++i) {
+        for (size_t j = 0; j < cols; ++j) {
+            std::complex<double> acc(0.0, 0.0);
+            for (size_t x = 0; x < cols; ++x) {
+                for (size_t t = 0; t < rows; ++t) {
+                    const double phase = -2.0 * pi * (static_cast<double>(i * t) / static_cast<double>(rows) +
+                                                      static_cast<double>(j * x) / static_cast<double>(cols));
+                    acc += gather[x * rows + t] * std::complex<double>(std::cos(phase), std::sin(phase));
+                }
+            }
+            spectrum[i * cols + j] = acc;
+        }
+    }
+
+    basalt::MemoryArena arena(total * sizeof(float) * 2 + 4096);
+    ComplexSoA data(arena, total);
+    for (size_t idx = 0; idx < total; ++idx) {
+        data.real[idx] = static_cast<float>(spectrum[idx].real());
+        data.imag[idx] = static_cast<float>(spectrum[idx].imag());
+    }
+    apply_fk_filter(data, rows, cols, params, SimdMode::AVX2);
+
+    // The band must actually remove something, otherwise the test proves nothing.
+    double max_change = 0.0;
+    for (size_t idx = 0; idx < total; ++idx) {
+        const std::complex<double> filtered(data.real[idx], data.imag[idx]);
+        max_change = std::max(max_change, std::abs(filtered - spectrum[idx]));
+    }
+    EXPECT_GT(max_change, 1.0);
+
+    // Naive inverse DFT, d(x, t) = (1 / total) sum_i sum_j X'(i, j) exp(+2 pi i (i t / rows + j x / cols)).
+    double max_re = 0.0;
+    double max_im = 0.0;
+    for (size_t x = 0; x < cols; ++x) {
+        for (size_t t = 0; t < rows; ++t) {
+            std::complex<double> acc(0.0, 0.0);
+            for (size_t i = 0; i < rows; ++i) {
+                for (size_t j = 0; j < cols; ++j) {
+                    const double phase = 2.0 * pi * (static_cast<double>(i * t) / static_cast<double>(rows) +
+                                                     static_cast<double>(j * x) / static_cast<double>(cols));
+                    const std::complex<double> filtered(data.real[i * cols + j], data.imag[i * cols + j]);
+                    acc += filtered * std::complex<double>(std::cos(phase), std::sin(phase));
+                }
+            }
+            acc /= static_cast<double>(total);
+            max_re = std::max(max_re, std::abs(acc.real()));
+            max_im = std::max(max_im, std::abs(acc.imag()));
+        }
+    }
+    EXPECT_GT(max_re, 0.1);
+    EXPECT_LT(max_im, 1e-4 * std::max(1.0, max_re)) << "filtered real gather has an imaginary part";
 }
