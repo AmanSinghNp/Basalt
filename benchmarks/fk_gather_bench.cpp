@@ -6,9 +6,10 @@
 // time and gathers per second derived from the median.
 //
 // The legacy power-of-two path (fft2d_forward, apply_fk_filter, fft2d_inverse, as in the README
-// "Usage" section) is timed for comparison, labelled "legacy-c2c", on sizes whose two dimensions
-// are both powers of two. It is single-threaded, uses a full complex transform and no padding or
-// edge tapers, so it does different work and its output is not compared with the pipeline's.
+// "Legacy power-of-two API" section) is timed for comparison, labelled "legacy-c2c", on sizes
+// whose two dimensions are both powers of two. It is single-threaded, uses a full complex transform
+// and no padding or edge tapers, so it does different work and its output is not compared with the
+// pipeline's.
 //
 // The "pocketfft-transform-only" rows time only the pipeline's own r2c and c2r calls on the same
 // padded grid, with the same pocketfft version. They are the floor for the transform inside

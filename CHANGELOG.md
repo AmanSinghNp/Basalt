@@ -20,8 +20,8 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
   runtime errors and usage errors.
 - Python package `basalt` built with pybind11 (`-DBASALT_BUILD_PYTHON=ON`, or `pip install .`), providing
   `fk_filter`, `fk_mute_weight`, `read_segy` and `write_segy`
-- Benchmarks of the f-k pipeline against numpy and scipy: `fk_gather_bench` and `benchmarks/compare_numpy.py`.
-  Results and methodology are in `PERFORMANCE.md`.
+- Benchmarks of the f-k pipeline: `fk_gather_bench` (C++, with legacy and pocketfft-only rows) and
+  `benchmarks/compare_numpy.py` (against numpy and scipy). Results and methodology are in `PERFORMANCE.md`.
 - Vendored pocketfft (BSD-3-Clause, header-only) in `third_party/pocketfft`, with a provenance note in `README.basalt.md`
 - Test coverage for the pipeline, SEG-Y I/O, the CLI and the Python bindings
 - CI job that builds and tests the Python bindings
@@ -32,7 +32,7 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 - README rewritten around the pipeline, the `basalt` CLI, the Python package and the C++ package; the legacy
   power-of-two API is documented in its own section
 - Legacy `apply_fk_filter` now uses smooth, two-sided band edges and no longer adds an epsilon to the velocity
-  divisor. Its output differs from 0.1.0 by small amounts, mostly in low-wavenumber columns (see Fixed)
+  divisor. Its output differs from 0.1.0; the changes are listed under Fixed
 - Tests built with AddressSanitizer run with `allocator_may_return_null=1`, so an oversized allocation raises
   `std::bad_alloc` (reported as out of memory) instead of aborting, as it does in a normal build
 

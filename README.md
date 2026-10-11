@@ -40,8 +40,10 @@ Print the geometry and sample format of a SEG-Y file, then filter it:
 ./build/basalt filter in.segy out.segy --vmin 500 --vmax 2000 --mode reject
 ```
 
-This mutes events with apparent velocity between 500 and 2000 m/s and keeps the rest. Any SEG-Y
-file works as input. The [Python example](#python) below writes a small synthetic one.
+This mutes events with apparent velocity between 500 and 2000 m/s and keeps the rest. The input
+must be a SEG-Y file with a fixed trace length and IBM32, INT32, INT16, IEEE32 or INT8 samples;
+other format codes are rejected. The [Python example](#python) below writes a small synthetic file,
+`synthetic.segy`, which you can pass in place of `in.segy`.
 
 Every option of `basalt filter`:
 
