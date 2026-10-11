@@ -160,6 +160,16 @@ double relative_rms(const std::vector<float>& actual, const std::vector<float>& 
 const std::vector<std::string> kIdentityFlags = {"--vmin", "1e29", "--vmax", "1e30",
                                                  "--taper", "0", "--edge-taper", "0"};
 
+// Runs `filter in out` with `flags`, expects success and returns the samples written to `out`.
+std::vector<float> cli_filter(const std::string& in, const std::string& out,
+                              const std::vector<std::string>& flags) {
+    std::vector<std::string> args = {"filter", in, out};
+    args.insert(args.end(), flags.begin(), flags.end());
+    const CliResult r = run_cli(args);
+    EXPECT_EQ(r.exit_code, 0) << r.err;
+    return basalt::io::read_segy(out).samples;
+}
+
 } // namespace
 
 // --- Command line parsing and exit codes ---------------------------------------------------
@@ -235,6 +245,27 @@ TEST(CliUsage, OutOfRangeTaperExitsTwo) {
 
     const CliResult r = run_cli({"filter", in, test_path("out.segy"), "--taper", "1.5"});
     EXPECT_EQ(r.exit_code, 2);
+}
+
+TEST(CliUsage, SubnormalNumberIsRejectedByName) {
+    // Flush-to-zero would turn 1e-320 into zero, so the value is refused with its own message.
+    const std::string in = test_path("in.segy");
+    write_fixture(in, random_samples(20 * 100, 16), 20, 100, 0.004, SampleFormat::IEEE32);
+
+    const CliResult r = run_cli({"filter", in, test_path("out.segy"), "--dx", "1e-320"});
+    EXPECT_EQ(r.exit_code, 2);
+    EXPECT_TRUE(contains(r.err, "too small for --dx")) << r.err;
+}
+
+TEST(CliUsage, SameInputAndOutputIsRejectedAndInputUntouched) {
+    const std::string in = test_path("in.segy");
+    write_fixture(in, random_samples(20 * 100, 17), 20, 100, 0.004, SampleFormat::IEEE32);
+    const std::string before = read_text(in);
+
+    const CliResult r = run_cli({"filter", in, in});
+    EXPECT_EQ(r.exit_code, 2);
+    EXPECT_TRUE(contains(r.err, "must be different files")) << r.err;
+    EXPECT_EQ(read_text(in), before);
 }
 
 TEST(CliRuntime, MissingInputFileExitsOne) {
@@ -469,4 +500,102 @@ TEST(CliFilter, KeepsNegativeVelocityEvent) {
 
     const std::vector<float> filtered = basalt::io::read_segy(out).samples;
     EXPECT_GT(central_attenuation_db(filtered, event, kTraces, kSamples), -1.0);
+}
+
+TEST(CliFilter, PassModeKeepsBandEventAndRemovesOtherEvent) {
+    constexpr size_t kTraces = 64;
+    constexpr size_t kSamples = 500;
+    constexpr double kDt = 0.002;
+    constexpr double kDx = 5.0;
+    const std::string in_pos = test_path("in_pos.segy");
+    const std::string in_neg = test_path("in_neg.segy");
+    const std::string out = test_path("out.segy");
+    const std::vector<float> pos = dipping_event(kTraces, kSamples, kDt, kDx, +1000.0);
+    const std::vector<float> neg = dipping_event(kTraces, kSamples, kDt, kDx, -1000.0);
+    write_fixture(in_pos, pos, kTraces, kSamples, kDt, SampleFormat::IEEE32);
+    write_fixture(in_neg, neg, kTraces, kSamples, kDt, SampleFormat::IEEE32);
+    const std::vector<std::string> flags = {"--mode", "pass", "--vmin", "500", "--vmax", "2000",
+                                            "--dx", "5"};
+
+    // The band [500, 2000] m/s keeps the +1000 event and removes the -1000 event.
+    const std::vector<float> kept = cli_filter(in_pos, out, flags);
+    EXPECT_GT(central_attenuation_db(kept, pos, kTraces, kSamples), -1.0);
+    const std::vector<float> removed = cli_filter(in_neg, out, flags);
+    EXPECT_LE(central_attenuation_db(removed, neg, kTraces, kSamples), -20.0);
+}
+
+TEST(CliFilter, DefaultParametersMatchLibraryDefaults) {
+    constexpr size_t kTraces = 40;
+    constexpr size_t kSamples = 200;
+    const std::string in = test_path("in.segy");
+    const std::string out = test_path("out.segy");
+    const std::vector<float> samples = random_samples(kTraces * kSamples, 18);
+    write_fixture(in, samples, kTraces, kSamples, 0.004, SampleFormat::IEEE32);
+    const SegyData input = basalt::io::read_segy(in);
+
+    // Only the band is given. The rest must take the defaults: dx 25 m, taper 0.1, reject mode,
+    // pad 1.5, edge taper of 4 traces, one thread.
+    const std::vector<float> cli_result = cli_filter(in, out, {"--vmin", "500", "--vmax", "2000"});
+
+    basalt::FKMuteParams params;
+    params.dt = input.dt;
+    params.v_min = 500.0;
+    params.v_max = 2000.0;
+    const std::vector<float> expected = basalt::fk_filter_gather(samples, kTraces, kSamples, params);
+    EXPECT_LT(relative_rms(cli_result, expected), 1e-6);
+
+    // A 5 m trace spacing gives a clearly different mute, so the default dx is really checked.
+    params.dx = 5.0;
+    const std::vector<float> other_dx = basalt::fk_filter_gather(samples, kTraces, kSamples, params);
+    EXPECT_GT(relative_rms(cli_result, other_dx), 1e-2);
+}
+
+TEST(CliFilter, PadEdgeTaperAndThreadsReachTheLibrary) {
+    constexpr size_t kTraces = 30;
+    constexpr size_t kSamples = 150;
+    const std::string in = test_path("in.segy");
+    const std::string out = test_path("out.segy");
+    const std::vector<float> samples = random_samples(kTraces * kSamples, 19);
+    write_fixture(in, samples, kTraces, kSamples, 0.004, SampleFormat::IEEE32);
+
+    basalt::FKMuteParams params;
+    params.dt = 0.004;
+    params.dx = 5.0;
+    params.v_min = 500.0;
+    params.v_max = 2000.0;
+    params.pad_factor = 2.0;
+    params.edge_taper_traces = 2;
+    // Threads change how the FFT is computed, not its result, so the library runs single-threaded.
+    const std::vector<float> expected = basalt::fk_filter_gather(samples, kTraces, kSamples, params);
+    const std::vector<float> cli_result = cli_filter(
+        in, out, {"--vmin", "500", "--vmax", "2000", "--dx", "5", "--pad", "2.0", "--edge-taper", "2",
+                  "--threads", "3"});
+    EXPECT_LT(relative_rms(cli_result, expected), 1e-6);
+
+    // The flags matter: the library defaults for pad and edge taper give a different result.
+    basalt::FKMuteParams defaults = params;
+    defaults.pad_factor = 1.5;
+    defaults.edge_taper_traces = 4;
+    EXPECT_GT(relative_rms(basalt::fk_filter_gather(samples, kTraces, kSamples, defaults), expected),
+              1e-3);
+}
+
+TEST(CliFilter, EdgeTaperWarnsOnlyWhenItCoversEveryTraceOfABlock) {
+    const std::string in = test_path("in.segy");
+    const std::string out = test_path("out.segy");
+    write_fixture(in, random_samples(20 * 100, 20), 20, 100, 0.004, SampleFormat::IEEE32);
+
+    // Default taper 4 on blocks of 7 traces: 2 * 4 >= 7, so every trace is tapered.
+    const CliResult tapered = run_cli({"filter", in, out, "--gather-size", "7"});
+    EXPECT_EQ(tapered.exit_code, 0) << tapered.err;
+    EXPECT_TRUE(contains(tapered.err, "warning: --edge-taper 4")) << tapered.err;
+
+    // Blocks of 10 traces keep untapered traces in the middle, and no taper means no warning.
+    const CliResult long_blocks = run_cli({"filter", in, out, "--gather-size", "10"});
+    EXPECT_EQ(long_blocks.exit_code, 0) << long_blocks.err;
+    EXPECT_FALSE(contains(long_blocks.err, "warning")) << long_blocks.err;
+
+    const CliResult no_taper = run_cli({"filter", in, out, "--gather-size", "7", "--edge-taper", "0"});
+    EXPECT_EQ(no_taper.exit_code, 0) << no_taper.err;
+    EXPECT_FALSE(contains(no_taper.err, "warning")) << no_taper.err;
 }

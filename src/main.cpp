@@ -2,14 +2,17 @@
 // Command and option contract: docs/design/FK_PIPELINE.md, section 6.
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <new>
 #include <optional>
 #include <stdexcept>
@@ -55,7 +58,7 @@ void print_help(std::ostream& os) {
        << "  --taper T        fractional edge width, 0 <= T < 1 (0.1)\n"
        << "  --mode M         reject (mute the band) or pass (keep only the band) (reject)\n"
        << "  --dx M           trace spacing, m (25)\n"
-       << "  --dt S           sample interval, s (from the file header)\n"
+       << "  --dt S           sample interval, s, whole microseconds only (from the file header)\n"
        << "  --pad P          FFT padding factor, >= 1 (1.5)\n"
        << "  --edge-taper N   cosine taper over the first and last N traces (4)\n"
        << "  --threads N      FFT threads, 0 = all cores (1)\n"
@@ -79,9 +82,15 @@ double parse_number(const std::string& flag, const std::string& text) {
         throw bad();
     }
     char* end = nullptr;
+    errno = 0;
     const double value = std::strtod(text.c_str(), &end);
     if (end != text.c_str() + text.size() || !std::isfinite(value)) {
         throw bad();
+    }
+    // strtod sets ERANGE when the value underflows to zero or to a subnormal. Such values are
+    // rejected by name: the flush-to-zero mode set in main would turn them into zero silently.
+    if (errno == ERANGE && std::fabs(value) < std::numeric_limits<double>::min()) {
+        throw UsageError("number '" + text + "' is too small for " + flag);
     }
     return value;
 }
@@ -337,12 +346,18 @@ int run_filter(const std::vector<std::string>& args) {
     if (!(params.pad_factor >= 1.0)) {
         throw UsageError("--pad must be at least 1");
     }
+
+    const std::string& in_path = positional[0];
+    const std::string& out_path = positional[1];
+    // Writing over the input would destroy it if the write failed part way, so refuse up front.
+    std::error_code same_ec;
+    if (in_path == out_path || std::filesystem::equivalent(in_path, out_path, same_ec)) {
+        throw UsageError("input and output must be different files");
+    }
     if (verbose) {
         print_diagnostics();
     }
 
-    const std::string& in_path = positional[0];
-    const std::string& out_path = positional[1];
     basalt::io::SegyData data = basalt::io::read_segy(in_path);
     if (data.ntraces == 0) {
         // The library rejects empty gathers; refuse before writing so no empty output is left.
@@ -359,7 +374,14 @@ int run_filter(const std::vector<std::string>& args) {
     // Each block is filtered as its own gather, in place. The default block is the whole file.
     const size_t ntraces = data.ntraces;
     const size_t nsamples = data.nsamples;
-    const size_t block = gather_size != 0 ? gather_size : ntraces;
+    const size_t block = gather_size != 0 ? std::min(gather_size, ntraces) : ntraces;
+    // The edge taper weights the first and last N traces of each block. When 2N >= block, every
+    // trace of the block is weighted below one, so the output is attenuated throughout.
+    if (params.edge_taper_traces > 0 && 2 * params.edge_taper_traces >= block) {
+        std::cerr << "basalt: warning: --edge-taper " << params.edge_taper_traces
+                  << " tapers every trace of the " << block << "-trace blocks\n"
+                  << "  use a smaller --edge-taper (0 disables it) or a larger --gather-size\n";
+    }
     const auto started = std::chrono::steady_clock::now();
     for (size_t first = 0; first < ntraces; first += block) {
         const size_t count = std::min(block, ntraces - first);
