@@ -207,6 +207,11 @@ void fk_filter_gather(const float* in, float* out,
 
     // Step 5: weight every bin. f_j = j / (ns_pad dt); k_i = fftfreq(ntr_pad, dx)[i]
     // using numpy's convention (indices above (n - 1) / 2 are negative).
+    // Note: for even ntr_pad the k-Nyquist row is its own negative, so W(f, k) != W(-f, k)
+    // there and the weight is not Hermitian-symmetric in f. The c2r inverse below takes the
+    // real part, so this row is applied exactly as the spec's rfft2/irfft2 algorithm defines
+    // it. A Hermitian-symmetrised filter differs by a few percent relRMS on such grids
+    // (e.g. 37 x 53 gathers). FK_PIPELINE.md section 2 needs correcting on this point.
     const BandCoeffs band = make_band(params);
     const double df = 1.0 / (static_cast<double>(ns_pad) * params.dt);
     const double dk = 1.0 / (static_cast<double>(ntr_pad) * params.dx);

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <cstddef>
 #include <initializer_list>
 #include <limits>
@@ -177,6 +178,89 @@ bool only_prime_factors(size_t n, std::initializer_list<size_t> primes) {
         }
     }
     return n == 1;
+}
+
+// Direct O(n^2) evaluation of spec section 4 (edge tapers, real 2D DFT over the padded grid,
+// mute weights, inverse, crop). It shares no code with pocketfft, so it checks padding offsets,
+// the frequency grid and the Nyquist rows at sizes where the FFT path is otherwise only checked
+// for finiteness. The inverse takes the real part of the full sum with the half spectrum
+// extended by conj(Y(-i, n1 - j)), which is what irfft2 computes. Only for small gathers.
+std::vector<float> direct_fk_reference(const std::vector<float>& in, size_t ntr, size_t ns,
+                                       const FKMuteParams& p) {
+    using cd = std::complex<double>;
+    const size_t n0 = fk_padded_traces(ntr, p);
+    const size_t n1 = fk_padded_samples(ns, p);
+    const size_t nf = n1 / 2 + 1;
+
+    // Unit-modulus root exp(sign * 2 pi i a / n).
+    auto root = [](size_t a, size_t n, double sign) {
+        const double ang = sign * 2.0 * kPi * static_cast<double>(a) / static_cast<double>(n);
+        return cd(std::cos(ang), std::sin(ang));
+    };
+
+    // Step 3: tapered input on the top-left of the padded grid (zero elsewhere).
+    std::vector<double> pad(n0 * n1, 0.0);
+    for (size_t t = 0; t < ntr; ++t) {
+        for (size_t s = 0; s < ns; ++s) {
+            double w = 1.0;
+            if (t < p.edge_taper_traces) {
+                w *= taper_weight(t, p.edge_taper_traces);
+            }
+            if (ntr - 1 - t < p.edge_taper_traces) {
+                w *= taper_weight(ntr - 1 - t, p.edge_taper_traces);
+            }
+            if (s < p.edge_taper_samples) {
+                w *= taper_weight(s, p.edge_taper_samples);
+            }
+            if (ns - 1 - s < p.edge_taper_samples) {
+                w *= taper_weight(ns - 1 - s, p.edge_taper_samples);
+            }
+            pad[t * n1 + s] = static_cast<double>(in[t * ns + s]) * w;
+        }
+    }
+
+    // Steps 4-5: half spectrum of the padded grid, then the mute weight of each bin.
+    const double df = 1.0 / (static_cast<double>(n1) * p.dt);
+    const double dk = 1.0 / (static_cast<double>(n0) * p.dx);
+    std::vector<cd> y(n0 * nf);
+    for (size_t i = 0; i < n0; ++i) {
+        const double k_index = (i <= (n0 - 1) / 2)
+            ? static_cast<double>(i)
+            : static_cast<double>(i) - static_cast<double>(n0);
+        for (size_t j = 0; j < nf; ++j) {
+            cd acc(0.0, 0.0);
+            for (size_t t = 0; t < ntr; ++t) {
+                for (size_t s = 0; s < ns; ++s) {
+                    acc += pad[t * n1 + s] * root((i * t) % n0, n0, -1.0) *
+                           root((j * s) % n1, n1, -1.0);
+                }
+            }
+            const double w = fk_mute_weight(static_cast<double>(j) * df, k_index * dk, p);
+            y[i * nf + j] = acc * w;
+        }
+    }
+
+    // Step 6: full inverse sum over the grid, using the Hermitian extension of the half spectrum.
+    auto yfull = [&](size_t i, size_t j) -> cd {
+        if (j < nf) {
+            return y[i * nf + j];
+        }
+        return std::conj(y[((n0 - i) % n0) * nf + (n1 - j)]);
+    };
+    std::vector<float> out(ntr * ns);
+    const double scale = 1.0 / (static_cast<double>(n0) * static_cast<double>(n1));
+    for (size_t t = 0; t < ntr; ++t) {
+        for (size_t s = 0; s < ns; ++s) {
+            cd acc(0.0, 0.0);
+            for (size_t i = 0; i < n0; ++i) {
+                for (size_t j = 0; j < n1; ++j) {
+                    acc += yfull(i, j) * root((i * t) % n0, n0, 1.0) * root((j * s) % n1, n1, 1.0);
+                }
+            }
+            out[t * ns + s] = static_cast<float>(acc.real() * scale);
+        }
+    }
+    return out;
 }
 
 } // namespace
@@ -662,6 +746,61 @@ TEST(FKPipeline, PassAndRejectSumToInput) {
         sum[i] = r[i] + q[i];
     }
     EXPECT_LE(rel_rms(sum, in), 1e-5);
+}
+
+TEST(FKPipeline, MatchesDirectReferenceAtOddSizes) {
+    // Odd and non-square gathers, with an asymmetric band, taper and edge tapers. Even padded
+    // trace counts (e.g. 9 -> 14) exercise the k-Nyquist row, which is not Hermitian in f.
+    struct Case {
+        size_t ntr;
+        size_t ns;
+        FKMode mode;
+        size_t edge_traces;
+        size_t edge_samples;
+    };
+    const Case cases[] = {
+        {7, 13, FKMode::Reject, 4, 0},
+        {7, 13, FKMode::Pass, 3, 5},
+        {9, 33, FKMode::Reject, 3, 5},
+        {9, 33, FKMode::Pass, 0, 0},
+        {13, 7, FKMode::Reject, 4, 3},
+        {1, 1, FKMode::Pass, 0, 0},
+    };
+    unsigned seed = 71;
+    for (const Case& c : cases) {
+        const auto in = random_gather(c.ntr, c.ns, seed++);
+        FKMuteParams p;
+        p.dt = 0.002;
+        p.dx = 5.0;
+        p.v_min = -800.0;
+        p.v_max = 2500.0;
+        p.taper = 0.2;
+        p.mode = c.mode;
+        p.edge_taper_traces = c.edge_traces;
+        p.edge_taper_samples = c.edge_samples;
+        const auto out = fk_filter_gather(in, c.ntr, c.ns, p);
+        const auto ref = direct_fk_reference(in, c.ntr, c.ns, p);
+        EXPECT_LE(rel_rms(out, ref), 1e-5)
+            << "ntr=" << c.ntr << " ns=" << c.ns << " mode=" << static_cast<int>(c.mode);
+    }
+}
+
+TEST(FKPipeline, AllPassIdentityAtLargeOddSize) {
+    // 1001 x 1500 pads to non-power-of-two sizes. Zero-mean input must come back unchanged
+    // under the all-pass configuration, which checks the padding offsets at a realistic size.
+    const size_t ntr = 1001;
+    const size_t ns = 1500;
+    auto in = random_gather(ntr, ns, 67);
+    remove_trace_mean(in, ntr, ns);
+    FKMuteParams p;
+    p.v_min = -1e30;
+    p.v_max = 1e30;
+    p.taper = 0.0;
+    p.mode = FKMode::Pass;
+    p.edge_taper_traces = 0;
+    p.edge_taper_samples = 0;
+    const auto out = fk_filter_gather(in, ntr, ns, p);
+    EXPECT_LE(rel_rms(out, in), 1e-5);
 }
 
 TEST(FKPipeline, OutputsAreFiniteForOddSizes) {
