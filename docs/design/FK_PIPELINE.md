@@ -30,6 +30,17 @@ Special cases:
 - `f == 0, k != 0`: `v = 0`.
 - `f == 0, k == 0` (DC): weight is forced to 1 when `preserve_dc` is true (default).
 
+Nyquist lines. The symmetry `v(-f,-k) = v(f,k)` fails on two lines, where a bin is its own
+negative:
+- k-Nyquist row (even `ntraces_pad`): the bin has `k = -K`, `K = 1/(2 dx)`, and
+  `v(f, -K) = f / K` while `v(-f, -K)` is a different value. The weight is not Hermitian in `f`.
+- f-Nyquist column (even `nsamples_pad`): the bin has `f = +F`, `F = 1/(2 dt)`. `+F` and `-F`
+  are the same bin, so `v` flips sign with `k` and the weight is not Hermitian in `k`.
+
+Both lines only matter in the aliasing regime (`|v| >= dx/dt`). The implementation applies
+them bin by bin as the formula defines them (the rfft2/irfft2 convention, where the inverse takes
+the real part). Other bins are Hermitian-symmetric.
+
 ## 3. Mute weight
 
 Parameters: `v_min < v_max` (m/s, either may be negative), `taper` in `[0, 1)`,
@@ -47,9 +58,16 @@ value `e`, the transition half-width is `h(e) = 0.5 * taper * |e|` (if `h == 0` 
     weight = 1 - inside(v)   for Reject  (mute the band, keep the rest)
     weight = inside(v)       for Pass    (keep only the band)
 
-Because `v(-f, -k) = v(f, k)`, the weight is Hermitian-symmetric and the output of the
-inverse real transform is real. `basalt::fk_mute_weight(f_hz, k_cpm, params)` exposes this
-function for testing. It must be a pure function of its arguments.
+Because `v(-f, -k) = v(f, k)` on all bins except the Nyquist lines of section 2, the weight is
+Hermitian-symmetric there, and the real part of the inverse transform is taken (the output is
+real). On the Nyquist lines the weight is applied as defined, bin by bin.
+
+Hard edges (`taper = 0`) make the band half-open, `(v_min, v_max]`: `rise(v_min; v_min) = 0`
+so `v = v_min` is excluded, and `fall(v_max; v_max) = 1` so `v = v_max` is included. The same
+applies to `Pass` and `Reject`, which are complementary.
+
+`basalt::fk_mute_weight(f_hz, k_cpm, params)` exposes this function for testing. It must be a
+pure function of its arguments.
 
 ## 4. Pipeline (`basalt::fk_filter_gather`)
 
@@ -72,7 +90,8 @@ struct FKMuteParams {
 };
 
 // Throws std::invalid_argument on invalid params (dt <= 0, dx <= 0, v_min >= v_max,
-// taper outside [0,1), pad_factor < 1, ntraces == 0, nsamples == 0, null pointers).
+// taper outside [0,1), pad_factor < 1, ntraces == 0, nsamples == 0, null pointers, or a
+// padded grid whose element count ntr_pad * ns_pad would overflow size_t).
 // `in` and `out` may alias (in-place is allowed).
 void fk_filter_gather(const float* in, float* out,
                       size_t ntraces, size_t nsamples,
@@ -96,7 +115,10 @@ Steps:
    `ns_pad = good_size_real(ceil(nsamples * pad_factor))`. Any size works (no power-of-2 requirement).
 3. Copy input into a zeroed `ntr_pad x ns_pad` buffer (top-left), applying the edge cosine
    tapers (Hann half-window: weight for the i-th trace from the edge, i = 0..N-1, is
-   `0.5 - 0.5*cos(pi*(i + 1)/(N + 1))`). Tapers are not undone afterwards.
+   `0.5 - 0.5*cos(pi*(i + 1)/(N + 1))`). Tapers are not undone afterwards. The start and end
+   tapers are independent. If a gather is shorter than 2N, both reach the same traces and their
+   weights multiply (e.g. a single trace with N = 4 is scaled by `w(0)^2`, about 0.0091). Weights
+   are computed in double, so any `N` up to `SIZE_MAX` is finite.
 4. Real-to-complex 2D FFT with pocketfft (`r2c` over axes {0, 1}, time axis last), forward.
 5. Multiply each complex bin by `fk_mute_weight(f_j, k_i, params)`. Weights must be computed
    once per call per (i, j) or cached; no per-bin trig in a hot loop beyond that.
@@ -105,9 +127,18 @@ Steps:
 
 Required numerical behaviour:
 - With `mode = Reject` and a band that contains no energy, output equals input to within
-  1e-4 relative RMS for traces outside the edge-taper zone.
-- An all-pass configuration (e.g. `mode = Pass, v_min = -1e30, v_max = 1e30`, taper 0,
-  no edge tapers) returns the input to 1e-5 relative RMS.
+  1e-4 relative RMS for traces outside the edge-taper zone. This criterion is for inputs
+  that are smooth along x, such as events with a Hann envelope across the gather. A
+  hard-truncated linear event does not meet it: truncation at the gather ends leaks energy
+  into every velocity band. Measured: 5.7e-3 for +-1000 m/s events (dx = 5 m, dt = 2 ms,
+  band [-400, 400], default edge tapers). The leakage is inherent to the FFT, not an
+  implementation error.
+- An all-pass configuration (`mode = Pass, v_min = -1e30, v_max = 1e30`, taper 0, no edge
+  tapers) returns `out(t, s) = in(t, s) - m(s) + M` to 1e-5 relative RMS, where
+  `m(s) = sum_t in(t, s) / ntr_pad` and `M = sum(in) / (ntr_pad * ns_pad)` (sums over the
+  valid block). The k = 0, f != 0 row has `v = +inf` (section 2), so Pass drops it. The
+  trace mean `m(s)` is therefore removed, and the DC bin keeps `M`. On zero-mean input
+  (`m(s) = 0` and `M = 0`) the output is the input.
 - Non power-of-2 sizes such as 1001 x 1500 and 7 x 13 work.
 - Synthetic test: two linear events, one at `+1000 m/s` and one at `-1000 m/s`. Rejecting
   `[500, 2000]` attenuates the +1000 event by >= 20 dB while the -1000 event loses < 1 dB

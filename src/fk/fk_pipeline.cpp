@@ -107,12 +107,14 @@ inline double bin_weight(double f_hz, double k_cpm, const BandCoeffs& b) {
     return b.reject ? 1.0 - inside : inside;
 }
 
-// Raised-cosine taper weight for the i-th sample from an edge, i = 0 .. n-1.
+// Raised-cosine taper weight for the i-th sample from an edge, i = 0 .. n-1. n + 1 is formed
+// as a double so that n = SIZE_MAX cannot wrap to zero (which would give NaN).
 inline double edge_taper_weight(size_t i, size_t n) {
-    return 0.5 - 0.5 * std::cos(kPi * static_cast<double>(i + 1) / static_cast<double>(n + 1));
+    return 0.5 - 0.5 * std::cos(kPi * static_cast<double>(i + 1) / (static_cast<double>(n) + 1.0));
 }
 
-// Product of the start and end edge tapers along a line of length `len`.
+// Product of the start and end edge tapers along a line of length `len`. When the two tapers
+// reach the same sample (len < 2n) their weights multiply (spec section 4, step 3).
 std::vector<double> make_edge_taper(size_t len, size_t n) {
     std::vector<double> w(len, 1.0);
     const size_t m = std::min(n, len);
@@ -177,6 +179,12 @@ void fk_filter_gather(const float* in, float* out,
     const size_t ntr_pad = fk_padded_traces(ntraces, params);
     const size_t ns_pad = fk_padded_samples(nsamples, params);
     const size_t nfreq = ns_pad / 2 + 1;
+    // The padded real grid holds ntr_pad * ns_pad elements and the spectrum ntr_pad * nfreq,
+    // with nfreq <= ns_pad. Reject a product that would wrap size_t before anything indexes
+    // or allocates with it. ns_pad >= 1, so the division is safe.
+    if (ntr_pad > std::numeric_limits<size_t>::max() / ns_pad) {
+        throw std::invalid_argument("fk: padded grid is too large");
+    }
     const size_t nthreads = resolve_threads(params.threads);
 
     // Step 3: copy the input into the top-left of a zeroed padded buffer, with edge tapers.
@@ -207,11 +215,14 @@ void fk_filter_gather(const float* in, float* out,
 
     // Step 5: weight every bin. f_j = j / (ns_pad dt); k_i = fftfreq(ntr_pad, dx)[i]
     // using numpy's convention (indices above (n - 1) / 2 are negative).
-    // Note: for even ntr_pad the k-Nyquist row is its own negative, so W(f, k) != W(-f, k)
-    // there and the weight is not Hermitian-symmetric in f. The c2r inverse below takes the
-    // real part, so this row is applied exactly as the spec's rfft2/irfft2 algorithm defines
-    // it. A Hermitian-symmetrised filter differs by a few percent relRMS on such grids
-    // (e.g. 37 x 53 gathers). FK_PIPELINE.md section 2 needs correcting on this point.
+    // Note: W(-f, -k) = W(f, k) holds everywhere except on two Nyquist lines, which are their
+    // own negatives. For even ntr_pad, the k-Nyquist row has k = -K, and v(f, -K) = f / K is
+    // not v(-f, -K). For even ns_pad, the f-Nyquist column has f = +F, and +F and -F are the
+    // same bin, so v flips sign with k and W(F, k) != W(F, -k) in general. Both cases only
+    // matter in the aliasing regime (|v| >= dx / dt). The c2r inverse below takes the real
+    // part, so these bins are applied exactly as the spec's rfft2/irfft2 algorithm defines
+    // them. A Hermitian-symmetrised filter differs by a few percent relRMS on such grids
+    // (e.g. 37 x 53 gathers). FK_PIPELINE.md sections 2 and 3 state this.
     const BandCoeffs band = make_band(params);
     const double df = 1.0 / (static_cast<double>(ns_pad) * params.dt);
     const double dk = 1.0 / (static_cast<double>(ntr_pad) * params.dx);

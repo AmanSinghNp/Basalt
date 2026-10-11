@@ -414,6 +414,34 @@ TEST(FKWeight, SignConventionVelocityIsMinusFOverK) {
     EXPECT_DOUBLE_EQ(fk_mute_weight(-500.0, 0.5, neg), 0.0);
 }
 
+TEST(FKWeight, HardEdgeBandIsHalfOpen) {
+    // taper = 0: the band is (v_min, v_max]. Pass [500, 2000] excludes v = 500 and includes
+    // v = 2000 (spec section 3, boundary convention).
+    FKMuteParams p = event_params();
+    p.taper = 0.0;
+    p.mode = FKMode::Pass;
+    EXPECT_DOUBLE_EQ(fk_mute_weight(-500.0, 1.0, p), 0.0);   // v = 500 = v_min
+    EXPECT_DOUBLE_EQ(fk_mute_weight(-2000.0, 1.0, p), 1.0);  // v = 2000 = v_max
+    p.mode = FKMode::Reject;
+    EXPECT_DOUBLE_EQ(fk_mute_weight(-500.0, 1.0, p), 1.0);
+    EXPECT_DOUBLE_EQ(fk_mute_weight(-2000.0, 1.0, p), 0.0);
+}
+
+TEST(FKWeight, NyquistLinesAreNotHermitian) {
+    // dt = 2 ms gives F = 250 Hz; dx = 25 m gives K = 0.02 cycles/m. Both are their own
+    // negatives on the grid, so W(-f, -k) != W(f, k) there (spec section 2). Pass [5000, 20000]:
+    // (F, +K) gives v = -12500 (outside) and (F, -K) gives v = +12500 (inside).
+    FKMuteParams p;
+    p.dt = 0.002;
+    p.dx = 25.0;
+    p.v_min = 5000.0;
+    p.v_max = 20000.0;
+    p.taper = 0.0;
+    p.mode = FKMode::Pass;
+    EXPECT_DOUBLE_EQ(fk_mute_weight(250.0, 0.02, p), 0.0);
+    EXPECT_DOUBLE_EQ(fk_mute_weight(250.0, -0.02, p), 1.0);
+}
+
 TEST(FKWeight, HermitianSymmetry) {
     FKMuteParams p = event_params();
     p.mode = FKMode::Pass;
@@ -527,6 +555,17 @@ TEST(FKPipeline, InvalidParamsThrow) {
     EXPECT_THROW(fk_padded_samples(ns, p), std::invalid_argument);
 }
 
+TEST(FKPipeline, PaddedGridOverflowIsRejected) {
+    // pad 2^31 on 2 x 2 gives padded axes of 2^32 each, and their product wraps size_t to 0.
+    // The pipeline must throw before allocating or indexing with the wrapped size.
+    const std::vector<float> in(4, 1.0f);
+    std::vector<float> out(4);
+    FKMuteParams p;
+    p.pad_factor = 2147483648.0;
+    EXPECT_THROW(fk_filter_gather(in.data(), out.data(), 2, 2, p), std::invalid_argument);
+    EXPECT_THROW(fk_filter_gather(in, 2, 2, p), std::invalid_argument);
+}
+
 TEST(FKPipeline, PaddedSizesCoverRequestAndAreSmooth) {
     for (size_t n : {size_t{1}, size_t{2}, size_t{7}, size_t{13}, size_t{100},
                      size_t{1001}, size_t{1500}}) {
@@ -592,11 +631,60 @@ TEST(FKPipeline, EdgeTaperFormulaWithEmptyBand) {
     EXPECT_LE(rel_rms(out, want), 1e-5);
 }
 
+TEST(FKPipeline, EdgeTapersMultiplyWhenTheyOverlap) {
+    // One trace is reached by both the start and the end taper (spec section 4, step 3), so its
+    // weight is w(0)^2 with N = 4. w(0) = 0.5 - 0.5 cos(pi / 5), so w(0)^2 = 0.00911863.
+    // An empty Reject band leaves the tapered input as the output.
+    const size_t ntr = 1;
+    const size_t ns = 9;
+    const auto in = random_gather(ntr, ns, 29);
+    FKMuteParams p;
+    p.v_min = 1e6;
+    p.v_max = 1e6 + 1.0;
+    p.taper = 0.0;
+    p.edge_taper_traces = 4;
+    p.edge_taper_samples = 0;
+    const auto out = fk_filter_gather(in, ntr, ns, p);
+
+    const double w = taper_weight(0, 4) * taper_weight(0, 4);
+    EXPECT_NEAR(w, 0.00911863, 1e-8);
+    std::vector<float> want(ns);
+    for (size_t s = 0; s < ns; ++s) {
+        want[s] = static_cast<float>(static_cast<double>(in[s]) * w);
+    }
+    EXPECT_LE(rel_rms(out, want), 1e-5);
+}
+
+TEST(FKPipeline, EdgeTaperSizeMaxStaysFinite) {
+    // n + 1 used to wrap to 0 for n = SIZE_MAX, which gave NaN taper weights.
+    const size_t ntr = 4;
+    const size_t ns = 8;
+    const std::vector<float> in(ntr * ns, 1.0f);
+    const size_t big = std::numeric_limits<size_t>::max();
+    FKMuteParams p;
+    p.v_min = 1e6;
+    p.v_max = 1e6 + 1.0;
+    p.taper = 0.0;
+
+    p.edge_taper_traces = big;
+    p.edge_taper_samples = 0;
+    for (float v : fk_filter_gather(in, ntr, ns, p)) {
+        EXPECT_TRUE(std::isfinite(v));
+    }
+    p.edge_taper_traces = 0;
+    p.edge_taper_samples = big;
+    for (float v : fk_filter_gather(in, ntr, ns, p)) {
+        EXPECT_TRUE(std::isfinite(v));
+    }
+}
+
 TEST(FKPipeline, RejectEmptyBandKeepsInteriorTraces) {
     // Events at +-1000 m/s. The band [-400, 400] lies between them, so it holds no event
-    // energy. The events carry a Hann envelope along x so that truncation leakage stays well
-    // below the 1e-4 bound (with hard-edged events the leakage alone is about 1e-2).
-    // Interior traces (outside the 4-trace edge taper zone) must come back unchanged.
+    // energy. Spec section 4 states the 1e-4 criterion for inputs smooth along x. The events
+    // therefore carry a Hann envelope, which keeps truncation leakage well below the bound.
+    // The spec's literal hard-edged events leak about 5.7e-3 here (measured), so this test
+    // deliberately deviates from that synthetic setup. Interior traces (outside the 4-trace
+    // edge taper zone) must come back unchanged.
     const auto in = two_event_gather(true, true, true);
     FKMuteParams p = event_params();
     p.v_min = -400.0;
@@ -627,12 +715,12 @@ TEST(FKPipeline, AllPassIsIdentity) {
 }
 
 TEST(FKPipeline, AllPassOnRawInputRemovesOnlyTraceMean) {
-    // Spec section 4 says the all-pass configuration returns raw input to 1e-5. That cannot hold:
-    // k = 0, f != 0 has v = +inf (section 2), which lies outside any finite band, so Pass drops
-    // that row. With preserve_dc the (0, 0) bin is kept, so the output is
+    // Spec section 4 (as amended) requires the all-pass configuration to return
     //   out(t, s) = in(t, s) - m(s) + M,
-    // where m(s) = sum_t in(t, s) / ntr_pad and M = sum(in) / (ntr_pad * ns_pad). Both sums run
-    // over the valid block; the zero padding counts in the normalisation.
+    // where m(s) = sum_t in(t, s) / ntr_pad and M = sum(in) / (ntr_pad * ns_pad). The k = 0,
+    // f != 0 row has v = +inf (section 2), which lies outside any finite band, so Pass drops
+    // it. With preserve_dc the (0, 0) bin is kept, which gives M. Both sums run over the valid
+    // block; the zero padding counts in the normalisation.
     const size_t ntr = 40;
     const size_t ns = 128;
     const auto in = random_gather(ntr, ns, 5);

@@ -29,7 +29,8 @@ struct FKMuteParams {
 };
 
 /// Filters a trace-major gather (`data[t * nsamples + s]`) in f-k space.
-/// Throws std::invalid_argument on invalid parameters, zero sizes or null pointers.
+/// Throws std::invalid_argument on invalid parameters, zero sizes, null pointers or a padded
+/// grid whose element count would overflow size_t.
 /// `in` and `out` may alias (in-place filtering is allowed).
 void fk_filter_gather(const float* in, float* out,
                       size_t ntraces, size_t nsamples,
