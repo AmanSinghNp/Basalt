@@ -617,6 +617,20 @@ TEST(FKPipeline, PaddedSizesCoverRequestAndAreSmooth) {
     EXPECT_THROW(fk_padded_samples(1001, p), std::invalid_argument);
 }
 
+TEST(FKPipeline, RejectsStepsThatOverflowToZero) {
+    // n_pad * dx (or n_pad * dt) overflows to inf, so the wavenumber (or frequency) step would be
+    // exactly 0 and every bin would collapse onto one value. That must be an error, not output.
+    const size_t ntr = 7;
+    const size_t ns = 13;
+    const auto in = random_gather(ntr, ns, 5);
+    FKMuteParams p;
+    p.dx = 1e308;
+    EXPECT_THROW(fk_filter_gather(in, ntr, ns, p), std::invalid_argument);
+    p = FKMuteParams{};
+    p.dt = 1e308;
+    EXPECT_THROW(fk_filter_gather(in, ntr, ns, p), std::invalid_argument);
+}
+
 TEST(FKPipeline, EdgeTaperFormulaWithEmptyBand) {
     // A band far above any velocity in the data leaves every bin with weight 1 under Reject,
     // so the output is exactly the tapered input.
@@ -1046,8 +1060,16 @@ TEST(FKPipeline, ParallelWeightTableAndMultiplyMatchSerial) {
     p4.threads = 4;
     const size_t spec_count = fk_padded_traces(ntr, p1) * (fk_padded_samples(ns, p1) / 2 + 1);
     ASSERT_GE(spec_count, size_t{4} * 256 * 1024);
-    const auto a = fk_filter_gather(in, ntr, ns, p1);
-    const auto b = fk_filter_gather(in, ntr, ns, p4);
+    // The weight cache key ignores `threads`, so each call runs on a fresh thread. Otherwise the
+    // second call would be a cache hit and the parallel table build would never run.
+    const auto run_on_fresh_thread = [&in, ntr, ns](const FKMuteParams& p) {
+        std::vector<float> out;
+        std::thread worker([&] { out = fk_filter_gather(in, ntr, ns, p); });
+        worker.join();
+        return out;
+    };
+    const auto a = run_on_fresh_thread(p1);
+    const auto b = run_on_fresh_thread(p4);
     ASSERT_EQ(a.size(), b.size());
     double max_diff = 0.0;
     for (size_t i = 0; i < a.size(); ++i) {

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <thread>
@@ -245,22 +246,25 @@ bool same_key(const WeightKey& a, const WeightKey& b) {
 
 struct WeightCacheEntry {
     bool valid = false;
+    uint64_t last_use = 0;     // value of the per-thread use counter at the last hit or build
     WeightKey key{};
     std::vector<float> table;  // ntr_pad x nfreq, row i holds the bins of wavenumber index i
 };
 
 // Returns the ntr_pad x nfreq float weight table for `params`, building it on a miss. Tables
-// are cached per calling thread, at most kWeightCacheEntries of them, and the entry that was
-// replaced longest ago is overwritten first. The reference stays valid until the calling thread
-// next calls this function.
+// are cached per calling thread, at most kWeightCacheEntries of them. A hit counts as a use, and
+// on a miss when the cache is full the least recently used entry is overwritten. The reference
+// stays valid until the calling thread next calls this function.
 const std::vector<float>& weight_table(const FKMuteParams& params, size_t ntr_pad, size_t ns_pad,
                                        double df, double dk, size_t nthreads) {
     thread_local std::vector<WeightCacheEntry> cache;
-    thread_local size_t next_slot = 0;
+    thread_local uint64_t use_counter = 0;
 
+    ++use_counter;
     const WeightKey key = make_weight_key(params, ntr_pad, ns_pad);
-    for (const WeightCacheEntry& entry : cache) {
+    for (WeightCacheEntry& entry : cache) {
         if (entry.valid && same_key(entry.key, key)) {
+            entry.last_use = use_counter;
             return entry.table;
         }
     }
@@ -271,11 +275,15 @@ const std::vector<float>& weight_table(const FKMuteParams& params, size_t ntr_pa
         cache.emplace_back();
         slot = cache.size() - 1;
     } else {
-        slot = next_slot;
-        next_slot = (next_slot + 1) % kWeightCacheEntries;
+        for (size_t i = 1; i < cache.size(); ++i) {
+            if (cache[i].last_use < cache[slot].last_use) {
+                slot = i;
+            }
+        }
     }
     WeightCacheEntry& entry = cache[slot];
     entry.valid = false;
+    entry.last_use = use_counter;
 
     // f_j = j * df for j = 0 .. nfreq - 1; k_i = fftfreq(ntr_pad, dx)[i] (negative above the
     // middle, numpy convention). Both are evaluated exactly as the per-bin loop always did.
@@ -345,11 +353,14 @@ void fk_filter_gather(const float* in, float* out,
         throw std::invalid_argument("fk: padded grid is too large");
     }
     // Frequency and wavenumber steps. A tiny dt or dx makes 1 / (n * step) overflow to inf, and
-    // the zero bin would then be 0 * inf = NaN. Reject that before any buffer is allocated.
+    // the zero bin would then be 0 * inf = NaN. A huge dt or dx makes n * step overflow to inf, so
+    // the step becomes 0 and every bin collapses onto f = 0 or k = 0, which silently gives a wrong
+    // result. Reject both before any buffer is allocated.
     const double df = 1.0 / (static_cast<double>(ns_pad) * params.dt);
     const double dk = 1.0 / (static_cast<double>(ntr_pad) * params.dx);
-    if (!(std::isfinite(df) && std::isfinite(dk))) {
-        throw std::invalid_argument("fk: dt or dx is too small; frequency or wavenumber step overflows");
+    if (!(std::isfinite(df) && df > 0.0 && std::isfinite(dk) && dk > 0.0)) {
+        throw std::invalid_argument(
+            "fk: dt or dx is out of range; the frequency or wavenumber step is not a positive finite value");
     }
     const size_t nthreads = resolve_threads(params.threads);
     const size_t grid_count = ntr_pad * ns_pad;
