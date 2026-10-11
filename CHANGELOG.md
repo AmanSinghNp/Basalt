@@ -35,8 +35,15 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
   power-of-two API is documented in its own section
 - Legacy `apply_fk_filter` output differs from 0.1.0. The causes are the signed band and the DC and `k = 0`
   handling listed under Fixed, which change which bins are muted and how the velocity divisor is computed
+- CI: the sanitizer job fails on any UBSan finding (`-fno-sanitize-recover=undefined`), and the benchmark
+  steps no longer ignore failures
 
 ### Fixed
+
+- `file_mapping_test` used one temporary file name for every test, so tests run in parallel by `ctest -j`
+  could delete each other's file. Each test now uses its own name
+- Under AddressSanitizer, `ctest` sets `ASAN_OPTIONS=allocator_may_return_null=1`, so the CLI's out-of-memory
+  path is tested instead of aborting the process
 
 - Legacy `apply_fk_filter` ignored `mute_vel_min`, so the mute was always symmetric in `|v|`. It now mutes the
   signed band `[mute_vel_min, mute_vel_max]`

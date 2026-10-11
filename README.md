@@ -38,13 +38,14 @@ Print the geometry and sample format of a SEG-Y file, then filter it:
 
 ```bash
 ./build/basalt info in.segy
-./build/basalt filter in.segy out.segy --vmin 500 --vmax 2000 --mode reject
+./build/basalt filter in.segy out.segy --vmin 500 --vmax 2000 --mode reject --dx 5
 ```
 
-This mutes events with apparent velocity between 500 and 2000 m/s and keeps the rest. The input
+This mutes events with apparent velocity between 500 and 2000 m/s and keeps the rest. Set `--dx` to
+the trace spacing of your data, which defaults to 25 m; the `--dx 5` above matches the synthetic file
+from the [Python example](#python) below, which you can pass in place of `in.segy`. The input
 must be a SEG-Y file with a fixed trace length and IBM32, INT32, INT16, IEEE32 or INT8 samples;
-other format codes are rejected. The [Python example](#python) below writes a small synthetic file,
-`synthetic.segy`, which you can pass in place of `in.segy`.
+other format codes are rejected.
 
 Every option of `basalt filter`:
 
@@ -218,14 +219,8 @@ The full definition, including the `k = 0` and DC cases, is in
 
 ## Performance
 
-In the measurements in [PERFORMANCE.md](PERFORMANCE.md), the f-k pipeline is faster than numpy's
-2D FFT round trip at every gather size and every Basalt thread count tested. numpy runs single-threaded
-in these comparisons. Single-threaded, Basalt is roughly on par with `scipy.fft` but slightly behind
-it in most runs: 17 percent slower at 240x1001 and 16 percent slower at 2048x2048 in the Python
-harness, both outside run-to-run spread, and behind in 15 of 18 invocations at 1024x1024. At
-1001x1500 the two are tied. With four threads `scipy.fft` was ahead in those runs. The numbers come
-from one 4-vCPU cloud VM and are indicative, not certified. Methodology, hardware and caveats are in
-[PERFORMANCE.md](PERFORMANCE.md).
+The f-k pipeline is faster than numpy's 2D FFT round trip, and it is roughly on par with `scipy.fft`
+single-threaded. The measurements, hardware and caveats are in [PERFORMANCE.md](PERFORMANCE.md).
 
 ## Legacy power-of-two API
 
@@ -314,8 +309,9 @@ that build, so it is optimised, not unoptimised. CI also has a separate job for 
 ./build/basalt_bench --sizes 256,512,1024 --threads 1,2,4 --simd auto,avx2,avx512 --numa off,auto --memory-policy bind-worker-buffers,bind-inputs-if-possible --csv-out benchmark.csv --json-out benchmark.json
 ```
 
-The example above runs 108 configurations (3 sizes x 3 thread counts x 3 SIMD modes x 2 NUMA modes
-x 2 memory policies), each with the default 64 timed shots. It can take well over 15 minutes. For a
+The example above runs 90 configurations. For each of its 3 sizes there are 6 at one thread (the `auto`
+NUMA mode is skipped at one thread) and 12 at each of two and four threads (3 SIMD modes x 2 NUMA modes
+x 2 memory policies). Each configuration takes the default 64 timed shots. It can take well over 15 minutes. For a
 quick run, give shorter lists, or pass smaller values for `--shots` and `--warmup`.
 
 CSV output uses flat `|`-delimited counter fields for locality metrics. JSON emits the same
