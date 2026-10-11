@@ -47,8 +47,14 @@ value `e`, the transition half-width is `h(e) = 0.5 * taper * |e|` (if `h == 0` 
     weight = 1 - inside(v)   for Reject  (mute the band, keep the rest)
     weight = inside(v)       for Pass    (keep only the band)
 
-Because `v(-f, -k) = v(f, k)`, the weight is Hermitian-symmetric and the output of the
-inverse real transform is real. `basalt::fk_mute_weight(f_hz, k_cpm, params)` exposes this
+Because `v(-f, -k) = v(f, k)`, the weight is Hermitian-symmetric everywhere except on the
+Nyquist row (`k = -k_N` for even `ntr_pad`) and Nyquist column (`f = f_N` for even `ns_pad`),
+whose mirror bins alias to themselves. The pipeline does not special-case them: the
+complex-to-real inverse keeps only their Hermitian part, which matches
+`numpy.fft.irfft2(rfft2(x) * w)`. Energy there is only present for spatially or temporally
+aliased data, so this is a documented edge case, not an error. (The legacy power-of-two
+`apply_fk_filter` averages the weights at `v` and `-v` on those lines instead; both are
+acceptable.) `basalt::fk_mute_weight(f_hz, k_cpm, params)` exposes this
 function for testing. It must be a pure function of its arguments.
 
 ## 4. Pipeline (`basalt::fk_filter_gather`)
@@ -105,9 +111,14 @@ Steps:
 
 Required numerical behaviour:
 - With `mode = Reject` and a band that contains no energy, output equals input to within
-  1e-4 relative RMS for traces outside the edge-taper zone.
-- An all-pass configuration (e.g. `mode = Pass, v_min = -1e30, v_max = 1e30`, taper 0,
-  no edge tapers) returns the input to 1e-5 relative RMS.
+  1e-4 relative RMS for traces outside the edge-taper zone. "No energy" means smooth input
+  (events with a Hann envelope along x); hard-truncated events leak some energy into every
+  band and are not expected to meet 1e-4.
+- Identity configuration: `mode = Reject` with a band no bin falls in (e.g.
+  `v_min = 1e29, v_max = 1e30`), taper 0, no edge tapers, returns raw input to 1e-5
+  relative RMS. Note that `mode = Pass` with a huge band is *not* the identity: by section 2
+  the `k = 0` row has `v = +inf`, which lies outside every finite band, so Pass removes the
+  trace-to-trace mean (flat events). This is intended.
 - Non power-of-2 sizes such as 1001 x 1500 and 7 x 13 work.
 - Synthetic test: two linear events, one at `+1000 m/s` and one at `-1000 m/s`. Rejecting
   `[500, 2000]` attenuates the +1000 event by >= 20 dB while the -1000 event loses < 1 dB
@@ -139,7 +150,9 @@ struct SegyData {
 SegyData read_segy(const std::string& path);
 
 // Writes a SEG-Y file. Headers are written back from the raw arrays, except that the
-// binary header format code is updated to `out_format` and samples are encoded in it.
+// binary header format code is updated to `out_format` (samples are encoded in it) and the
+// extended textual header count (bytes 3505-3506) is set to 0, because extended textual
+// headers are skipped on read and not written back.
 // Supports writing IBM32 and IEEE32.
 void write_segy(const std::string& path, const SegyData& data,
                 SampleFormat out_format = SampleFormat::IEEE32);
