@@ -451,7 +451,11 @@ TEST(FKWeight, NyquistLinesAreNotHermitian) {
     EXPECT_DOUBLE_EQ(fk_mute_weight(250.0, -0.02, p), 1.0);
 }
 
-TEST(FKWeight, HermitianSymmetry) {
+// Sanity check of the value-negation identity W(f, k) = W(-f, -k). Under v = -f / k this holds
+// for every bin, Nyquist lines included, so the test only fails if the sign convention regresses.
+// It does not test index-Hermitian behaviour on the Nyquist row and column; that is covered by
+// NyquistLinesAreNotHermitian and MatchesDirectReferenceAtOddSizes.
+TEST(FKWeight, ValueNegationInvariant) {
     FKMuteParams p = event_params();
     p.mode = FKMode::Pass;
     std::mt19937 rng(7);

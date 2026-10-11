@@ -224,10 +224,15 @@ void fk_filter_gather(const float* in, float* out,
     // W(F, k) != W(F, -k) in general. Both cases only matter for aliased data. On the k-Nyquist
     // row, energy comes only from slow events with |v| < dx / dt (spatial aliasing).
     // These Nyquist bins are not special-cased. The c2r inverse below keeps only their
-    // Hermitian part, which matches numpy.fft.irfft2(rfft2(x) * w). A Hermitian-symmetrised
-    // filter gives a different result. The difference depends on the band, the grid size and
-    // the input, and is not a small rounding effect: on random input it reached about 23%
-    // relRMS for 9 x 33 gathers with a Pass band of [500, 2000] m/s (dt = 2 ms, dx = 5 m).
+    // Hermitian part, which matches numpy.fft.irfft2(rfft2(x) * w). Here "Hermitian-symmetrised"
+    // means the index-mirror average W_sym(i, j) = [W(i, j) + W(-i, -j)] / 2, with indices taken
+    // mod (ntr_pad, ns_pad) and each full-grid index using its own frequency and wavenumber
+    // (f = j * df for j <= ns_pad / 2 and wrapped negative above, k wrapped as in step 5). Averaging
+    // with the value-negated pair W(-f, -k) gives W itself, because v = -f / k is unchanged, so
+    // that is not the alternative meant here. The index-mirror average differs from the pipeline
+    // by a seed-dependent amount, not a rounding effect: for random 9 x 33 gathers with a Pass
+    // band of [500, 2000] m/s (dt = 2 ms, dx = 5 m, taper 0.1, pad 1.5, no edge tapers) the
+    // relRMS difference was 15% to 28% over seeds 0 to 9, and 26% for seed 1.
     const BandCoeffs band = make_band(params);
     const double df = 1.0 / (static_cast<double>(ns_pad) * params.dt);
     const double dk = 1.0 / (static_cast<double>(ntr_pad) * params.dx);
