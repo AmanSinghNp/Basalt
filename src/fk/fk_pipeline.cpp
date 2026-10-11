@@ -114,8 +114,8 @@ inline double edge_taper_weight(size_t i, size_t n) {
 }
 
 // Product of the start and end edge tapers along a line of length `len`. When the two tapers
-// reach the same sample (len < 2n) their weights multiply. The contract does not state this
-// case; it is the implemented behaviour pending the contract decision (see commit c878967).
+// reach the same sample (len < 2n) their weights multiply. FK_PIPELINE.md section 4 step 3 does
+// not state this case; the product is the implemented choice and is open for a contract decision.
 std::vector<double> make_edge_taper(size_t len, size_t n) {
     std::vector<double> w(len, 1.0);
     const size_t m = std::min(n, len);
@@ -223,8 +223,8 @@ void fk_filter_gather(const float* in, float* out,
     // matter in the aliasing regime (|v| >= dx / dt). The c2r inverse below takes the real
     // part, so these bins are applied exactly as the spec's rfft2/irfft2 algorithm defines
     // them. A Hermitian-symmetrised filter differs by a few percent relRMS on such grids
-    // (e.g. 37 x 53 gathers). FK_PIPELINE.md does not state this yet; the proposed amendment
-    // is in commit c878967, pending the contract decision.
+    // (e.g. 37 x 53 gathers). FK_PIPELINE.md section 2 states Hermitian symmetry everywhere,
+    // which is false on these lines; the contract text needs correcting by its owner.
     const BandCoeffs band = make_band(params);
     const double df = 1.0 / (static_cast<double>(ns_pad) * params.dt);
     const double dk = 1.0 / (static_cast<double>(ntr_pad) * params.dx);

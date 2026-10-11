@@ -416,8 +416,8 @@ TEST(FKWeight, SignConventionVelocityIsMinusFOverK) {
 
 TEST(FKWeight, HardEdgeBandIsHalfOpen) {
     // taper = 0: the band is (v_min, v_max]. Pass [500, 2000] excludes v = 500 and includes
-    // v = 2000. The half-open convention is not in the contract; it is a proposed amendment
-    // (commit c878967) pending the contract decision.
+    // v = 2000. This follows from section 3 with h = 0: rise(e; e) = 0 by the first branch, so
+    // the lower edge is excluded and the upper edge (fall = 1 - rise = 1) is included.
     FKMuteParams p = event_params();
     p.taper = 0.0;
     p.mode = FKMode::Pass;
@@ -430,8 +430,9 @@ TEST(FKWeight, HardEdgeBandIsHalfOpen) {
 
 TEST(FKWeight, NyquistLinesAreNotHermitian) {
     // dt = 2 ms gives F = 250 Hz; dx = 25 m gives K = 0.02 cycles/m. Both are their own
-    // negatives on the grid, so W(-f, -k) != W(f, k) there. That is not in the contract, which
-    // states Hermitian symmetry everywhere; the proposed amendment is in commit c878967.
+    // negatives on the grid, so W(-f, -k) != W(f, k) there. FK_PIPELINE.md section 2 states
+    // Hermitian symmetry everywhere, which does not hold on these lines (contract text to be
+    // corrected by its owner). The pinned values follow the rfft2/irfft2 algorithm in section 4.
     // Pass [5000, 20000]:
     // (F, +K) gives v = -12500 (outside) and (F, -K) gives v = +12500 (inside).
     FKMuteParams p;
@@ -636,7 +637,7 @@ TEST(FKPipeline, EdgeTaperFormulaWithEmptyBand) {
 
 TEST(FKPipeline, EdgeTapersMultiplyWhenTheyOverlap) {
     // One trace is reached by both the start and the end taper. The contract does not state
-    // how overlapping tapers combine; this pins the implemented product (commit c878967). The
+    // how overlapping tapers combine; this pins the implemented product, an open decision item. The
     // weight is w(0)^2 with N = 4. w(0) = 0.5 - 0.5 cos(pi / 5), so w(0)^2 = 0.00911863.
     // An empty Reject band leaves the tapered input as the output.
     const size_t ntr = 1;
@@ -684,11 +685,11 @@ TEST(FKPipeline, EdgeTaperSizeMaxStaysFinite) {
 
 TEST(FKPipeline, RejectEmptyBandKeepsInteriorTraces) {
     // Events at +-1000 m/s. The band [-400, 400] lies between them, so it holds no event
-    // energy. The contract's 1e-4 criterion does not say the input must be smooth along x; the
-    // proposed amendment (commit c878967) does. Hard-edged events leak about 5.7e-3 here
-    // (measured), so this test uses Hann-envelope events and deliberately deviates from the
-    // contract's literal synthetic setup until the decision. Interior traces (outside the
-    // 4-trace edge taper zone) must come back unchanged.
+    // energy. With Hann-envelope events the leakage into the band is below 1e-4 relRMS.
+    // This is NOT the contract's literal synthetic setup (hard-edged events), which leaks
+    // about 5.7e-3 and is characterised separately in RejectEmptyBandHardEdgedLeakage. The
+    // contract's 1e-4 criterion is therefore only verified here for smooth-along-x input, and
+    // whether that is the intended test setup is an open contract decision.
     const auto in = two_event_gather(true, true, true);
     FKMuteParams p = event_params();
     p.v_min = -400.0;
@@ -699,10 +700,29 @@ TEST(FKPipeline, RejectEmptyBandKeepsInteriorTraces) {
     EXPECT_LE(rel_rms(out_mid, in_mid), 1e-4);
 }
 
+TEST(FKPipeline, RejectEmptyBandHardEdgedLeakage) {
+    // The contract's literal synthetic setup: hard-edged +-1000 m/s events, Reject of the empty
+    // band [-400, 400], taper 0.1 and the default 4-trace edge taper. Section 4 requires 1e-4
+    // relRMS on interior traces, which this setup does not meet. The measured value is 5.7e-3,
+    // from finite-aperture leakage of the truncated events in f-k space. This is a
+    // characterisation bound so that regressions are caught. It does NOT mean the contract is
+    // met; the contract requires a decision on this setup or its tolerance.
+    const auto in = two_event_gather(true, true, false);
+    FKMuteParams p = event_params();
+    p.v_min = -400.0;
+    p.v_max = 400.0;
+    const auto out = fk_filter_gather(in, kEvNtr, kEvNs, p);
+    const auto out_mid = trace_rows(out, kEvNs, 4, kEvNtr - 4);
+    const auto in_mid = trace_rows(in, kEvNs, 4, kEvNtr - 4);
+    EXPECT_LE(rel_rms(out_mid, in_mid), 1e-2);
+}
+
 TEST(FKPipeline, AllPassIsIdentity) {
     // Pass with a huge band keeps every bin except k = 0 (v = +inf is outside any finite band).
     // The trace-mean (k = 0) component is therefore removed, so the input is made zero-mean
-    // across traces first.
+    // across traces first. This checks that the non-k = 0 bins pass through. It is NOT the
+    // section 4 all-pass clause on raw input, which conflicts with section 2 and is an open
+    // contract decision; see AllPassOnRawInputRemovesOnlyTraceMean.
     const size_t ntr = 40;
     const size_t ns = 128;
     auto in = random_gather(ntr, ns, 5);
@@ -719,13 +739,14 @@ TEST(FKPipeline, AllPassIsIdentity) {
 }
 
 TEST(FKPipeline, AllPassOnRawInputRemovesOnlyTraceMean) {
-    // The contract's all-pass clause (input back to 1e-5) cannot hold: k = 0 (v = +inf) is
-    // dropped. The proposed amendment (commit c878967) requires
+    // Section 4's all-pass clause (raw input returned to 1e-5) conflicts with section 2: the
+    // k = 0, f != 0 row has v = +inf, which is outside any finite band, so Pass drops it. The
+    // behaviour pinned here follows section 2 literally:
     //   out(t, s) = in(t, s) - m(s) + M,
-    // where m(s) = sum_t in(t, s) / ntr_pad and M = sum(in) / (ntr_pad * ns_pad). The k = 0,
-    // f != 0 row has v = +inf (section 2), which lies outside any finite band, so Pass drops
-    // it. With preserve_dc the (0, 0) bin is kept, which gives M. Both sums run over the valid
-    // block; the zero padding counts in the normalisation.
+    // where m(s) = sum_t in(t, s) / ntr_pad and M = sum(in) / (ntr_pad * ns_pad). With
+    // preserve_dc the (0, 0) bin is kept, which gives M. Both sums run over the valid block;
+    // the zero padding counts in the normalisation. Which reading the contract intends is an
+    // open decision, so the section 4 clause is not verified by this test.
     const size_t ntr = 40;
     const size_t ns = 128;
     const auto in = random_gather(ntr, ns, 5);
@@ -878,8 +899,10 @@ TEST(FKPipeline, MatchesDirectReferenceAtOddSizes) {
 }
 
 TEST(FKPipeline, AllPassIdentityAtLargeOddSize) {
-    // 1001 x 1500 pads to non-power-of-two sizes. Zero-mean input must come back unchanged
-    // under the all-pass configuration, which checks the padding offsets at a realistic size.
+    // 1001 x 1500 pads to non-power-of-two sizes. Zero-mean input (k = 0 row removed first) must
+    // come back unchanged under the all-pass configuration. This checks the padding offsets at a
+    // realistic size; it is not the section 4 all-pass clause on raw input (see the note in
+    // AllPassIsIdentity).
     const size_t ntr = 1001;
     const size_t ns = 1500;
     auto in = random_gather(ntr, ns, 67);
