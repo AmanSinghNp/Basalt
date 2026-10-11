@@ -730,8 +730,8 @@ TEST(FKPipeline, IdentityConfigReturnsRawInput) {
     p.mode = FKMode::Reject;
     p.edge_taper_traces = 0;
     p.edge_taper_samples = 0;
-    for (const auto& dims : {std::pair<size_t, size_t>{40, 128},
-                            std::pair<size_t, size_t>{1001, 1500}}) {
+    for (const auto& dims :
+         {std::pair<size_t, size_t>{40, 128}, std::pair<size_t, size_t>{1001, 1500}}) {
         const size_t ntr = dims.first;
         const size_t ns = dims.second;
         const auto in = random_gather(ntr, ns, 61);
@@ -768,7 +768,8 @@ TEST(FKPipeline, AllPassOnRawInputRemovesOnlyTraceMean) {
     //   out(t, s) = in(t, s) - m(s) + M,
     // where m(s) = sum_t in(t, s) / ntr_pad and M = sum(in) / (ntr_pad * ns_pad). Both sums run
     // over the valid block, and the zero padding counts in the normalisation.
-    // The identity configuration that returns raw input is covered by IdentityConfigReturnsRawInput.
+    // The identity configuration that returns raw input is covered by
+    // IdentityConfigReturnsRawInput.
     const size_t ntr = 40;
     const size_t ns = 128;
     const auto in = random_gather(ntr, ns, 5);
