@@ -224,7 +224,9 @@ void fk_filter_gather(const float* in, float* out,
     // W(F, k) != W(F, -k) in general. Both cases only matter for aliased data (|v| >= dx / dt).
     // These Nyquist bins are not special-cased. The c2r inverse below keeps only their
     // Hermitian part, which matches numpy.fft.irfft2(rfft2(x) * w). A Hermitian-symmetrised
-    // filter differs by a few percent relRMS on such grids (e.g. 37 x 53 gathers).
+    // filter gives a different result. The difference depends on the band, the grid size and
+    // the input, and is not a small rounding effect: on random input it reached about 23%
+    // relRMS for 9 x 33 gathers with a Pass band of [500, 2000] m/s (dt = 2 ms, dx = 5 m).
     const BandCoeffs band = make_band(params);
     const double df = 1.0 / (static_cast<double>(ns_pad) * params.dt);
     const double dk = 1.0 / (static_cast<double>(ntr_pad) * params.dx);

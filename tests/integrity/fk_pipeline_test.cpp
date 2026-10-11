@@ -433,8 +433,9 @@ TEST(FKWeight, NyquistLinesAreNotHermitian) {
     // dt = 2 ms gives F = 250 Hz; dx = 25 m gives K = 0.02 cycles/m. Both are their own
     // negatives on the grid, so W(-f, -k) != W(f, k) there. Section 3 of FK_PIPELINE.md makes
     // this exception explicit: Hermitian symmetry holds everywhere except on the Nyquist row and
-    // column. The pinned values follow the rfft2/irfft2 algorithm in section 4, which keeps the
-    // Hermitian part of these bins.
+    // column. This test pins the weight values only. How the pipeline's inverse treats these bins
+    // (it keeps their Hermitian part, as irfft2 does) is checked by
+    // MatchesDirectReferenceAtOddSizes, which uses even padded sizes.
     // Pass [5000, 20000]:
     // (F, +K) gives v = -12500 (outside) and (F, -K) gives v = +12500 (inside).
     FKMuteParams p;
@@ -588,6 +589,15 @@ TEST(FKPipeline, PaddedSizesCoverRequestAndAreSmooth) {
             EXPECT_TRUE(only_prime_factors(ps, {2, 3, 5})) << ps;
             EXPECT_LE(pt, 2 * want + 16) << "n=" << n << " pad=" << pad;
             EXPECT_LE(ps, 2 * want + 16) << "n=" << n << " pad=" << pad;
+            // Minimal, not just smooth: no smooth size lies in [want, padded).
+            for (size_t m = want; m < pt; ++m) {
+                EXPECT_FALSE(only_prime_factors(m, {2, 3, 5, 7, 11}))
+                    << "n=" << n << " pad=" << pad << " m=" << m;
+            }
+            for (size_t m = want; m < ps; ++m) {
+                EXPECT_FALSE(only_prime_factors(m, {2, 3, 5}))
+                    << "n=" << n << " pad=" << pad << " m=" << m;
+            }
         }
     }
     // Default pad factor 1.5: 1001 * 1.5 = 1501.5 -> at least 1502 samples.
