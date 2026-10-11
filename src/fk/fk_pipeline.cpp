@@ -9,7 +9,6 @@
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
-#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -154,13 +153,37 @@ size_t padded_length(size_t n, double pad_factor) {
     return static_cast<size_t>(padded);
 }
 
+// Joins every joinable thread in the list when it goes out of scope. Destroying a joinable
+// std::thread calls std::terminate, so this keeps unwinding (e.g. from the calling thread's own
+// share of the work) from reaching that state.
+class ThreadJoiner {
+public:
+    explicit ThreadJoiner(std::vector<std::thread>& threads) : threads_(threads) {}
+    ThreadJoiner(const ThreadJoiner&) = delete;
+    ThreadJoiner& operator=(const ThreadJoiner&) = delete;
+    ~ThreadJoiner() {
+        for (std::thread& t : threads_) {
+            if (t.joinable()) {
+                t.join();
+            }
+        }
+    }
+
+private:
+    std::vector<std::thread>& threads_;
+};
+
 // Calls fn(begin, end) on disjoint, contiguous row ranges that together cover [0, nrows).
 // The rows are split statically across up to `threads` threads, the calling thread included.
-// Workers are only started when `work` (elements touched) reaches kParallelMinWork. fn runs on
-// std::thread, so it must not throw.
+// Workers are only started when `work` (elements touched) reaches kParallelMinWork, and the
+// thread count is capped so that each worker gets about kParallelMinWork elements. A pass just
+// over the cutoff therefore uses two threads, not `threads`. fn may throw on the calling thread,
+// and the exception propagates after the workers are joined. fn must not throw on a worker
+// thread, because that would call std::terminate.
 template <typename Fn>
 void for_each_row_range(size_t nrows, size_t threads, size_t work, Fn&& fn) {
-    const size_t nt = std::min(threads, nrows);
+    const size_t by_work = std::max<size_t>(2, work / kParallelMinWork);
+    const size_t nt = std::min({threads, nrows, by_work});
     if (nt <= 1 || work < kParallelMinWork) {
         fn(size_t{0}, nrows);
         return;
@@ -168,6 +191,7 @@ void for_each_row_range(size_t nrows, size_t threads, size_t work, Fn&& fn) {
     const size_t chunk = (nrows + nt - 1) / nt;
     std::vector<std::thread> workers;
     workers.reserve(nt - 1);
+    ThreadJoiner joiner(workers);
     for (size_t w = 1; w < nt; ++w) {
         const size_t begin = std::min(nrows, w * chunk);
         const size_t end = std::min(nrows, begin + chunk);
@@ -176,15 +200,13 @@ void for_each_row_range(size_t nrows, size_t threads, size_t work, Fn&& fn) {
         }
         try {
             workers.emplace_back([&fn, begin, end] { fn(begin, end); });
-        } catch (const std::system_error&) {
-            // No thread could be started: run this range on the calling thread.
+        } catch (...) {
+            // No thread could be started (std::system_error, or std::bad_alloc while allocating
+            // the thread state): run this range on the calling thread.
             fn(begin, end);
         }
     }
     fn(size_t{0}, std::min(nrows, chunk));
-    for (std::thread& t : workers) {
-        t.join();
-    }
 }
 
 // Everything the weight of a bin depends on, besides the bin's own frequency and wavenumber.
@@ -335,6 +357,10 @@ void fk_filter_gather(const float* in, float* out,
 
     // Work buffers persist per calling thread, so repeated calls do not allocate or zero the
     // whole grid. Every element that is read is written first (see the padding below).
+    // Retention: these buffers and the weight tables (see weight_table) are kept until the
+    // calling thread exits, not released after each call. For a 2048 x 2048 gather (padded
+    // 3072 x 3072) that is about 113 MB per calling thread: about 75 MB of work buffers plus two
+    // 19 MB weight tables.
     thread_local std::vector<float> real;
     thread_local std::vector<std::complex<float>> spec;
     real.resize(grid_count);

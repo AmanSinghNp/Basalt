@@ -28,7 +28,10 @@ struct FKMuteParams {
     size_t edge_taper_samples = 0;  // Cosine taper on the first/last N samples of each trace
     bool preserve_dc = true;        // Keep the (f = 0, k = 0) bin in both modes. If false, that
                                     // bin is evaluated at v = 0, since -f/k is undefined there
-    size_t threads = 1;             // FFT threads; 0 = hardware concurrency
+    size_t threads = 1;             // Threads for the FFT and the copy, weight and table passes;
+                                    // 0 = hardware concurrency. Each calling thread keeps its work
+                                    // buffers and weight tables until it exits (about 113 MB for a
+                                    // 2048 x 2048 gather)
 };
 
 /// Filters a trace-major gather (`data[t * nsamples + s]`) in f-k space.

@@ -13,6 +13,7 @@
 #include <limits>
 #include <random>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1030,4 +1031,97 @@ TEST(FKPipeline, VectorOverloadMatchesPointerOverload) {
     fk_filter_gather(in.data(), out.data(), ntr, ns, p);
     const auto via_vec = fk_filter_gather(in, ntr, ns, p);
     EXPECT_EQ(via_vec, out);
+}
+
+TEST(FKPipeline, ParallelWeightTableAndMultiplyMatchSerial) {
+    // Large enough that the weight-table build and the weight multiply get four workers, not
+    // two: each worker needs about 256k spectrum elements, and 1536 x 1126 is about 1.7M.
+    const size_t ntr = 1001;
+    const size_t ns = 1500;
+    const auto in = random_gather(ntr, ns, 61);
+    FKMuteParams p1 = event_params();
+    p1.threads = 1;
+    p1.mode = FKMode::Pass;
+    FKMuteParams p4 = p1;
+    p4.threads = 4;
+    const size_t spec_count = fk_padded_traces(ntr, p1) * (fk_padded_samples(ns, p1) / 2 + 1);
+    ASSERT_GE(spec_count, size_t{4} * 256 * 1024);
+    const auto a = fk_filter_gather(in, ntr, ns, p1);
+    const auto b = fk_filter_gather(in, ntr, ns, p4);
+    ASSERT_EQ(a.size(), b.size());
+    double max_diff = 0.0;
+    for (size_t i = 0; i < a.size(); ++i) {
+        max_diff = std::max(max_diff, std::fabs(static_cast<double>(a[i]) - static_cast<double>(b[i])));
+    }
+    EXPECT_LE(max_diff, 1e-6);
+}
+
+// Runs fk_filter_gather on a new thread, whose thread_local weight cache starts empty. The result
+// is a reference that cannot come from a cache hit.
+std::vector<float> filter_on_fresh_thread(const std::vector<float>& in, size_t ntr, size_t ns,
+                                          const FKMuteParams& p) {
+    std::vector<float> out;
+    std::thread worker([&] { out = fk_filter_gather(in, ntr, ns, p); });
+    worker.join();
+    return out;
+}
+
+TEST(FKPipeline, WeightCacheKeyFieldsAreNotStale) {
+    // Each step changes one key field (or returns to an earlier configuration, which should hit
+    // the cache). Every in-thread result must equal a result computed on a fresh thread.
+    const size_t ntr = 40;
+    const size_t ns = 90;
+    const auto in = random_gather(ntr, ns, 59);
+    const FKMuteParams base = event_params();
+    FKMuteParams dt = base;
+    dt.dt = 0.003;
+    FKMuteParams dx = base;
+    dx.dx = 10.0;
+    FKMuteParams taper = base;
+    taper.taper = 0.5;
+    FKMuteParams vmin = base;
+    vmin.v_min = 300.0;
+    FKMuteParams vmax = base;
+    vmax.v_max = 2500.0;
+    FKMuteParams pass = base;
+    pass.mode = FKMode::Pass;
+    FKMuteParams pass_no_dc = pass;
+    pass_no_dc.preserve_dc = false;
+
+    const std::vector<std::pair<const char*, FKMuteParams>> steps = {
+        {"base", base}, {"dt", dt}, {"base", base}, {"dx", dx}, {"base", base},
+        {"taper", taper}, {"base", base}, {"v_min", vmin}, {"base", base}, {"v_max", vmax},
+        {"pass", pass}, {"pass_no_dc", pass_no_dc}, {"pass", pass}, {"base", base},
+    };
+    const auto base_ref = filter_on_fresh_thread(in, ntr, ns, base);
+    for (const auto& step : steps) {
+        const auto cached = fk_filter_gather(in, ntr, ns, step.second);
+        const auto fresh = filter_on_fresh_thread(in, ntr, ns, step.second);
+        EXPECT_EQ(cached, fresh) << "step " << step.first;
+    }
+    // Sanity check that the steps are not trivially equal to the base configuration.
+    for (const auto& step : {dt, dx, taper, vmin, vmax, pass}) {
+        EXPECT_GT(rel_rms(filter_on_fresh_thread(in, ntr, ns, step), base_ref), 1e-6);
+    }
+}
+
+TEST(FKPipeline, ReusedThreadBuffersLeaveNoStalePadding) {
+    // A large gather fills the thread_local work buffers with data in a different layout. A
+    // smaller gather on the same thread must not pick up any of it through the padding.
+    const size_t big_ntr = 300;
+    const size_t big_ns = 500;
+    const auto big_in = random_gather(big_ntr, big_ns, 67);
+    const size_t ntr = 40;
+    const size_t ns = 90;
+    const auto small_in = random_gather(ntr, ns, 71);
+    FKMuteParams p = event_params();
+    p.edge_taper_samples = 5;
+    const auto fresh = filter_on_fresh_thread(small_in, ntr, ns, p);
+    std::vector<float> reused;
+    std::thread worker([&] {
+        fk_filter_gather(big_in, big_ntr, big_ns, p);
+        reused = fk_filter_gather(small_in, ntr, ns, p);
+    });
+    worker.join();
+    EXPECT_EQ(reused, fresh);
 }
