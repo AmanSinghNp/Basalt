@@ -153,8 +153,9 @@ py::dict read_file(const std::string& path) {
 void write_file(const std::string& path, FloatArray samples, double dt,
                 const std::string& format) {
     if (samples.ndim() != 2) {
-        throw py::value_error("write_segy: samples must be a 2D array of shape (ntraces, nsamples), "
-                              "got " + std::to_string(samples.ndim()) + " dimensions");
+        throw py::value_error(
+            "write_segy: samples must be a 2D array of shape (ntraces, nsamples), "
+            "got " + std::to_string(samples.ndim()) + " dimensions");
     }
     const io::SampleFormat out_format = parse_write_format(format);
     const size_t ntraces = static_cast<size_t>(samples.shape(0));
@@ -186,7 +187,8 @@ PYBIND11_MODULE(_basalt, m) {
           py::arg("mode") = "reject");
 
     m.def("read_segy", &basalt::read_file,
-          "Read a SEG-Y file. Returns a dict with samples, dt, format, text_header, ntraces, nsamples.",
+          "Read a SEG-Y file. Returns a dict with samples, dt, format, text_header, ntraces, "
+          "nsamples.",
           py::arg("path"));
 
     m.def("write_segy", &basalt::write_file,

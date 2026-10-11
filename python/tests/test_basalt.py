@@ -9,6 +9,7 @@ import math
 import os
 import tempfile
 import threading
+import time
 
 import numpy as np
 
@@ -298,8 +299,13 @@ def test_segy_round_trip_ieee_and_ibm():
 
 
 def test_gil_released_during_filter():
+    # A spinning thread needs the GIL for every tick. If fk_filter held the GIL for its whole
+    # duration, the spinner's throughput while the filter runs would collapse towards zero (only
+    # the interpreter's 5 ms switch interval between calls lets it run); if the GIL is released,
+    # it stays near the idle rate (about 1.0 on a multi-core machine, about 0.5 on a single core
+    # where the filter and the spinner share the CPU).
     rng = np.random.default_rng(7)
-    big = rng.standard_normal((400, 2000)).astype(np.float32)
+    big = rng.standard_normal((1200, 3000)).astype(np.float32)   # roughly 0.15 s per call
     counter = [0]
     stop = threading.Event()
 
@@ -310,15 +316,26 @@ def test_gil_released_during_filter():
     ticker = threading.Thread(target=spin)
     ticker.start()
     try:
-        before = counter[0]
-        for _ in range(2):
+        # Idle baseline: the main thread sleeps, so the spinner has the interpreter to itself.
+        time.sleep(0.05)
+        t0, c0 = time.perf_counter(), counter[0]
+        time.sleep(0.3)
+        idle_rate = (counter[0] - c0) / (time.perf_counter() - t0)
+
+        # Back-to-back filter calls for a measurable window, timed against the same spinner.
+        t0, c0 = time.perf_counter(), counter[0]
+        while True:
             basalt.fk_filter(big, 0.002, 10.0, v_min=-800.0, v_max=1200.0, taper=0.1)
-        progressed = counter[0] - before
+            if time.perf_counter() - t0 >= 0.3:
+                break
+        busy_elapsed = time.perf_counter() - t0
+        busy_rate = (counter[0] - c0) / busy_elapsed
     finally:
         stop.set()
         ticker.join()
-    # With the GIL held by the C++ call, the spinning thread would make no progress.
-    assert progressed > 0, progressed
+    assert idle_rate > 0, idle_rate
+    ratio = busy_rate / idle_rate
+    assert ratio > 0.25, f"spinner ran at {ratio:.3f} of its idle rate during fk_filter"
 
 
 def test_two_threads_filter_concurrently():
