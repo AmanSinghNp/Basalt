@@ -1,0 +1,34 @@
+# Environment captured for benchmarks/results runs
+date: 2026-10-11T09:20:05Z
+## lscpu (model, cores, ISA flags)
+Architecture:                            x86_64
+CPU(s):                                  4
+Model name:                              Intel(R) Xeon(R) Processor @ 2.10GHz
+Thread(s) per core:                      1
+Core(s) per socket:                      4
+Socket(s):                               1
+Hypervisor vendor:                       KVM
+Virtualization type:                     full
+L1d cache:                               192 KiB (4 instances)
+L2 cache:                                8 MiB (4 instances)
+L3 cache:                                260 MiB (1 instance)
+NUMA node0 CPU(s):                       0-3
+avx2: avx2  avx512f: avx512f  avx512bw: avx512bw  fma: fma
+## kernel
+uname -r: 6.18.44-fc-v114
+## toolchain
+CMAKE_BUILD_TYPE:STRING=Release
+CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/c++
+CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG
+c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+cmake version 3.28.3
+## python
+python 3.13.16
+numpy 2.5.3
+scipy 1.18.1
+pybind11 3.1.0
+## memory
+               total        used        free      shared  buff/cache   available
+Mem:              15           0          13           0           2          14
+## load at capture
+ 09:20:05 up  2:34,  0 user,  load average: 0.05, 0.50, 0.79

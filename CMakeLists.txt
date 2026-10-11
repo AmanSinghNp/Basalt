@@ -182,6 +182,9 @@ if(CMAKE_PROJECT_NAME STREQUAL "Basalt")
     add_executable(fk_gather_bench benchmarks/fk_gather_bench.cpp)
     target_link_libraries(fk_gather_bench PRIVATE basalt_core)
     target_compile_options(fk_gather_bench PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
+    # pocketfft is vendored header-only; the transform-only floor row in the benchmark uses it directly.
+    target_include_directories(fk_gather_bench SYSTEM PRIVATE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/pocketfft>)
 
     add_executable(fft_benchmark benchmarks/fft_benchmark.cpp)
     target_link_libraries(fft_benchmark PRIVATE basalt_core)
