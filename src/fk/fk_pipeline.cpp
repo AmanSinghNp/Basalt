@@ -114,8 +114,9 @@ inline double edge_taper_weight(size_t i, size_t n) {
 }
 
 // Product of the start and end edge tapers along a line of length `len`. When the two tapers
-// reach the same sample (len < 2n) their weights multiply. FK_PIPELINE.md section 4 step 3 does
-// not state this case; the product is the implemented choice and is open for a contract decision.
+// reach the same sample (len < 2n) their weights multiply. Section 4, step 3 of
+// FK_PIPELINE.md defines each taper and does not cover the overlap, so the product is the
+// behaviour of this implementation.
 std::vector<double> make_edge_taper(size_t len, size_t n) {
     std::vector<double> w(len, 1.0);
     const size_t m = std::min(n, len);
@@ -186,6 +187,13 @@ void fk_filter_gather(const float* in, float* out,
     if (ntr_pad > std::numeric_limits<size_t>::max() / ns_pad) {
         throw std::invalid_argument("fk: padded grid is too large");
     }
+    // Frequency and wavenumber steps. A tiny dt or dx makes 1 / (n * step) overflow to inf, and
+    // the zero bin would then be 0 * inf = NaN. Reject that before any buffer is allocated.
+    const double df = 1.0 / (static_cast<double>(ns_pad) * params.dt);
+    const double dk = 1.0 / (static_cast<double>(ntr_pad) * params.dx);
+    if (!(std::isfinite(df) && std::isfinite(dk))) {
+        throw std::invalid_argument("fk: dt or dx is too small; frequency or wavenumber step overflows");
+    }
     const size_t nthreads = resolve_threads(params.threads);
 
     // Step 3: copy the input into the top-left of a zeroed padded buffer, with edge tapers.
@@ -216,18 +224,23 @@ void fk_filter_gather(const float* in, float* out,
 
     // Step 5: weight every bin. f_j = j / (ns_pad dt); k_i = fftfreq(ntr_pad, dx)[i]
     // using numpy's convention (indices above (n - 1) / 2 are negative).
-    // Note: W(-f, -k) = W(f, k) holds everywhere except on two Nyquist lines, which are their
-    // own negatives. For even ntr_pad, the k-Nyquist row has k = -K, and v(f, -K) = f / K is
-    // not v(-f, -K). For even ns_pad, the f-Nyquist column has f = +F, and +F and -F are the
-    // same bin, so v flips sign with k and W(F, k) != W(F, -k) in general. Both cases only
-    // matter in the aliasing regime (|v| >= dx / dt). The c2r inverse below takes the real
-    // part, so these bins are applied exactly as the spec's rfft2/irfft2 algorithm defines
-    // them. A Hermitian-symmetrised filter differs by a few percent relRMS on such grids
-    // (e.g. 37 x 53 gathers). FK_PIPELINE.md section 2 states Hermitian symmetry everywhere,
-    // which is false on these lines; the contract text needs correcting by its owner.
+    // Note: W(-f, -k) = W(f, k) holds everywhere except on the Nyquist row and column, which
+    // are their own mirror images (FK_PIPELINE.md section 3, Nyquist note). For even ntr_pad,
+    // the k-Nyquist row has k = -K, and v(f, -K) = f / K is not v(-f, -K). For even ns_pad, the
+    // f-Nyquist column has f = +F, and +F and -F are the same bin, so v flips sign with k and
+    // W(F, k) != W(F, -k) in general. Both cases only matter for aliased data. On the k-Nyquist
+    // row, energy comes only from slow events with |v| < dx / dt (spatial aliasing).
+    // These Nyquist bins are not special-cased. The c2r inverse below keeps only their
+    // Hermitian part, which matches numpy.fft.irfft2(rfft2(x) * w). Here "Hermitian-symmetrised"
+    // means the index-mirror average W_sym(i, j) = [W(i, j) + W(-i, -j)] / 2, with indices taken
+    // mod (ntr_pad, ns_pad) and each full-grid index using its own frequency and wavenumber
+    // (f = j * df for j <= ns_pad / 2 and wrapped negative above, k wrapped as in step 5). Averaging
+    // with the value-negated pair W(-f, -k) gives W itself, because v = -f / k is unchanged, so
+    // that is not the alternative meant here. The index-mirror average differs from the pipeline
+    // by a seed-dependent amount, not a rounding effect: for random 9 x 33 gathers with a Pass
+    // band of [500, 2000] m/s (dt = 2 ms, dx = 5 m, taper 0.1, pad 1.5, no edge tapers) the
+    // relRMS difference was 15% to 28% over seeds 0 to 9, and 26% for seed 1.
     const BandCoeffs band = make_band(params);
-    const double df = 1.0 / (static_cast<double>(ns_pad) * params.dt);
-    const double dk = 1.0 / (static_cast<double>(ntr_pad) * params.dx);
     const size_t k_pos_max = (ntr_pad - 1) / 2;
     for (size_t i = 0; i < ntr_pad; ++i) {
         const double k_index = (i <= k_pos_max)

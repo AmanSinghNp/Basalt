@@ -13,6 +13,9 @@ namespace basalt {
 enum class FKMode { Reject, Pass };
 
 /// Parameters for the f-k mute pipeline.
+/// Identity configuration: mode Reject with an empty band (e.g. v_min = 1e29, v_max = 1e30),
+/// taper 0 and no edge tapers returns the raw input. Pass with a huge band is not the identity:
+/// the k = 0 row (v = +inf) lies outside every finite band and is removed by design.
 struct FKMuteParams {
     double dt = 0.004;              // Sample interval (seconds)
     double dx = 25.0;               // Trace spacing (metres)

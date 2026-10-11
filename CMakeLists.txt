@@ -195,3 +195,61 @@ if(CMAKE_PROJECT_NAME STREQUAL "Basalt")
     target_link_libraries(fk_benchmark PRIVATE basalt_core)
     target_compile_options(fk_benchmark PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
 endif()
+
+# --- 7. Python bindings ---
+# Builds the `basalt._basalt` pybind11 module and runs the Python test suite under ctest.
+# In-tree: PYTHONPATH=<build>/python python3 -c 'import basalt'. Wheels: scikit-build-core (pyproject.toml).
+option(BASALT_BUILD_PYTHON "Build the basalt Python extension (basalt._basalt)" OFF)
+if(BASALT_BUILD_PYTHON)
+    if(CMAKE_VERSION VERSION_LESS 3.18)
+        message(FATAL_ERROR "BASALT_BUILD_PYTHON requires CMake 3.18 or newer (FindPython Development.Module)")
+    endif()
+    # The core is built with -mavx2 -mfma (BASALT_COMMON_FLAGS) and uses x86 intrinsics, so the
+    # extension only builds on x86-64. Say so here rather than fail inside the compiler.
+    if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86|X86|AMD64|amd64")
+        message(FATAL_ERROR "BASALT_BUILD_PYTHON requires an x86-64 host (AVX2 and FMA); target processor is '${CMAKE_SYSTEM_PROCESSOR}'")
+    endif()
+    # The extension is a shared module that links the static basalt_core library.
+    set_target_properties(basalt_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+    find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
+
+    # Outside scikit-build-core, ask the selected interpreter where pybind11's CMake config lives.
+    if(NOT pybind11_DIR AND NOT SKBUILD)
+        execute_process(
+            COMMAND "${Python_EXECUTABLE}" -m pybind11 --cmakedir
+            OUTPUT_VARIABLE BASALT_PYBIND11_CMAKEDIR
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE BASALT_PYBIND11_QUERY
+            ERROR_QUIET)
+        if(BASALT_PYBIND11_QUERY EQUAL 0)
+            set(pybind11_DIR "${BASALT_PYBIND11_CMAKEDIR}")
+        endif()
+    endif()
+    find_package(pybind11 CONFIG REQUIRED)
+
+    pybind11_add_module(_basalt python/src/basalt_py.cpp)
+    target_link_libraries(_basalt PRIVATE basalt_core)
+    target_compile_options(_basalt PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
+
+    # In-tree layout: <build>/python/basalt/{__init__.py, _basalt*.so}, importable with PYTHONPATH=<build>/python.
+    set(BASALT_PY_STAGE_DIR "${CMAKE_BINARY_DIR}/python/basalt")
+    set_target_properties(_basalt PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "${BASALT_PY_STAGE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY "${BASALT_PY_STAGE_DIR}")
+    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/python/basalt/__init__.py"
+                   "${BASALT_PY_STAGE_DIR}/__init__.py" COPYONLY)
+
+    # Wheel layout: scikit-build-core copies python/basalt via wheel.packages, and this puts the
+    # extension next to it in the installed package.
+    if(SKBUILD)
+        install(TARGETS _basalt DESTINATION basalt COMPONENT python)
+    endif()
+
+    # Python tests: plain asserts, runnable directly or under pytest. Needs no pytest for ctest.
+    add_test(NAME basalt_python_tests
+             COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/tests/test_basalt.py")
+    set_tests_properties(basalt_python_tests PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python"
+        TIMEOUT 600)
+endif()

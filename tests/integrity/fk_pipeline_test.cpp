@@ -13,6 +13,7 @@
 #include <limits>
 #include <random>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 using basalt::FKMode;
@@ -96,7 +97,8 @@ void add_linear_event(std::vector<float>& d, size_t ntr, size_t ns, double dt, d
         const double x = static_cast<double>(t) * dx;
         const double arrival = t0 + x / v;
         const double env = hann
-            ? std::pow(std::sin(kPi * (static_cast<double>(t) + 0.5) / static_cast<double>(ntr)), 2.0)
+            ? std::pow(std::sin(kPi * (static_cast<double>(t) + 0.5) / static_cast<double>(ntr)),
+                       2.0)
             : 1.0;
         for (size_t s = 0; s < ns; ++s) {
             const double tau = static_cast<double>(s) * dt - arrival;
@@ -112,7 +114,8 @@ struct Event {
 
 // Two well-separated events: A (+1000 m/s) arrives at 0.30 s + x/1000 and
 // B (-1000 m/s) at 2.00 s - x/1000. Their arrivals inside the central 50% of
-// traces are more than 0.4 s apart, so trajectory windows never overlap.
+// traces are at least 0.21 s apart (B - A = 1.70 - 2x/1000 s, minimum at trace 149), so the
+// +-0.06 s trajectory windows never overlap.
 constexpr size_t kEvNtr = 200;
 constexpr size_t kEvNs = 1100;
 constexpr double kEvDt = 0.002;
@@ -430,9 +433,11 @@ TEST(FKWeight, HardEdgeBandIsHalfOpen) {
 
 TEST(FKWeight, NyquistLinesAreNotHermitian) {
     // dt = 2 ms gives F = 250 Hz; dx = 25 m gives K = 0.02 cycles/m. Both are their own
-    // negatives on the grid, so W(-f, -k) != W(f, k) there. FK_PIPELINE.md section 2 states
-    // Hermitian symmetry everywhere, which does not hold on these lines (contract text to be
-    // corrected by its owner). The pinned values follow the rfft2/irfft2 algorithm in section 4.
+    // negatives on the grid, so W(-f, -k) != W(f, k) there. Section 3 of FK_PIPELINE.md makes
+    // this exception explicit: Hermitian symmetry holds everywhere except on the Nyquist row and
+    // column. This test pins the weight values only. How the pipeline's inverse treats these bins
+    // (it keeps their Hermitian part, as irfft2 does) is checked by
+    // MatchesDirectReferenceAtOddSizes, which uses even padded sizes.
     // Pass [5000, 20000]:
     // (F, +K) gives v = -12500 (outside) and (F, -K) gives v = +12500 (inside).
     FKMuteParams p;
@@ -446,7 +451,11 @@ TEST(FKWeight, NyquistLinesAreNotHermitian) {
     EXPECT_DOUBLE_EQ(fk_mute_weight(250.0, -0.02, p), 1.0);
 }
 
-TEST(FKWeight, HermitianSymmetry) {
+// Sanity check of the value-negation identity W(f, k) = W(-f, -k). Under v = -f / k this holds
+// for every bin, Nyquist lines included, so the test only fails if the sign convention regresses.
+// It does not test index-Hermitian behaviour on the Nyquist row and column; that is covered by
+// NyquistLinesAreNotHermitian and MatchesDirectReferenceAtOddSizes.
+TEST(FKWeight, ValueNegationInvariant) {
     FKMuteParams p = event_params();
     p.mode = FKMode::Pass;
     std::mt19937 rng(7);
@@ -586,6 +595,15 @@ TEST(FKPipeline, PaddedSizesCoverRequestAndAreSmooth) {
             EXPECT_TRUE(only_prime_factors(ps, {2, 3, 5})) << ps;
             EXPECT_LE(pt, 2 * want + 16) << "n=" << n << " pad=" << pad;
             EXPECT_LE(ps, 2 * want + 16) << "n=" << n << " pad=" << pad;
+            // Minimal, not just smooth: no smooth size lies in [want, padded).
+            for (size_t m = want; m < pt; ++m) {
+                EXPECT_FALSE(only_prime_factors(m, {2, 3, 5, 7, 11}))
+                    << "n=" << n << " pad=" << pad << " m=" << m;
+            }
+            for (size_t m = want; m < ps; ++m) {
+                EXPECT_FALSE(only_prime_factors(m, {2, 3, 5}))
+                    << "n=" << n << " pad=" << pad << " m=" << m;
+            }
         }
     }
     // Default pad factor 1.5: 1001 * 1.5 = 1501.5 -> at least 1502 samples.
@@ -636,9 +654,10 @@ TEST(FKPipeline, EdgeTaperFormulaWithEmptyBand) {
 }
 
 TEST(FKPipeline, EdgeTapersMultiplyWhenTheyOverlap) {
-    // One trace is reached by both the start and the end taper. The contract does not state
-    // how overlapping tapers combine; this pins the implemented product, an open decision item. The
-    // weight is w(0)^2 with N = 4. w(0) = 0.5 - 0.5 cos(pi / 5), so w(0)^2 = 0.00911863.
+    // One trace is reached by both the start and the end taper. Section 4, step 3 defines each
+    // taper but does not say how two overlapping tapers combine; this test pins the product,
+    // which is the behaviour of the implementation. The weight is w(0)^2 with N = 4.
+    // w(0) = 0.5 - 0.5 cos(pi / 5), so w(0)^2 = 0.00911863.
     // An empty Reject band leaves the tapered input as the output.
     const size_t ntr = 1;
     const size_t ns = 9;
@@ -685,11 +704,9 @@ TEST(FKPipeline, EdgeTaperSizeMaxStaysFinite) {
 
 TEST(FKPipeline, RejectEmptyBandKeepsInteriorTraces) {
     // Events at +-1000 m/s. The band [-400, 400] lies between them, so it holds no event
-    // energy. With Hann-envelope events the leakage into the band is below 1e-4 relRMS.
-    // This is NOT the contract's literal synthetic setup (hard-edged events), which leaks
-    // about 5.7e-3 and is characterised separately in RejectEmptyBandHardEdgedLeakage. The
-    // contract's 1e-4 criterion is therefore only verified here for smooth-along-x input, and
-    // whether that is the intended test setup is an open contract decision.
+    // energy. Section 4 applies the 1e-4 empty-band criterion to smooth input, meaning events
+    // with a Hann envelope along x. This test uses that input. Hard-truncated events leak into
+    // every band and are covered by RejectEmptyBandHardEdgedLeakage.
     const auto in = two_event_gather(true, true, true);
     FKMuteParams p = event_params();
     p.v_min = -400.0;
@@ -701,12 +718,12 @@ TEST(FKPipeline, RejectEmptyBandKeepsInteriorTraces) {
 }
 
 TEST(FKPipeline, RejectEmptyBandHardEdgedLeakage) {
-    // The contract's literal synthetic setup: hard-edged +-1000 m/s events, Reject of the empty
-    // band [-400, 400], taper 0.1 and the default 4-trace edge taper. Section 4 requires 1e-4
-    // relRMS on interior traces, which this setup does not meet. The measured value is 5.7e-3,
-    // from finite-aperture leakage of the truncated events in f-k space. This is a
-    // characterisation bound so that regressions are caught. It does NOT mean the contract is
-    // met; the contract requires a decision on this setup or its tolerance.
+    // Hard-edged +-1000 m/s events, Reject of the empty band [-400, 400], taper 0.1 and the
+    // default 4-trace edge taper. Section 4 limits the 1e-4 empty-band criterion to smooth input,
+    // so hard-truncated events are expected to exceed 1e-4 here. The leakage comes from the
+    // finite aperture of the truncated events in f-k space, which spreads energy into every band.
+    // The measured value is 5.7e-3. The 1e-2 bound is a regression guard: it fails if the
+    // leakage grows well beyond the measured level.
     const auto in = two_event_gather(true, true, false);
     FKMuteParams p = event_params();
     p.v_min = -400.0;
@@ -715,14 +732,38 @@ TEST(FKPipeline, RejectEmptyBandHardEdgedLeakage) {
     const auto out_mid = trace_rows(out, kEvNs, 4, kEvNtr - 4);
     const auto in_mid = trace_rows(in, kEvNs, 4, kEvNtr - 4);
     EXPECT_LE(rel_rms(out_mid, in_mid), 1e-2);
+    // Section 4: hard-edged input is not expected to meet the 1e-4 empty-band criterion.
+    EXPECT_GT(rel_rms(out_mid, in_mid), 1e-4);
 }
 
-TEST(FKPipeline, AllPassIsIdentity) {
-    // Pass with a huge band keeps every bin except k = 0 (v = +inf is outside any finite band).
-    // The trace-mean (k = 0) component is therefore removed, so the input is made zero-mean
-    // across traces first. This checks that the non-k = 0 bins pass through. It is NOT the
-    // section 4 all-pass clause on raw input, which conflicts with section 2 and is an open
-    // contract decision; see AllPassOnRawInputRemovesOnlyTraceMean.
+TEST(FKPipeline, IdentityConfigReturnsRawInput) {
+    // Section 4 identity configuration: Reject with a band that no bin falls in (v_min = 1e29,
+    // v_max = 1e30), taper 0 and no edge tapers. Every bin keeps weight 1, so the raw input comes
+    // back to 1e-5 relative RMS. The input is not made zero-mean, so the k = 0 row is included.
+    // The sizes cover a small non-square gather and the realistic 1001 x 1500 case.
+    FKMuteParams p;
+    p.v_min = 1e29;
+    p.v_max = 1e30;
+    p.taper = 0.0;
+    p.mode = FKMode::Reject;
+    p.edge_taper_traces = 0;
+    p.edge_taper_samples = 0;
+    for (const auto& dims :
+         {std::pair<size_t, size_t>{40, 128}, std::pair<size_t, size_t>{1001, 1500}}) {
+        const size_t ntr = dims.first;
+        const size_t ns = dims.second;
+        const auto in = random_gather(ntr, ns, 61);
+        const auto out = fk_filter_gather(in, ntr, ns, p);
+        EXPECT_LE(rel_rms(out, in), 1e-5) << "ntr=" << ntr << " ns=" << ns;
+    }
+}
+
+TEST(FKPipeline, AllPassZeroMeanInputPassesThrough) {
+    // Pass with a huge band is intended to drop the k = 0 row. Section 2 gives that row
+    // v = +inf, which lies outside every finite band, so Pass removes the trace-to-trace mean.
+    // To isolate the other bins, the input is made zero-mean across traces first, so the dropped
+    // row is already zero and the output should equal the input. The raw-input behaviour is
+    // checked by AllPassOnRawInputRemovesOnlyTraceMean.
     const size_t ntr = 40;
     const size_t ns = 128;
     auto in = random_gather(ntr, ns, 5);
@@ -739,14 +780,14 @@ TEST(FKPipeline, AllPassIsIdentity) {
 }
 
 TEST(FKPipeline, AllPassOnRawInputRemovesOnlyTraceMean) {
-    // Section 4's all-pass clause (raw input returned to 1e-5) conflicts with section 2: the
-    // k = 0, f != 0 row has v = +inf, which is outside any finite band, so Pass drops it. The
-    // behaviour pinned here follows section 2 literally:
+    // Pass with a huge band on raw (not zero-mean) input. The k = 0, f != 0 row has v = +inf,
+    // which lies outside every finite band, so Pass removes it by design (section 2). What
+    // remains is the trace-mean component plus the DC bin, which preserve_dc keeps:
     //   out(t, s) = in(t, s) - m(s) + M,
-    // where m(s) = sum_t in(t, s) / ntr_pad and M = sum(in) / (ntr_pad * ns_pad). With
-    // preserve_dc the (0, 0) bin is kept, which gives M. Both sums run over the valid block;
-    // the zero padding counts in the normalisation. Which reading the contract intends is an
-    // open decision, so the section 4 clause is not verified by this test.
+    // where m(s) = sum_t in(t, s) / ntr_pad and M = sum(in) / (ntr_pad * ns_pad). Both sums run
+    // over the valid block, and the zero padding counts in the normalisation.
+    // The identity configuration that returns raw input is covered by
+    // IdentityConfigReturnsRawInput.
     const size_t ntr = 40;
     const size_t ns = 128;
     const auto in = random_gather(ntr, ns, 5);
@@ -863,7 +904,8 @@ TEST(FKPipeline, PassAndRejectSumToInput) {
 
 TEST(FKPipeline, MatchesDirectReferenceAtOddSizes) {
     // Odd and non-square gathers, with an asymmetric band, taper and edge tapers. Even padded
-    // trace counts (e.g. 9 -> 14) exercise the k-Nyquist row, which is not Hermitian in f.
+    // trace counts (e.g. 9 -> 14) exercise the k-Nyquist row, where the mute weight is not
+    // Hermitian-symmetric (section 3, Nyquist note).
     struct Case {
         size_t ntr;
         size_t ns;
@@ -898,11 +940,11 @@ TEST(FKPipeline, MatchesDirectReferenceAtOddSizes) {
     }
 }
 
-TEST(FKPipeline, AllPassIdentityAtLargeOddSize) {
+TEST(FKPipeline, AllPassZeroMeanInputPassesThroughAtLargeOddSize) {
     // 1001 x 1500 pads to non-power-of-two sizes. Zero-mean input (k = 0 row removed first) must
-    // come back unchanged under the all-pass configuration. This checks the padding offsets at a
-    // realistic size; it is not the section 4 all-pass clause on raw input (see the note in
-    // AllPassIsIdentity).
+    // come back unchanged under the Pass configuration with a huge band. This checks the padding
+    // offsets at a realistic size. The k = 0 row is dropped by design (see
+    // AllPassZeroMeanInputPassesThrough).
     const size_t ntr = 1001;
     const size_t ns = 1500;
     auto in = random_gather(ntr, ns, 67);
@@ -948,7 +990,8 @@ TEST(FKPipeline, ThreadsTwoMatchesOne) {
     ASSERT_EQ(a.size(), b.size());
     double max_diff = 0.0;
     for (size_t i = 0; i < a.size(); ++i) {
-        max_diff = std::max(max_diff, std::fabs(static_cast<double>(a[i]) - static_cast<double>(b[i])));
+        const double diff = std::fabs(static_cast<double>(a[i]) - static_cast<double>(b[i]));
+        max_diff = std::max(max_diff, diff);
     }
     EXPECT_LE(max_diff, 1e-6);
 }
