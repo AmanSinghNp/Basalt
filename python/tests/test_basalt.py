@@ -7,6 +7,7 @@ from the C++ source, so it is an independent check of the pipeline.
 
 import math
 import os
+import pathlib
 import tempfile
 import threading
 import time
@@ -70,24 +71,31 @@ def _rise(v, edge, half):
     return np.where(v <= lo, 0.0, np.where(v >= hi, 1.0, ramp))
 
 
-def _ref_weight(f_hz, k_cpm, v_min, v_max, taper, reject=True):
-    """Spec section 3 mute weight, vectorised over broadcastable f and k arrays (DC preserved)."""
+def _ref_weight(f_hz, k_cpm, v_min, v_max, taper, reject=True, preserve_dc=True):
+    """Spec section 3 mute weight, vectorised over broadcastable f and k arrays.
+
+    The DC bin (f = 0, k = 0) has weight 1 when preserve_dc is set. Otherwise it is evaluated
+    at v = 0, the f = 0 rule of spec section 2.
+    """
     f = np.asarray(f_hz, dtype=np.float64)
     k = np.asarray(k_cpm, dtype=np.float64)
     f, k = np.broadcast_arrays(f, k)
     k_zero = k == 0.0
+    dc = k_zero & (f == 0.0)
     safe_k = np.where(k_zero, 1.0, k)
     v = np.where(k_zero, np.inf, -f / safe_k)          # vertical events: v = +inf
+    v = np.where(dc, 0.0, v)
     h_min = 0.5 * taper * abs(v_min)
     h_max = 0.5 * taper * abs(v_max)
     inside = _rise(v, v_min, h_min) * (1.0 - _rise(v, v_max, h_max))
     weight = 1.0 - inside if reject else inside
-    dc = k_zero & (f == 0.0)
-    return np.where(dc, 1.0, weight)
+    if preserve_dc:
+        weight = np.where(dc, 1.0, weight)
+    return weight
 
 
 def _reference_fk_filter(gather, dt, dx, v_min, v_max, taper, reject=True, pad_factor=1.5,
-                         edge_taper_traces=4, edge_taper_samples=0):
+                         edge_taper_traces=4, edge_taper_samples=0, preserve_dc=True):
     """Independent numpy implementation of spec sections 3-4 (double precision)."""
     x = np.asarray(gather, dtype=np.float64)
     nt, ns = x.shape
@@ -99,7 +107,7 @@ def _reference_fk_filter(gather, dt, dx, v_min, v_max, taper, reject=True, pad_f
     spectrum = np.fft.rfft2(padded)
     f = np.arange(ns_pad // 2 + 1) / (ns_pad * dt)
     k = np.fft.fftfreq(ntr_pad, d=dx)
-    weights = _ref_weight(f[None, :], k[:, None], v_min, v_max, taper, reject)
+    weights = _ref_weight(f[None, :], k[:, None], v_min, v_max, taper, reject, preserve_dc)
     filtered = np.fft.irfft2(spectrum * weights, s=(ntr_pad, ns_pad))
     return filtered[:nt, :ns]
 
@@ -258,6 +266,83 @@ def test_invalid_parameters_raise_value_error():
     _raises(ValueError, basalt.fk_filter, np.zeros((0, 8), dtype=np.float32), 0.004, 25.0)
     _raises(ValueError, basalt.fk_mute_weight, 1.0, 0.1, v_min=2.0, v_max=1.0)
     _raises(ValueError, basalt.fk_mute_weight, 1.0, 0.1, taper=1.5)
+
+
+def test_non_string_mode_and_format_raise_value_error():
+    gather = np.zeros((4, 8), dtype=np.float32)
+    _raises(ValueError, basalt.fk_filter, gather, 0.004, 25.0, mode=None)
+    _raises(ValueError, basalt.fk_filter, gather, 0.004, 25.0, mode=1)
+    _raises(ValueError, basalt.fk_mute_weight, 1.0, 0.1, mode=1)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "bad_format.sgy")
+        _raises(ValueError, basalt.write_segy, path, gather, 0.004, format=None)
+        _raises(ValueError, basalt.write_segy, path, gather, 0.004, format=b"ieee")
+        assert not os.path.exists(path)
+
+
+def test_non_integer_counts_raise_value_error():
+    gather = np.ones((4, 8), dtype=np.float32)
+    _raises(ValueError, basalt.fk_filter, gather, 0.004, 25.0, threads=1.5)
+    _raises(ValueError, basalt.fk_filter, gather, 0.004, 25.0, threads=2 ** 70)
+    _raises(ValueError, basalt.fk_filter, gather, 0.004, 25.0, threads=True)
+    _raises(ValueError, basalt.fk_filter, gather, 0.004, 25.0, threads="2")
+    _raises(ValueError, basalt.fk_filter, gather, 0.004, 25.0, edge_taper_samples=0.5)
+    _raises(ValueError, basalt.fk_filter, gather, 0.004, 25.0, edge_taper_traces=False)
+    # Any integer type with __index__ is accepted, including numpy integers.
+    out = basalt.fk_filter(gather, 0.004, 25.0, threads=np.int64(2), edge_taper_traces=np.uint8(2))
+    assert out.shape == gather.shape
+
+
+def test_unconvertible_gather_raises_value_error():
+    _raises(ValueError, basalt.fk_filter, [[1.0, 2.0], [3.0]], 0.004, 25.0)   # ragged list
+    _raises(ValueError, basalt.fk_filter, "abcd", 0.004, 25.0)                # string
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "ragged.sgy")
+        _raises(ValueError, basalt.write_segy, path, [[1.0, 2.0], [3.0]], 0.004)
+        _raises(ValueError, basalt.write_segy, path, "abcd", 0.004)
+        assert not os.path.exists(path)
+
+
+def test_list_gather_matches_array_gather():
+    rng = np.random.default_rng(10)
+    gather = rng.standard_normal((6, 9)).astype(np.float32)
+    from_array = basalt.fk_filter(gather, 0.004, 25.0, v_min=-800.0, v_max=1200.0, taper=0.2)
+    from_list = basalt.fk_filter(gather.tolist(), 0.004, 25.0, v_min=-800.0, v_max=1200.0,
+                                 taper=0.2)
+    assert np.array_equal(from_list, from_array)
+
+
+def test_os_pathlike_paths_are_accepted():
+    rng = np.random.default_rng(11)
+    samples = rng.standard_normal((3, 16)).astype(np.float32)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = pathlib.Path(tmp) / "pathlike.sgy"
+        basalt.write_segy(path, samples, 0.004)
+        assert path.exists()
+        got = basalt.read_segy(path)
+        assert np.array_equal(got["samples"], samples)
+        got_bytes = basalt.read_segy(os.fsencode(str(path)))
+        assert np.array_equal(got_bytes["samples"], samples)
+        # Non-path objects follow os.fspath and raise TypeError.
+        _raises(TypeError, basalt.read_segy, 42)
+
+
+def test_preserve_dc_false_evaluates_dc_bin_at_zero_velocity():
+    rng = np.random.default_rng(9)
+    # A large mean puts most of the energy in the DC bin.
+    gather = (rng.standard_normal((37, 53)) + 5.0).astype(np.float32)
+    params = dict(v_min=-100.0, v_max=100.0, taper=0.0, edge_taper_traces=3,
+                  edge_taper_samples=2)
+    # The reject band [-100, 100] contains v = 0, so with preserve_dc off the DC bin is muted.
+    kept = basalt.fk_filter(gather, 0.004, 25.0, mode="reject", preserve_dc=True, **params)
+    removed = basalt.fk_filter(gather, 0.004, 25.0, mode="reject", preserve_dc=False, **params)
+    expected_kept = _reference_fk_filter(gather, 0.004, 25.0, reject=True, preserve_dc=True,
+                                         **params)
+    expected_removed = _reference_fk_filter(gather, 0.004, 25.0, reject=True, preserve_dc=False,
+                                            **params)
+    assert _relrms(kept, expected_kept) < 1e-4, _relrms(kept, expected_kept)
+    assert _relrms(removed, expected_removed) < 1e-4, _relrms(removed, expected_removed)
+    assert _relrms(kept, removed) > 0.1, _relrms(kept, removed)
 
 
 def test_threads_argument_gives_same_result():

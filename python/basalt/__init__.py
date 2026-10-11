@@ -1,6 +1,9 @@
 """Seismic f-k mute filtering and SEG-Y file I/O.
 
 Thin pybind11 layer over the basalt C++ core. Contract: docs/design/FK_PIPELINE.md, section 7.
+
+Requires an x86-64 CPU with AVX2 and FMA. The core is built with the project-wide flags
+(-mavx2 -mfma, see BASALT_COMMON_FLAGS in CMakeLists.txt), so the whole extension needs them.
 """
 
 from ._basalt import fk_filter, fk_mute_weight, read_segy, write_segy
