@@ -17,12 +17,14 @@ The measured subject is the end-to-end f-k pipeline (`basalt::fk_filter_gather`,
   which appear only in the three committed invocations, give 0.34 to 0.38 of numpy c2c and 0.48 to 0.76 of
   numpy r2c. numpy has no thread option here. The 1024x1024 numpy figures moved between invocations
   (see Known Limitations).
-- **Basalt is not faster than `scipy.fft`.** All three get the same padded grid, but numpy and scipy
+- **Basalt is not reliably faster than `scipy.fft`.** All three get the same padded grid, but numpy and scipy
   also get a weight mask precomputed outside the timed loop. Basalt has no mask: it computes its
   weights inside every timed call. Python harness, single-threaded: Basalt takes 17 percent longer at
   240x1001 and 6 percent longer at 1024x1024, both inside run-to-run spread, and 16 percent longer at
   2048x2048, which is outside it. At 1001x1500 Basalt is 7 percent shorter in the committed table, and
-  the nine invocations at that size give a paired ratio of 0.80 to 1.04 (median 0.97), a tie within spread.
+  the nine invocations at that size give a paired ratio of 0.80 to 1.04 (median 0.97), with Basalt behind
+  in 3 of 9, a tie within spread. At 1024x1024 the eighteen invocations give 0.94 to 1.18 (median 1.04),
+  with Basalt behind in 15 of 18, also within spread.
   Python harness, 4 threads: Basalt takes 46 and 65 percent longer at 240x1001 and 2048x2048 (committed
   invocations only). At 1001x1500 the committed table shows a tie, which the nine invocations at that size
   do not support: Basalt is behind scipy in seven of nine, with paired ratios 0.91 to 1.48 (median 1.17),
@@ -224,7 +226,17 @@ for n in 1 2 3 4; do
       --csv-out benchmarks/results/compare_numpy_repeat3_run$n.csv > benchmarks/results/compare_numpy_repeat3_run$n.txt 2>&1
 done
 
-# 9. Tests
+# 9. Recheck of the 1024x1024 numpy figures: two invocations of compare_numpy, load-gated the same way.
+#    The load log records the 1-minute load at each start and end.
+for n in 1 2; do
+  while awk '$1 >= 1.5 {exit 0} {exit 1}' /proc/loadavg; do sleep 5; done
+  echo "recheck $n start: $(date -u +%H:%M:%S) loadavg $(cut -d' ' -f1-3 /proc/loadavg)" >> benchmarks/results/load_1024_recheck.txt
+  python3 benchmarks/compare_numpy.py --sizes 1024x1024 --runs 9 --warmup 2 \
+      --csv-out benchmarks/results/compare_numpy_1024_recheck_run$n.csv > benchmarks/results/compare_numpy_1024_recheck_run$n.txt 2>&1
+  echo "recheck $n end: $(date -u +%H:%M:%S) loadavg $(cut -d' ' -f1-3 /proc/loadavg)" >> benchmarks/results/load_1024_recheck.txt
+done
+
+# 10. Tests
 cd build-ws && ctest --output-on-failure -j2
 ```
 
@@ -232,8 +244,9 @@ Raw outputs are in `benchmarks/results/`: `fk_gather_bench_run{1,2,3}.{txt,csv}`
 `compare_numpy_run{1,2,3}.{txt,csv}` and `environment.txt`. Each CSV has a header row. The p90 values
 are in the CSVs. The supplementary 1024x1024 set is `fk_gather_bench_1024_repeat_run{1,2,3}.{txt,csv}`,
 `compare_numpy_1024_repeat_run{1,2,3}.{txt,csv}` and `load_1024_repeat.txt` (the 1, 5 and 15-minute
-load averages before each invocation, 0.02 to 0.24 for the 1-minute value). The repeat2 and repeat3
-sets, and their load logs, are listed under Supplementary repeat invocations.
+load averages before each invocation, 0.02 to 0.24 for the 1-minute value). The 1024x1024 recheck is
+`compare_numpy_1024_recheck_run{1,2}.{txt,csv}` and `load_1024_recheck.txt` (step 9). The repeat2 and
+repeat3 sets, and their load logs, are listed under Supplementary repeat invocations.
 
 ## Results
 
@@ -364,7 +377,8 @@ cost of the legacy kernel.
 - **Roughly ties scipy single-threaded.** Basalt takes 17 percent longer at 240x1001, 6 percent
   longer at 1024x1024 and 16 percent longer at 2048x2048 (Python harness). The 2048x2048 gap is
   outside run-to-run spread. Basalt is 7 percent shorter at 1001x1500 in the committed table, and 0.80 to 1.04 times as long (median
-  0.97) across nine invocations, which is within spread. Across
+  0.97) across nine invocations, behind in 3 of them, which is within spread. At 1024x1024 it is 0.94 to 1.18
+  times as long (median 1.04) across eighteen invocations, behind in 15 of them, also within spread. Across
   harnesses (C++ Basalt median against the Python-harness scipy median, a mixed comparison that is
   indicative only), Basalt is 9 to 40 percent behind at 1 thread.
 - **Behind scipy with 4 threads**: Basalt takes 46 and 65 percent longer at 240x1001 and 2048x2048
@@ -510,9 +524,11 @@ Toolchain matrix (legacy path):
   this size are therefore reported as ranges.
 - Float32 range. The forward r2c and the inverse c2r run unnormalised in float32 (the 1/(ntr_pad *
   ns_pad) scale is applied in the inverse). Reproduced with the identity configuration (Reject, empty
-  band, taper 0, no edge tapers) on a 1001x1500 gather of uniform values in [-1, 1] times the amplitude,
-  seed 1: amplitude 1e31 gives 0 non-finite outputs, 1e32 gives 1,010 of 1,501,500, and 1e33 gives
-  1,501,497 of 1,501,500. The C++ `fk_filter_gather` returns those values without throwing. The Python
+  band, taper 0, no edge tapers) on a 1001x1500 gather of uniform random values in [-1, 1] times the
+  amplitude. The qualitative result is what is reported: amplitude 1e31 gives no non-finite outputs, 1e32
+  gives a partial fraction (well under 1 percent of the 1,501,500 outputs), and 1e33 gives nearly all of
+  them. The exact counts depend on the random generator, so they are not quoted. The C++ `fk_filter_gather`
+  returns those values without throwing. The Python
   binding raises `ValueError` ("output is not finite") in the same case. Neither `include/basalt/fk.hpp`
   nor `docs/design/FK_PIPELINE.md` documents this limit. Realistic seismic amplitudes are far below it,
   so it is a documentation gap for the contract, not a result in this report.
