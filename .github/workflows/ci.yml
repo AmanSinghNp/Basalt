@@ -51,3 +51,35 @@ jobs:
         cd build
         ./fft_benchmark || true
         ./fk_benchmark || true
+
+  python-bindings:
+    name: Build & Test (Python bindings, Ubuntu - Release)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install Python dependencies
+      run: python -m pip install pybind11 numpy pytest
+
+    - name: Install Ninja (Linux)
+      run: sudo apt-get install -y ninja-build
+
+    - name: Configure CMake
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_CXX_FLAGS="-O3 -mavx2 -mfma" \
+          -DBASALT_BUILD_PYTHON=ON
+
+    - name: Build
+      run: cmake --build build
+
+    - name: Run Tests (including basalt_python_tests)
+      run: |
+        cd build
+        ctest --output-on-failure -V

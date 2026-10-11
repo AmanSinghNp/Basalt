@@ -10,8 +10,11 @@ using namespace basalt::io;
 class FileMappingTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Create a temporary file
-        filename = "test_map_file.bin";
+        // Create a temporary file. The name is per test: ctest -j runs these tests in parallel
+        // in the same working directory, and a shared name lets one test's TearDown delete
+        // the file another test is reading.
+        filename = std::string("test_map_file_") +
+                   ::testing::UnitTest::GetInstance()->current_test_info()->name() + ".bin";
         std::ofstream outfile(filename, std::ios::binary);
         const char* msg = "Hello from Memory Map!";
         file_size = std::strlen(msg);
