@@ -221,7 +221,8 @@ void fk_filter_gather(const float* in, float* out,
     // are their own mirror images (FK_PIPELINE.md section 3, Nyquist note). For even ntr_pad,
     // the k-Nyquist row has k = -K, and v(f, -K) = f / K is not v(-f, -K). For even ns_pad, the
     // f-Nyquist column has f = +F, and +F and -F are the same bin, so v flips sign with k and
-    // W(F, k) != W(F, -k) in general. Both cases only matter for aliased data (|v| >= dx / dt).
+    // W(F, k) != W(F, -k) in general. Both cases only matter for aliased data. On the k-Nyquist
+    // row, energy comes only from slow events with |v| < dx / dt (spatial aliasing).
     // These Nyquist bins are not special-cased. The c2r inverse below keeps only their
     // Hermitian part, which matches numpy.fft.irfft2(rfft2(x) * w). A Hermitian-symmetrised
     // filter gives a different result. The difference depends on the band, the grid size and

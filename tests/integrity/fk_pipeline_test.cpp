@@ -97,7 +97,8 @@ void add_linear_event(std::vector<float>& d, size_t ntr, size_t ns, double dt, d
         const double x = static_cast<double>(t) * dx;
         const double arrival = t0 + x / v;
         const double env = hann
-            ? std::pow(std::sin(kPi * (static_cast<double>(t) + 0.5) / static_cast<double>(ntr)), 2.0)
+            ? std::pow(std::sin(kPi * (static_cast<double>(t) + 0.5) / static_cast<double>(ntr)),
+                       2.0)
             : 1.0;
         for (size_t s = 0; s < ns; ++s) {
             const double tau = static_cast<double>(s) * dt - arrival;
@@ -113,7 +114,8 @@ struct Event {
 
 // Two well-separated events: A (+1000 m/s) arrives at 0.30 s + x/1000 and
 // B (-1000 m/s) at 2.00 s - x/1000. Their arrivals inside the central 50% of
-// traces are more than 0.4 s apart, so trajectory windows never overlap.
+// traces are at least 0.21 s apart (B - A = 1.70 - 2x/1000 s, minimum at trace 149), so the
+// +-0.06 s trajectory windows never overlap.
 constexpr size_t kEvNtr = 200;
 constexpr size_t kEvNs = 1100;
 constexpr double kEvDt = 0.002;
@@ -726,6 +728,8 @@ TEST(FKPipeline, RejectEmptyBandHardEdgedLeakage) {
     const auto out_mid = trace_rows(out, kEvNs, 4, kEvNtr - 4);
     const auto in_mid = trace_rows(in, kEvNs, 4, kEvNtr - 4);
     EXPECT_LE(rel_rms(out_mid, in_mid), 1e-2);
+    // Section 4: hard-edged input is not expected to meet the 1e-4 empty-band criterion.
+    EXPECT_GT(rel_rms(out_mid, in_mid), 1e-4);
 }
 
 TEST(FKPipeline, IdentityConfigReturnsRawInput) {
@@ -750,7 +754,7 @@ TEST(FKPipeline, IdentityConfigReturnsRawInput) {
     }
 }
 
-TEST(FKPipeline, AllPassIsIdentity) {
+TEST(FKPipeline, AllPassZeroMeanInputPassesThrough) {
     // Pass with a huge band is intended to drop the k = 0 row. Section 2 gives that row
     // v = +inf, which lies outside every finite band, so Pass removes the trace-to-trace mean.
     // To isolate the other bins, the input is made zero-mean across traces first, so the dropped
@@ -932,10 +936,11 @@ TEST(FKPipeline, MatchesDirectReferenceAtOddSizes) {
     }
 }
 
-TEST(FKPipeline, AllPassIdentityAtLargeOddSize) {
+TEST(FKPipeline, AllPassZeroMeanInputPassesThroughAtLargeOddSize) {
     // 1001 x 1500 pads to non-power-of-two sizes. Zero-mean input (k = 0 row removed first) must
     // come back unchanged under the Pass configuration with a huge band. This checks the padding
-    // offsets at a realistic size. The k = 0 row is dropped by design (see AllPassIsIdentity).
+    // offsets at a realistic size. The k = 0 row is dropped by design (see
+    // AllPassZeroMeanInputPassesThrough).
     const size_t ntr = 1001;
     const size_t ns = 1500;
     auto in = random_gather(ntr, ns, 67);
@@ -981,7 +986,8 @@ TEST(FKPipeline, ThreadsTwoMatchesOne) {
     ASSERT_EQ(a.size(), b.size());
     double max_diff = 0.0;
     for (size_t i = 0; i < a.size(); ++i) {
-        max_diff = std::max(max_diff, std::fabs(static_cast<double>(a[i]) - static_cast<double>(b[i])));
+        const double diff = std::fabs(static_cast<double>(a[i]) - static_cast<double>(b[i]));
+        max_diff = std::max(max_diff, diff);
     }
     EXPECT_LE(max_diff, 1e-6);
 }
