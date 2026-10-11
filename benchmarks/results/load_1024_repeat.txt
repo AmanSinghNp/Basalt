@@ -1,0 +1,7 @@
+invocation 1 fk_gather_bench start: 09:41:49 loadavg 0.02 0.35 0.55
+invocation 1 compare_numpy start: 09:41:52 loadavg 0.02 0.35 0.55
+invocation 2 fk_gather_bench start: 09:41:56 loadavg 0.10 0.36 0.55
+invocation 2 compare_numpy start: 09:42:00 loadavg 0.17 0.37 0.55
+invocation 3 fk_gather_bench start: 09:42:04 loadavg 0.24 0.38 0.56
+invocation 3 compare_numpy start: 09:42:08 loadavg 0.24 0.38 0.56
+done

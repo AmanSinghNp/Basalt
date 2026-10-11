@@ -1,0 +1,10 @@
+fk_gather_bench: optimized (NDEBUG), compiler 13.3.0
+hardware threads: 4
+impl          ntraces   nsamps  ntr_pad   ns_pad  threads   median_ms    p90_ms    min_ms   mean_ms    gathers/s
+basalt-c++       1024     1024     1536     1536        1      29.527    31.772    26.601    29.718        33.87
+pocketfft-transform-only     1024     1024     1536     1536        1      17.891    18.809    17.009    18.322        55.90
+basalt-c++       1024     1024     1536     1536        4      19.095    24.088    17.258    19.985        52.37
+pocketfft-transform-only     1024     1024     1536     1536        4       8.585    10.123     4.552     7.913       116.48
+legacy-c2c       1024     1024     1024     1024        1      59.520    66.386    55.480    61.888        16.80
+iterations=21 warmup=3 pad_factor=1.500
+csv: benchmarks/results/fk_gather_bench_1024_repeat_run2.csv
