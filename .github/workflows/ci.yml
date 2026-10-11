@@ -16,8 +16,12 @@ jobs:
         os: [ubuntu-latest]
         build_type: [Debug, Release]
         include:
+          # -fno-sanitize-recover=undefined makes a UBSan finding abort the test run, so the job fails.
+          # Without it UBSan prints the report and continues, and the job still passes.
+          # Note: BASALT_COMMON_FLAGS in CMakeLists.txt appends -O3 after CMAKE_CXX_FLAGS, so the -O0
+          # below does not reach project targets and this configuration is optimised.
           - build_type: Debug
-            cxx_flags: "-fsanitize=address,undefined -g -O0"
+            cxx_flags: "-fsanitize=address,undefined -fno-sanitize-recover=undefined -g -O0"
             linker_flags: "-fsanitize=address,undefined"
           - build_type: Release
             cxx_flags: "-O3 -mavx2 -mfma"
@@ -49,5 +53,37 @@ jobs:
       if: matrix.build_type == 'Release'
       run: |
         cd build
-        ./fft_benchmark || true
-        ./fk_benchmark || true
+        ./fft_benchmark
+        ./fk_benchmark
+
+  python-bindings:
+    name: Build & Test (Python bindings, Ubuntu - Release)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install Python dependencies
+      run: python -m pip install pybind11 numpy pytest
+
+    - name: Install Ninja (Linux)
+      run: sudo apt-get install -y ninja-build
+
+    - name: Configure CMake
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_CXX_FLAGS="-O3 -mavx2 -mfma" \
+          -DBASALT_BUILD_PYTHON=ON
+
+    - name: Build
+      run: cmake --build build
+
+    - name: Run Tests (including basalt_python_tests)
+      run: |
+        cd build
+        ctest --output-on-failure -V

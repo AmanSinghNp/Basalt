@@ -4,7 +4,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # --- Project Identity ---
 project(Basalt 
-    VERSION 0.1.0 
+    VERSION 0.2.0
     DESCRIPTION "High-Performance Seismic f-k Muter (x86_64 Optimized)"
     HOMEPAGE_URL "https://github.com/AmanSinghNp/Basalt"
     LANGUAGES CXX C
@@ -170,7 +170,14 @@ target_compile_definitions(basalt_tests PRIVATE BASALT_CLI_PATH="$<TARGET_FILE:b
 target_compile_definitions(basalt_tests PRIVATE BASALT_VERSION="${PROJECT_VERSION}")
 
 include(GoogleTest)
-gtest_discover_tests(basalt_tests)
+# Under AddressSanitizer an allocation beyond its size limit aborts the process instead of
+# returning null, so the CLI's out-of-memory path (std::bad_alloc, reported as "out of memory")
+# never runs. Ask ASan to return null, which lets operator new throw as it does in a normal build.
+set(BASALT_TEST_PROPERTIES "")
+if(CMAKE_CXX_FLAGS MATCHES "-fsanitize=[^ ]*address")
+    set(BASALT_TEST_PROPERTIES PROPERTIES ENVIRONMENT "ASAN_OPTIONS=allocator_may_return_null=1")
+endif()
+gtest_discover_tests(basalt_tests ${BASALT_TEST_PROPERTIES})
 
 # --- 6. Benchmarks ---
 if(CMAKE_PROJECT_NAME STREQUAL "Basalt")

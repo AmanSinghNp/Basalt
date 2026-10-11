@@ -179,12 +179,15 @@ Use the existing `basalt/utils/ibm_float.hpp`, `basalt/utils/ebcdic.hpp` and
 ## 6. CLI
 
 ```
-basalt info   <in.segy>
+basalt info   <in.segy> [--verbose]
 basalt filter <in.segy> <out.segy> [--vmin V] [--vmax V] [--taper T] [--mode reject|pass]
                                      [--dx M] [--dt S] [--pad P] [--edge-taper N]
                                      [--threads N] [--gather-size N] [--format ibm|ieee]
-basalt --version | --help
+                                     [--verbose]
+basalt --version | --help | -h
 ```
+
+`--verbose` prints SIMD and FTZ/DAZ diagnostics to stderr. `-h` is a short form of `--help`.
 
 - `dt` defaults to the file's binary header; `--dt` overrides. `dx` defaults to 25 m.
 - `--gather-size N` filters the file in consecutive blocks of N traces (default: whole file

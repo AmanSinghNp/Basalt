@@ -107,7 +107,7 @@ transform, the mask multiply, the inverse transform and the output copy.
 - **Basalt Python (`compare_numpy.py`, `basalt-py`)**: `basalt.fk_filter`, the same calls through
   pybind11. 9 timed calls after 2 warmup calls, `perf_counter`.
 - **legacy-c2c (`fk_gather_bench`)**: `fft2d_forward`, `apply_fk_filter` and `fft2d_inverse` with
-  arenas, as in the README Usage section. Power-of-two sizes only, single-threaded. Each timed call
+  arenas, as in the README "Legacy power-of-two API" section. Power-of-two sizes only, single-threaded. Each timed call
   copies the gather into the SoA arrays first. The transpose into the legacy axis order is done once,
   outside the timed region.
 - **pocketfft-transform-only (`fk_gather_bench`)**: only the pipeline's own r2c and c2r calls, on the
