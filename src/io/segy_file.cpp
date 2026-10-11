@@ -172,6 +172,12 @@ uint8_t ascii_to_ebcdic(char c) {
     throw std::runtime_error("SEG-Y file '" + path + "': " + what);
 }
 
+// True when `count` equals ntraces * nsamples. Compared by division so the product cannot wrap
+// around for very large trace counts. nsamples must be nonzero (callers validate it first).
+bool sample_count_matches(size_t ntraces, size_t nsamples, size_t count) {
+    return nsamples != 0 && count % nsamples == 0 && count / nsamples == ntraces;
+}
+
 } // namespace
 
 SegyData read_segy(const std::string& path) {
@@ -203,8 +209,15 @@ SegyData read_segy(const std::string& path) {
     const auto& bin = data.raw_binary_header;
 
     if (looks_like_ascii(data.raw_text_header)) {
-        data.text_header.assign(reinterpret_cast<const char*>(data.raw_text_header.data()),
-                                kTextHeaderSize);
+        // text_header must be ASCII, so bytes outside 7-bit ASCII become spaces here.
+        // raw_text_header keeps the original bytes for write-back.
+        data.text_header.assign(kTextHeaderSize, ' ');
+        for (size_t i = 0; i < kTextHeaderSize; ++i) {
+            const uint8_t b = data.raw_text_header[i];
+            if (b < 0x80) {
+                data.text_header[i] = static_cast<char>(b);
+            }
+        }
     } else {
         data.text_header = parse_text_header(data.raw_text_header.data());
     }
@@ -275,7 +288,14 @@ SegyData read_segy(const std::string& path) {
 
         float* out = data.samples.data() + t * nsamples;
         for (size_t s = 0; s < nsamples; ++s) {
-            out[s] = decode_sample(sample_buf.data() + s * bps, data.format);
+            const float value = decode_sample(sample_buf.data() + s * bps, data.format);
+            // ibm_to_ieee returns infinity only for IBM words whose exponent is beyond the IEEE range.
+            // Such a sample cannot be represented, so the file is rejected rather than read as inf.
+            if (data.format == SampleFormat::IBM32 && !std::isfinite(value)) {
+                fail(path, "IBM sample " + std::to_string(s) + " of trace " + std::to_string(t) +
+                               " exceeds the IEEE single-precision range");
+            }
+            out[s] = value;
         }
     }
 
@@ -289,7 +309,7 @@ void write_segy(const std::string& path, const SegyData& data, SampleFormat out_
     if (data.nsamples == 0 || data.nsamples > kMaxSamples) {
         throw std::invalid_argument("write_segy: nsamples must be in [1, 65535]");
     }
-    if (data.samples.size() != data.ntraces * data.nsamples) {
+    if (!sample_count_matches(data.ntraces, data.nsamples, data.samples.size())) {
         throw std::invalid_argument("write_segy: samples size does not equal ntraces * nsamples");
     }
     // Checked before any file is created, so a rejected write leaves no partial file behind.
@@ -352,15 +372,21 @@ SegyData make_segy(const std::vector<float>& samples, size_t ntraces, size_t nsa
     if (nsamples == 0 || nsamples > kMaxSamples) {
         throw std::invalid_argument("make_segy: nsamples must be in [1, 65535]");
     }
-    if (samples.size() != ntraces * nsamples) {
+    if (!sample_count_matches(ntraces, nsamples, samples.size())) {
         throw std::invalid_argument("make_segy: samples size does not equal ntraces * nsamples");
     }
     if (!(dt > 0.0)) {
         throw std::invalid_argument("make_segy: dt must be positive");
     }
-    const double interval_us = std::round(dt * 1e6);
+    // The SEG-Y sample interval is a 16-bit count of microseconds, so dt must be a whole number of
+    // microseconds. A value that is not is rejected rather than silently rounded.
+    const double scaled_us = dt * 1e6;
+    const double interval_us = std::round(scaled_us);
     if (interval_us < 1.0 || interval_us > static_cast<double>(kMaxIntervalUs)) {
         throw std::invalid_argument("make_segy: dt must be between 1 us and 65535 us");
+    }
+    if (std::fabs(scaled_us - interval_us) > 1e-6) {
+        throw std::invalid_argument("make_segy: dt must be a whole number of microseconds");
     }
     const auto dt_us = static_cast<uint16_t>(interval_us);
 

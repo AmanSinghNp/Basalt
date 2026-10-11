@@ -735,3 +735,97 @@ TEST(SegyFileTest, IbmWriteFlushesSubnormalsToZero) {
     EXPECT_EQ(get_be32(bytes, off + 8), 0u);
     EXPECT_EQ(get_be32(bytes, off + 12), 0x41100000u);  // 1.0 in IBM32
 }
+
+TEST(SegyFileTest, NegativeExtendedHeaderCountOtherThanMinusOneIsRejected) {
+    TempFile file("ext_minus_two");
+    write_all_bytes(file.path(), file_image(ascii_text("C 1"), binary_header(5, 4000, 2, -2), {},
+                                            {trace(1, 2, ieee_bytes({1.0f, 2.0f}))}));
+    expect_read_error(file.path(), "invalid extended textual header count");
+}
+
+TEST(SegyFileTest, ExtendedHeaderBlockPastEndOfFileIsTruncated) {
+    // Declares two extended headers, but the file holds only one before its traces.
+    TempFile file("ext_truncated");
+    write_all_bytes(file.path(), file_image(ascii_text("C 1"), binary_header(5, 4000, 2, 2),
+                                            std::vector<uint8_t>(3200, 'X'),
+                                            {trace(1, 2, ieee_bytes({1.0f, 2.0f}))}));
+    expect_read_error(file.path(), "file is truncated");
+}
+
+TEST(SegyFileTest, WriteRejectsMissingTraceHeader) {
+    SegyData data = make_segy({1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f}, 2, 4, 0.001,
+                              SampleFormat::IEEE32);
+    data.raw_trace_headers.pop_back();  // one header for two traces
+    TempFile file("missing_trace_header");
+    EXPECT_THROW(write_segy(file.path(), data, SampleFormat::IEEE32), std::invalid_argument);
+}
+
+TEST(SegyFileTest, IbmWordBeyondIeeeRangeIsRejectedOnRead) {
+    // 0x61800000 is 2^131 and 0x7F123456 is near 16^190. Neither fits in IEEE single precision,
+    // so the reader must refuse the file instead of returning infinity.
+    TempFile file("ibm_overflow");
+    write_all_bytes(file.path(), file_image(ascii_text("C 1"), binary_header(1, 4000, 2), {},
+                                            {trace(1, 2, raw32_bytes({0x41100000u, 0x61800000u}))}));
+    expect_read_error(file.path(), "IEEE single-precision range");
+
+    TempFile file2("ibm_overflow_large");
+    write_all_bytes(file2.path(), file_image(ascii_text("C 1"), binary_header(1, 4000, 1), {},
+                                             {trace(1, 1, raw32_bytes({0x7F123456u}))}));
+    expect_read_error(file2.path(), "IEEE single-precision range");
+}
+
+TEST(SegyFileTest, IbmLargestFiniteWordReadsAsFiniteValue) {
+    // 0x60800000 is 0.5 * 16^32 = 2^127, the largest IBM word with a normalised fraction that fits
+    // in IEEE single precision. It must read back exactly, not be rejected.
+    TempFile file("ibm_range_edge");
+    write_all_bytes(file.path(), file_image(ascii_text("C 1"), binary_header(1, 4000, 1), {},
+                                            {trace(1, 1, raw32_bytes({0x60800000u}))}));
+    const SegyData d = read_segy(file.path());
+    ASSERT_EQ(d.samples.size(), 1u);
+    EXPECT_TRUE(std::isfinite(d.samples[0]));
+    EXPECT_EQ(d.samples[0], std::ldexp(1.0f, 127));
+}
+
+TEST(SegyFileTest, NonAsciiBytesInAsciiTextHeaderBecomeSpacesInTextHeader) {
+    // A mostly-ASCII header with a few high bytes. text_header must be pure ASCII, while the raw
+    // bytes are kept unchanged for write-back.
+    std::vector<uint8_t> text = ascii_text("C 1 HIGH BYTE TEST");
+    text[20] = 0xE9;
+    text[30] = 0x80;
+    TempFile file("ascii_high_bytes");
+    write_all_bytes(file.path(), file_image(text, binary_header(5, 4000, 2), {},
+                                            {trace(1, 2, ieee_bytes({1.0f, 2.0f}))}));
+
+    const SegyData d = read_segy(file.path());
+    ASSERT_EQ(d.text_header.size(), 3200u);
+    EXPECT_EQ(d.text_header.substr(0, 18), "C 1 HIGH BYTE TEST");
+    EXPECT_EQ(d.text_header[20], ' ');
+    EXPECT_EQ(d.text_header[30], ' ');
+    EXPECT_TRUE(std::all_of(d.text_header.begin(), d.text_header.end(),
+                            [](char c) { return static_cast<unsigned char>(c) < 0x80; }));
+    EXPECT_EQ(d.raw_text_header[20], 0xE9);
+    EXPECT_EQ(d.raw_text_header[30], 0x80);
+}
+
+TEST(SegyFileTest, MakeSegyRejectsSampleCountWhoseProductWouldWrap) {
+    // (2^63 + 1) * 2 wraps to 2 in size_t, which would match a two-element samples vector.
+    // The size check must reject it with std::invalid_argument, not fail later in an allocation.
+    EXPECT_THROW(make_segy({1.0f, 2.0f}, (size_t{1} << 63) + 1, 2, 0.001), std::invalid_argument);
+
+    SegyData d = make_segy({1.0f, 2.0f}, 1, 2, 0.001, SampleFormat::IEEE32);
+    d.ntraces = (size_t{1} << 63) + 1;
+    TempFile file("wrap_write");
+    EXPECT_THROW(write_segy(file.path(), d, SampleFormat::IEEE32), std::invalid_argument);
+}
+
+TEST(SegyFileTest, MakeSegyRejectsDtThatIsNotWholeMicroseconds) {
+    // Sub-microsecond and fractional-microsecond intervals cannot be stored, so they are rejected
+    // rather than silently rounded.
+    EXPECT_THROW(make_segy({1.0f, 2.0f}, 1, 2, 0.0000015), std::invalid_argument);  // 1.5 us
+    EXPECT_THROW(make_segy({1.0f, 2.0f}, 1, 2, 0.0001234), std::invalid_argument);  // 123.4 us
+    EXPECT_THROW(make_segy({1.0f, 2.0f}, 1, 2, 1e-9), std::invalid_argument);       // below 1 us
+    EXPECT_THROW(make_segy({1.0f, 2.0f}, 1, 2, 0.07), std::invalid_argument);       // above 65535 us
+    EXPECT_NO_THROW(make_segy({1.0f, 2.0f}, 1, 2, 0.000001));
+    EXPECT_NO_THROW(make_segy({1.0f, 2.0f}, 1, 2, 0.065535));
+    EXPECT_NEAR(make_segy({1.0f, 2.0f}, 1, 2, 0.0005).dt, 0.0005, 1e-12);
+}

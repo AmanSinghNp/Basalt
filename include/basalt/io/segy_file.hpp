@@ -14,7 +14,8 @@ enum class SampleFormat : uint16_t { IBM32 = 1, INT32 = 2, INT16 = 3, IEEE32 = 5
 // In-memory SEG-Y file. Headers are kept as raw bytes so that a read followed by a write
 // reproduces them exactly (apart from the format code). `samples` holds the decoded data.
 struct SegyData {
-    std::string text_header;                        // 3200 chars, ASCII (converted from EBCDIC if needed)
+    std::string text_header;                        // 3200 chars, ASCII (converted from EBCDIC if needed;
+                                                    // bytes outside 7-bit ASCII become spaces)
     std::array<uint8_t, 3200> raw_text_header{};    // original bytes, written back verbatim
     std::array<uint8_t, 400> raw_binary_header{};   // original bytes
     std::vector<std::array<uint8_t, 240>> raw_trace_headers;
@@ -28,7 +29,8 @@ struct SegyData {
 // Reads a big-endian SEG-Y rev 0/1 file with fixed trace length. Supports formats 1, 2, 3, 5, 8.
 // Honors the extended textual header count (bytes 3505-3506) by skipping those headers; they
 // are not retained, so a write-back records an extended header count of zero.
-// Throws std::runtime_error (naming the file) on missing or malformed input.
+// Throws std::runtime_error (naming the file) on missing or malformed input, including IBM
+// samples whose value exceeds the IEEE single-precision range (they cannot be represented).
 SegyData read_segy(const std::string& path);
 
 // Writes a SEG-Y file. Text and trace headers are written back from the raw arrays and the
@@ -42,7 +44,8 @@ void write_segy(const std::string& path, const SegyData& data,
                 SampleFormat out_format = SampleFormat::IEEE32);
 
 // Builds a minimal valid SegyData from samples (used by tests, the CLI and Python).
-// `dt` is stored with microsecond resolution. Supports IBM32 and IEEE32 only.
+// `dt` must be a whole number of microseconds in [1, 65535] us; other values throw
+// std::invalid_argument rather than being rounded. Supports IBM32 and IEEE32 only.
 SegyData make_segy(const std::vector<float>& samples, size_t ntraces, size_t nsamples,
                    double dt, SampleFormat format = SampleFormat::IEEE32);
 
