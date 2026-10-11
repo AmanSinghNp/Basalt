@@ -30,9 +30,9 @@ constexpr int kExitRuntime = 1;
 constexpr int kExitUsage = 2;
 
 // Byte offsets (0-based) of the sample interval fields in the headers.
-constexpr size_t kBinSampleIntervalOff = 16;   // binary header bytes 3217-3218
-constexpr size_t kTrSampleIntervalOff = 116;   // trace header bytes 117-118
-constexpr size_t kTextCardWidth = 80;          // SEG-Y text header card width
+constexpr size_t kBinSampleIntervalOff = 16; // binary header bytes 3217-3218
+constexpr size_t kTrSampleIntervalOff = 116; // trace header bytes 117-118
+constexpr size_t kTextCardWidth = 80;        // SEG-Y text header card width
 
 // Raised for malformed command lines. main reports it with the usage text and exit code 2.
 class UsageError : public std::runtime_error {
@@ -43,9 +43,11 @@ public:
 void print_usage(std::ostream& os) {
     os << "usage:\n"
        << "  basalt info   <in.segy> [--verbose]\n"
-       << "  basalt filter <in.segy> <out.segy> [--vmin V] [--vmax V] [--taper T] [--mode reject|pass]\n"
+       << "  basalt filter <in.segy> <out.segy> [--vmin V] [--vmax V] [--taper T]"
+       << " [--mode reject|pass]\n"
        << "                                     [--dx M] [--dt S] [--pad P] [--edge-taper N]\n"
-       << "                                     [--threads N] [--gather-size N] [--format ibm|ieee]\n"
+       << "                                     [--threads N] [--gather-size N]"
+       << " [--format ibm|ieee]\n"
        << "                                     [--verbose]\n"
        << "  basalt --version | --help\n";
 }
@@ -77,9 +79,7 @@ void print_help(std::ostream& os) {
 // Parses a finite decimal number. The whole token must be consumed. Only decimal characters
 // are accepted: strtod alone would also take hex floats (0x1p3) and the words inf and nan.
 double parse_number(const std::string& flag, const std::string& text) {
-    const auto bad = [&]() {
-        return UsageError("invalid number '" + text + "' for " + flag);
-    };
+    const auto bad = [&]() { return UsageError("invalid number '" + text + "' for " + flag); };
     if (text.empty() || text.find_first_not_of("0123456789+-.eE") != std::string::npos) {
         throw bad();
     }
@@ -99,7 +99,7 @@ double parse_number(const std::string& flag, const std::string& text) {
 
 // Parses a non-negative integer count. Values that are not whole numbers are rejected.
 size_t parse_count(const std::string& flag, const std::string& text) {
-    constexpr double kMaxCount = 9007199254740992.0;  // 2^53, far above any real trace count
+    constexpr double kMaxCount = 9007199254740992.0; // 2^53, far above any real trace count
     const double value = parse_number(flag, text);
     if (value < 0.0 || value != std::floor(value) || value > kMaxCount) {
         throw UsageError(flag + " expects a non-negative integer, got '" + text + "'");
@@ -233,7 +233,8 @@ void print_diagnostics() {
 #else
     std::cerr << "  FMA: not compiled in\n";
 #endif
-    std::cerr << "  FTZ/DAZ: " << (basalt::kernel::check_ftz_daz() ? "enabled" : "disabled") << "\n";
+    std::cerr << "  FTZ/DAZ: " << (basalt::kernel::check_ftz_daz() ? "enabled" : "disabled")
+              << "\n";
 }
 
 int run_info(const std::vector<std::string>& args) {
@@ -279,9 +280,9 @@ int run_info(const std::vector<std::string>& args) {
 
 int run_filter(const std::vector<std::string>& args) {
     basalt::FKMuteParams params;
-    std::optional<uint16_t> dt_us;                   // --dt, in microseconds
-    size_t gather_size = 0;                          // --gather-size; 0 = whole file
-    std::optional<basalt::io::SampleFormat> format;  // --format
+    std::optional<uint16_t> dt_us;                  // --dt, in microseconds
+    size_t gather_size = 0;                         // --gather-size; 0 = whole file
+    std::optional<basalt::io::SampleFormat> format; // --format
     bool verbose = false;
     std::vector<std::string> positional;
 
@@ -381,14 +382,17 @@ int run_filter(const std::vector<std::string>& args) {
     // meet on a trace (their weights would multiply), so for a block of `count` traces N is at most
     // (count - 1) / 2: at least one trace in the middle stays untapered. A larger request is
     // reduced for the blocks that need it. A last block shorter than the others may need that.
+    // Each block size that is reduced gets its own warning, naming the size and the new taper.
     const size_t requested_taper = params.edge_taper_traces;
     const size_t tail = ntraces % block;
-    const size_t shortest = tail != 0 ? std::min(block, tail) : block;
-    if (requested_taper > (shortest - 1) / 2) {
-        std::cerr << "basalt: warning: --edge-taper " << requested_taper << " is too large for "
-                  << shortest << "-trace blocks\n"
-                  << "  at most " << (shortest - 1) / 2
-                  << " traces are tapered from each end of each block (0 disables the taper)\n";
+    const size_t full_limit = (block - 1) / 2;
+    if (requested_taper > full_limit) {
+        std::cerr << "basalt: warning: --edge-taper " << requested_taper << " is reduced to "
+                  << full_limit << " per end for " << block << "-trace blocks\n";
+    }
+    if (tail != 0 && requested_taper > (tail - 1) / 2) {
+        std::cerr << "basalt: warning: --edge-taper " << requested_taper << " is reduced to "
+                  << (tail - 1) / 2 << " per end for the last " << tail << "-trace block\n";
     }
     const auto started = std::chrono::steady_clock::now();
     for (size_t first = 0; first < ntraces; first += block) {
@@ -402,9 +406,9 @@ int run_filter(const std::vector<std::string>& args) {
 
     basalt::io::write_segy(out_path, data, out_format);
 
-    std::cout << std::fixed << std::setprecision(3)
-              << "filtered " << ntraces << " traces, " << nsamples << " samples in "
-              << elapsed_ms << " ms -> " << out_path << " (" << format_name(out_format) << ")\n";
+    std::cout << std::fixed << std::setprecision(3) << "filtered " << ntraces << " traces, "
+              << nsamples << " samples in " << elapsed_ms << " ms -> " << out_path << " ("
+              << format_name(out_format) << ")\n";
     return kExitOk;
 }
 
@@ -441,7 +445,8 @@ int main(int argc, char** argv) {
         print_usage(std::cerr);
         return kExitUsage;
     } catch (const std::bad_alloc&) {
-        std::cerr << "basalt: error: out of memory (the padded FFT buffer is too large; try a smaller --pad)\n";
+        std::cerr << "basalt: error: out of memory "
+                     "(the padded FFT buffer is too large; try a smaller --pad)\n";
         return kExitRuntime;
     } catch (const std::exception& e) {
         std::cerr << "basalt: error: " << e.what() << "\n";

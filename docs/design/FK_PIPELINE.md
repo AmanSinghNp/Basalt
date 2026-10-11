@@ -178,14 +178,8 @@ basalt --version | --help
 ```
 
 - `dt` defaults to the file's binary header; `--dt` overrides. `dx` defaults to 25 m.
-  `--dt` must be a whole number of microseconds in [1e-6, 0.065535] s, because the SEG-Y
-  sample interval is a 16-bit count of microseconds; other values are a usage error.
 - `--gather-size N` filters the file in consecutive blocks of N traces (default: whole file
-  as one gather). A last block shorter than N is filtered as a block of its own.
-- `--edge-taper N` applies to each block separately. The tapers at the two ends of a block
-  must not overlap, so for a block of `c` traces the CLI uses `min(N, (c - 1) / 2)` traces
-  per end, which leaves at least one trace untapered. When N is reduced, a warning is
-  printed to stderr; the output is still written.
+  as one gather).
 - Output format defaults to the input format when it is IBM32 or IEEE32, else IEEE32.
 - Exit code 0 on success, 2 on usage errors, 1 on runtime errors (message on stderr).
 
