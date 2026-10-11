@@ -11,19 +11,21 @@ The measured subject is the end-to-end f-k pipeline (`basalt::fk_filter_gather`,
 
 - **Basalt is faster than numpy at every size and thread count tested.** Single-threaded, Basalt
   takes 0.19 to 0.38 of the time of `numpy.fft.fft2`/`ifft2` and 0.44 to 0.68 of the time of
-  `numpy.fft.rfft2`/`irfft2`. numpy has no thread option here.
+  `numpy.fft.rfft2`/`irfft2`. numpy has no thread option here. The 1024x1024 numpy figures did not
+  reproduce in a later recheck (see Known Limitations).
 - **Basalt is not faster than `scipy.fft`.** All three get the same padded grid, but numpy and scipy
   also get a weight mask precomputed outside the timed loop. Basalt has no mask: it computes its
-  weights inside every timed call. Python harness, single-threaded: Basalt takes 17 percent longer
-  at 240x1001, 6 percent longer at 1024x1024 and 16 percent longer at 2048x2048. The 2048x2048 gap is
-  outside run-to-run spread. At 1001x1500 Basalt is 7 percent shorter, which is within spread.
+  weights inside every timed call. Python harness, single-threaded: Basalt takes 17 percent longer at
+  240x1001 and 6 percent longer at 1024x1024, both inside run-to-run spread, and 16 percent longer at
+  2048x2048, which is outside it. At 1001x1500 Basalt is 7 percent shorter, also inside spread.
   Python harness, 4 threads: Basalt takes 46 and 65 percent longer at 240x1001 and 2048x2048, and the
   two tie at 1001x1500. At 1024x1024 with 4 threads Basalt is behind in all six invocations, by 40 to
-  79 percent (median 51 percent), but the size of that gap is not stable (see the dagger note in
-  Results). The C++ harness does not time scipy, so its Basalt numbers are compared with scipy only
+  79 percent (median of the six per-invocation ratios 46 percent), but the size of that gap is not
+  stable (see the dagger note in Results). The C++ harness does not time scipy, so its Basalt numbers are compared with scipy only
   across harnesses (see Where Basalt wins and loses).
 - **The FFT library is not the reason.** Basalt's transform is the vendored pocketfft. Its
-  real-to-complex and complex-to-real pair costs about the same as scipy's (see Why). The gap is in
+  real-to-complex and complex-to-real pair is faster than scipy's ducc0 pair in five of the eight cells,
+  tied in one and slower in two (see Why). The gap is in
   the work around the transform. In the C++ harness that work is 33 to 45 percent of Basalt's
   single-thread call and 44 to 77 percent of its 4-thread call. The 77 percent is from the
   1024x1024 cell, which is unstable; across six invocations of that cell the share is 55 to 77 percent.
@@ -215,7 +217,8 @@ C++ medians of 17.8 to 19.1 ms, Python medians of 13.4 to 18.8 ms and scipy (wor
 8.8 to 12.6 ms. The C++ single-thread cell moved as well (27.9 to 29.5 ms in the supplementary set,
 32.0 to 45.6 ms committed). Basalt Python was behind scipy in every invocation of both sets, with
 per-invocation ratios of 1.69, 1.43 and 1.42 (committed) and 1.79, 1.40 and 1.49 (supplementary). The
-median ratio is 1.51. The size of the gap is therefore 40 to 79 percent, not one figure. The C++ value
+median of these six ratios is 1.46 (46 percent). The ratio of the committed medians, 14.75 and 9.78 ms,
+is 1.51. The size of the gap is therefore 40 to 79 percent, not one figure. The C++ value
 should be read as 18 to 33 ms, and the C++ comparison with Python at this size as inconclusive. At one
 thread the supplementary Python medians (24.1 to 26.7 ms) overlap the committed range (25.4 to 27.0 ms).
 The supplementary raw files are `benchmarks/results/*_1024_repeat_run*` and `load_1024_repeat.txt`.
@@ -276,18 +279,19 @@ cost of the legacy kernel.
   indicative only), Basalt is 9 to 40 percent behind at 1 thread.
 - **Loses to scipy with 4 threads**: Basalt takes 46 and 65 percent longer at 240x1001 and 2048x2048
   (Python harness), and ties at 1001x1500. At 1024x1024 it takes 40 to 79 percent longer across six
-  invocations (median 51 percent, see †). Across harnesses, the C++ Basalt medians are 1.4x to 3.4x the
-  Python-harness scipy medians at 4 threads (the 3.4x is the 1024x1024 cell, the least stable).
+  invocations (median of the six ratios 46 percent, see †). Across harnesses, the C++ Basalt medians
+  are 1.4x to 3.4x the Python-harness scipy medians at 4 threads (the 3.4x is the 1024x1024 cell, the least stable).
 - **Loses to scipy's transform alone** at every size and thread count, by a wide margin at 4 threads.
 
 ### Why the numbers look like this
 - **The FFT library is not the cause.** Basalt's transform is the vendored pocketfft
   (`third_party/pocketfft`). scipy 1.18.1 uses ducc0 for `scipy.fft` by default, so the two do not
-  share a library, contrary to the brief. On this machine Basalt's pocketfft transform pair costs
-  about the same as scipy's ducc0 pair, and sometimes less: 18.4 against 23.3 ms at 1024x1024 with 1
-  thread, 117.5 against 132.9 ms at 2048x2048 with 1 thread, and 32.6 against 49.3 ms at 2048x2048
-  with 4 threads. At 240x1001 with 4 threads it is slower (2.5 against 1.8 ms). The two floors come
-  from different harnesses, so these comparisons are indicative.
+  share a library, contrary to the brief. On this machine Basalt's pocketfft transform pair is
+  faster than scipy's ducc0 pair in five of the eight cells, by 5 to 34 percent: for example 18.4
+  against 23.3 ms at 1024x1024 with 1 thread, and 32.6 against 49.3 ms at 2048x2048 with 4 threads.
+  It is tied at 1001x1500 with 4 threads (8.5 against 8.6 ms) and slower at 240x1001 (4.2 against
+  3.8 ms with 1 thread, 2.5 against 1.8 ms with 4 threads). The two floors come from different
+  harnesses, so these comparisons are indicative.
 - **The work around the transform is the cause.** In the C++ harness, 33 to 45 percent of Basalt's
   single-thread call and 44 to 77 percent of its 4-thread call lies outside the pocketfft transform
   pair. For scipy the equivalent is 5 to 18 percent at 1 thread and 20 to 57 percent at 4 threads.
@@ -305,7 +309,8 @@ cost of the legacy kernel.
   numpy's full `rfft2`/`irfft2` call takes 1.9 times scipy's full call (303.7 against 162.2 ms). Both
   include the same taper, mask and copy, so the gap sits in numpy's transform path or in the
   operations around it. numpy applies its transforms one axis at a time, which typically means extra
-  copies. This would explain the gap, but it was not profiled. It is why Basalt beats numpy. Basalt's
+  copies. This would explain the gap, but it was not profiled, so it is a hypothesis. If so, it also
+  explains why Basalt beats numpy. Basalt's
   own transform is not the reason.
 - **Not explanations.** float32: numpy, scipy and Basalt all compute in float32 here. Fixed Python
   call overhead is a few microseconds per call, against milliseconds of work. The binding does more
@@ -384,7 +389,7 @@ Toolchain matrix (legacy path):
   about 30 and 32 percent (3.8 to 5.1 ms and 17.1 to 23.6 ms). The C++ cells are wider than the Python
   cells at 1 thread at every size. For example, 240x1001 at 1 thread spans 5.9 to 10.5 ms, and
   1001x1500 at 4 threads spans 27.8 to 42.4 ms. The 1024x1024 4-thread cells are less stable still
-  (see the † note in Results).
+  (see the † note in Results). The committed invocations were not load-gated (see Methodology).
 - Inputs are uniform noise, not seismic data. The FFT cost does not depend on the values. The
   weight evaluation depends on them only slightly, through the transition-band branches.
 - Only four sizes and two thread counts are measured. Thread counts above 4 were not run.
@@ -394,6 +399,14 @@ Toolchain matrix (legacy path):
   threads (33.0 ms in C++ against 14.8 ms in Python, a cell that is itself unstable). Without that
   cell the largest gap is 1.42x (1001x1500 at 4 threads, 29.3 against 20.6 ms). At 2048x2048 the C++
   median is 0.91 to 0.93 times the Python median. The cause was not investigated.
+- The numpy figures at 1024x1024 do not reproduce. A recheck on the same VM (load under 1 throughout;
+  `benchmarks/results/compare_numpy_1024_recheck_run{1,2}.{txt,csv}` and `load_1024_recheck.txt`, two
+  invocations) gave numpy r2c at 1 thread of 62.5 and 65.2 ms. That is 37 to 43 percent above the
+  committed median of 45.5 ms (committed range 43.0 to 55.5 ms; supplementary 48.4 to 58.9 ms). numpy
+  c2c gave 128 and 145 ms, against 109 ms committed. Basalt Python at 1 thread gave 25.5 and 26.1 ms,
+  inside its committed range. The 1-thread Basalt-to-numpy r2c ratio at 1024x1024 is therefore 0.40 and
+  0.41 in the recheck, against 0.57 in the table above. The claim that Basalt beats numpy r2c still
+  holds, but the size of that margin at 1024x1024 is not stable.
 - The reason for numpy's gap to scipy, and the cost of Basalt's weight loop, are not profiled.
 - AVX-512 is currently applied only to the legacy f-k filter path.
 - FFT remains AVX2-only until blocked FFT profiling shows a consistent compute-side win for AVX-512.

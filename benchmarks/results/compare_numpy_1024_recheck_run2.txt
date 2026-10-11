@@ -1,0 +1,27 @@
+python 3.13.16, numpy 2.5.3, scipy 1.18.1, basalt 0.2.0
+dtypes: numpy.fft.fft2(float32) -> complex64, numpy.fft.rfft2(float32) -> complex64, scipy.fft.rfft2(float32) -> complex64
+cpus 4, runs 9, warmup 2, pad 1.5
+verify 1001x1500 (padded 1512x2250):
+  mask vs basalt.fk_mute_weight: max abs diff 5.631e-09 (float32 mask)
+  scipy-r2c (workers=1) vs basalt.fk_filter (threads=1): relRMS 2.385e-07
+  basalt threads=0 vs threads=1: relRMS 1.583e-07
+timing 1024x1024
+  1024x1024 numpy-c2c  numpy.fft fft2/ifft2       median   145.158 ms
+  1024x1024 numpy-r2c  numpy.fft rfft2/irfft2     median    65.215 ms
+  1024x1024 scipy-r2c  scipy.fft workers=1        median    27.833 ms
+  1024x1024 scipy-r2c  scipy.fft workers=-1       median    14.608 ms
+  1024x1024 basalt-py  basalt.fk_filter threads=1 median    26.066 ms
+  1024x1024 basalt-py  basalt.fk_filter threads=0 median    21.784 ms
+  1024x1024 scipy-transform-only rfft2+irfft2 workers=1     median    27.781 ms
+  1024x1024 scipy-transform-only rfft2+irfft2 workers=-1    median     8.634 ms
+
+       size impl                  setting                     median_ms    p90_ms  gathers/s  relRMS vs basalt t=1
+1024x1024   numpy-c2c             numpy.fft fft2/ifft2          145.158   163.584       6.89             2.188e-07
+1024x1024   numpy-r2c             numpy.fft rfft2/irfft2         65.215    95.758      15.33             2.282e-07
+1024x1024   scipy-r2c             scipy.fft workers=1            27.833    35.020      35.93             2.066e-07
+1024x1024   scipy-r2c             scipy.fft workers=-1           14.608    16.750      68.46             2.066e-07
+1024x1024   basalt-py             basalt.fk_filter threads=1     26.066    39.175      38.36             0.000e+00
+1024x1024   basalt-py             basalt.fk_filter threads=0     21.784    26.307      45.91             1.813e-08
+1024x1024   scipy-transform-only  rfft2+irfft2 workers=1         27.781    33.620      36.00         n/a (no mask)
+1024x1024   scipy-transform-only  rfft2+irfft2 workers=-1         8.634    14.595     115.82         n/a (no mask)
+csv: benchmarks/results/compare_numpy_1024_recheck_run2.csv
