@@ -1,0 +1,15 @@
+fk_gather_bench: optimized (NDEBUG), compiler 13.3.0
+hardware threads: 4
+note: legacy-c2c skipped for 1001x1500 (needs power-of-two sizes)
+impl          ntraces   nsamps  ntr_pad   ns_pad  threads   median_ms    p90_ms    min_ms   mean_ms    gathers/s
+basalt-c++       1001     1500     1512     2250        1      46.115    48.731    42.860    46.130        21.69
+pocketfft-transform-only     1001     1500     1512     2250        1      28.846    35.252    27.240    30.235        34.67
+basalt-c++       1001     1500     1512     2250        4      28.708    33.477    26.001    30.045        34.83
+pocketfft-transform-only     1001     1500     1512     2250        4      10.093    15.633     8.182    11.018        99.08
+basalt-c++       1024     1024     1536     1536        1      33.571    34.218    29.733    32.889        29.79
+pocketfft-transform-only     1024     1024     1536     1536        1      18.012    18.555    16.888    17.916        55.52
+basalt-c++       1024     1024     1536     1536        4      23.966    26.955    21.176    24.140        41.73
+pocketfft-transform-only     1024     1024     1536     1536        4       6.926     9.481     4.869     7.335       144.39
+legacy-c2c       1024     1024     1024     1024        1      64.435    67.251    60.034    64.579        15.52
+iterations=21 warmup=3 pad_factor=1.500
+csv: /home/user/ws-bench/benchmarks/results/fk_gather_bench_repeat2_run4.csv

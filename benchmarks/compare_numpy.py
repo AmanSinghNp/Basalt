@@ -235,6 +235,9 @@ def bench_size(basalt, ntr, ns, args, ncpu):
 
     # Floor for the transform pair alone: no taper, pad, mask or copy-out, same padded grid.
     # Its output is not the filtered gather, so it has no relRMS column.
+    # Allocation is not matched with the C++ pocketfft floor, which reuses preallocated buffers:
+    # scipy.fft takes no output-buffer argument, so every call here allocates its outputs.
+    # See PERFORMANCE.md, "What is timed".
     xp_fixed = padded_input()
 
     def transform_only(workers):
