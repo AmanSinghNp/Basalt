@@ -2,7 +2,6 @@
 // Command and option contract: docs/design/FK_PIPELINE.md, section 6.
 
 #include <algorithm>
-#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -11,6 +10,7 @@
 #include <exception>
 #include <iomanip>
 #include <iostream>
+#include <new>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -69,12 +69,13 @@ void print_help(std::ostream& os) {
        << "\nexit status: 0 success, 1 runtime error, 2 usage error\n";
 }
 
-// Parses a finite decimal number. The whole token must be consumed.
+// Parses a finite decimal number. The whole token must be consumed. Only decimal characters
+// are accepted: strtod alone would also take hex floats (0x1p3) and the words inf and nan.
 double parse_number(const std::string& flag, const std::string& text) {
     const auto bad = [&]() {
         return UsageError("invalid number '" + text + "' for " + flag);
     };
-    if (text.empty() || std::isspace(static_cast<unsigned char>(text.front())) != 0) {
+    if (text.empty() || text.find_first_not_of("0123456789+-.eE") != std::string::npos) {
         throw bad();
     }
     char* end = nullptr;
@@ -343,6 +344,10 @@ int run_filter(const std::vector<std::string>& args) {
     const std::string& in_path = positional[0];
     const std::string& out_path = positional[1];
     basalt::io::SegyData data = basalt::io::read_segy(in_path);
+    if (data.ntraces == 0) {
+        // The library rejects empty gathers; refuse before writing so no empty output is left.
+        throw std::runtime_error("input has no traces to filter: " + in_path);
+    }
     if (dt_us) {
         set_sample_interval(data, *dt_us);
         data.dt = static_cast<double>(*dt_us) * 1e-6;
@@ -404,6 +409,9 @@ int main(int argc, char** argv) {
         std::cerr << "basalt: " << e.what() << "\n";
         print_usage(std::cerr);
         return kExitUsage;
+    } catch (const std::bad_alloc&) {
+        std::cerr << "basalt: error: out of memory (the padded FFT buffer is too large; try a smaller --pad)\n";
+        return kExitRuntime;
     } catch (const std::exception& e) {
         std::cerr << "basalt: error: " << e.what() << "\n";
         return kExitRuntime;

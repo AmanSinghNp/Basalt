@@ -175,6 +175,7 @@ if(CMAKE_PROJECT_NAME STREQUAL "Basalt")
     target_compile_options(basalt_bench PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
     target_compile_definitions(basalt_tests PRIVATE BASALT_BENCH_PATH="$<TARGET_FILE:basalt_bench>")
     target_compile_definitions(basalt_tests PRIVATE BASALT_CLI_PATH="$<TARGET_FILE:basalt>")
+    target_compile_definitions(basalt_tests PRIVATE BASALT_VERSION="${PROJECT_VERSION}")
 
     add_executable(fk_gather_bench benchmarks/fk_gather_bench.cpp)
     target_link_libraries(fk_gather_bench PRIVATE basalt_core)

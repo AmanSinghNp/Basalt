@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <random>
@@ -172,7 +173,7 @@ TEST(CliUsage, HelpExitsZero) {
 TEST(CliUsage, VersionPrintsVersion) {
     const CliResult r = run_cli({"--version"});
     EXPECT_EQ(r.exit_code, 0);
-    EXPECT_EQ(r.out.rfind("basalt ", 0), 0u) << r.out;
+    EXPECT_EQ(r.out, std::string("basalt ") + BASALT_VERSION + "\n");
 }
 
 TEST(CliUsage, NoArgumentsExitsTwo) {
@@ -209,6 +210,16 @@ TEST(CliUsage, BadNumberExitsTwo) {
     EXPECT_TRUE(contains(r.err, "usage"));
 }
 
+TEST(CliUsage, HexFloatIsRejectedAsNumber) {
+    // strtod would read 0x1p3 as 8; the CLI accepts decimal notation only.
+    const std::string in = test_path("in.segy");
+    write_fixture(in, random_samples(20 * 100, 13), 20, 100, 0.004, SampleFormat::IEEE32);
+
+    const CliResult r = run_cli({"filter", in, test_path("out.segy"), "--vmin", "0x1p3"});
+    EXPECT_EQ(r.exit_code, 2);
+    EXPECT_TRUE(contains(r.err, "invalid number '0x1p3' for --vmin")) << r.err;
+}
+
 TEST(CliUsage, MissingValueExitsTwo) {
     const std::string in = test_path("in.segy");
     write_fixture(in, random_samples(20 * 100, 3), 20, 100, 0.004, SampleFormat::IEEE32);
@@ -236,6 +247,50 @@ TEST(CliRuntime, MissingInputFileExitsOne) {
     const CliResult filter = run_cli({"filter", missing, test_path("out.segy")});
     EXPECT_EQ(filter.exit_code, 1);
     EXPECT_TRUE(contains(filter.err, "cannot open"));
+}
+
+TEST(CliRuntime, ZeroTraceInputIsRejectedWithoutOutput) {
+    const std::string in = test_path("in.segy");
+    const std::string out = test_path("out.segy");
+    write_fixture(in, {}, 0, 100, 0.004, SampleFormat::IEEE32);
+    std::remove(out.c_str());
+
+    const CliResult info = run_cli({"info", in});
+    EXPECT_EQ(info.exit_code, 0) << info.err;
+    EXPECT_TRUE(contains(info.out, "ntraces: 0")) << info.out;
+
+    const CliResult filter = run_cli({"filter", in, out});
+    EXPECT_EQ(filter.exit_code, 1);
+    EXPECT_TRUE(contains(filter.err, "no traces")) << filter.err;
+    EXPECT_FALSE(std::ifstream(out).good());
+}
+
+TEST(CliRuntime, ZeroHeaderIntervalIsNotRepairedByDt) {
+    // The reader rejects a binary header whose sample interval is zero, before --dt is applied.
+    // Bytes 3217-3218 (1-based) hold the interval, so they sit at offset 3216.
+    const std::string in = test_path("in.segy");
+    const std::string out = test_path("out.segy");
+    write_fixture(in, random_samples(20 * 100, 14), 20, 100, 0.004, SampleFormat::IEEE32);
+    {
+        std::fstream file(in, std::ios::in | std::ios::out | std::ios::binary);
+        file.seekp(3216);
+        const char zeros[2] = {0, 0};
+        file.write(zeros, 2);
+    }
+
+    const CliResult r = run_cli({"filter", in, out, "--dt", "0.002"});
+    EXPECT_EQ(r.exit_code, 1);
+    EXPECT_TRUE(contains(r.err, "zero sample interval")) << r.err;
+}
+
+TEST(CliRuntime, OversizedPadReportsOutOfMemory) {
+    const std::string in = test_path("in.segy");
+    write_fixture(in, random_samples(20 * 100, 15), 20, 100, 0.004, SampleFormat::IEEE32);
+
+    const CliResult r = run_cli({"filter", in, test_path("out.segy"), "--pad", "1e6"});
+    EXPECT_EQ(r.exit_code, 1);
+    EXPECT_TRUE(contains(r.err, "out of memory")) << r.err;
+    EXPECT_FALSE(contains(r.err, "bad_alloc")) << r.err;
 }
 
 // --- info ----------------------------------------------------------------------------------
