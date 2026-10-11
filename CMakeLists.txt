@@ -164,6 +164,10 @@ add_executable(basalt_tests
 )
 target_link_libraries(basalt_tests PRIVATE basalt_core GTest::gtest_main)
 target_compile_options(basalt_tests PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
+# The CLI tests run the basalt executable (defined unconditionally above) and check its version,
+# so these must be set whether or not Basalt is the top-level project.
+target_compile_definitions(basalt_tests PRIVATE BASALT_CLI_PATH="$<TARGET_FILE:basalt>")
+target_compile_definitions(basalt_tests PRIVATE BASALT_VERSION="${PROJECT_VERSION}")
 
 include(GoogleTest)
 gtest_discover_tests(basalt_tests)
@@ -174,8 +178,6 @@ if(CMAKE_PROJECT_NAME STREQUAL "Basalt")
     target_link_libraries(basalt_bench PRIVATE basalt_core)
     target_compile_options(basalt_bench PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
     target_compile_definitions(basalt_tests PRIVATE BASALT_BENCH_PATH="$<TARGET_FILE:basalt_bench>")
-    target_compile_definitions(basalt_tests PRIVATE BASALT_CLI_PATH="$<TARGET_FILE:basalt>")
-    target_compile_definitions(basalt_tests PRIVATE BASALT_VERSION="${PROJECT_VERSION}")
 
     add_executable(fk_gather_bench benchmarks/fk_gather_bench.cpp)
     target_link_libraries(fk_gather_bench PRIVATE basalt_core)

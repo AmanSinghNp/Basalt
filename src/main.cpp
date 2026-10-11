@@ -58,9 +58,11 @@ void print_help(std::ostream& os) {
        << "  --taper T        fractional edge width, 0 <= T < 1 (0.1)\n"
        << "  --mode M         reject (mute the band) or pass (keep only the band) (reject)\n"
        << "  --dx M           trace spacing, m (25)\n"
-       << "  --dt S           sample interval, s, whole microseconds only (from the file header)\n"
+       << "  --dt S           sample interval, s, a whole number of microseconds in\n"
+       << "                   [1e-6, 0.065535] (from the file header)\n"
        << "  --pad P          FFT padding factor, >= 1 (1.5)\n"
-       << "  --edge-taper N   cosine taper over the first and last N traces (4)\n"
+       << "  --edge-taper N   cosine taper over the first and last N traces of each block (4),\n"
+       << "                   at most (block size - 1) / 2 per block\n"
        << "  --threads N      FFT threads, 0 = all cores (1)\n"
        << "  --gather-size N  filter consecutive blocks of N traces (whole file)\n"
        << "  --format F       output sample format, ibm or ieee (input format if\n"
@@ -375,16 +377,23 @@ int run_filter(const std::vector<std::string>& args) {
     const size_t ntraces = data.ntraces;
     const size_t nsamples = data.nsamples;
     const size_t block = gather_size != 0 ? std::min(gather_size, ntraces) : ntraces;
-    // The edge taper weights the first and last N traces of each block. When 2N >= block, every
-    // trace of the block is weighted below one, so the output is attenuated throughout.
-    if (params.edge_taper_traces > 0 && 2 * params.edge_taper_traces >= block) {
-        std::cerr << "basalt: warning: --edge-taper " << params.edge_taper_traces
-                  << " tapers every trace of the " << block << "-trace blocks\n"
-                  << "  use a smaller --edge-taper (0 disables it) or a larger --gather-size\n";
+    // The edge taper weights the first and last N traces of each block. The two tapers must not
+    // meet on a trace (their weights would multiply), so for a block of `count` traces N is at most
+    // (count - 1) / 2: at least one trace in the middle stays untapered. A larger request is
+    // reduced for the blocks that need it. A last block shorter than the others may need that.
+    const size_t requested_taper = params.edge_taper_traces;
+    const size_t tail = ntraces % block;
+    const size_t shortest = tail != 0 ? std::min(block, tail) : block;
+    if (requested_taper > (shortest - 1) / 2) {
+        std::cerr << "basalt: warning: --edge-taper " << requested_taper << " is too large for "
+                  << shortest << "-trace blocks\n"
+                  << "  at most " << (shortest - 1) / 2
+                  << " traces are tapered from each end of each block (0 disables the taper)\n";
     }
     const auto started = std::chrono::steady_clock::now();
     for (size_t first = 0; first < ntraces; first += block) {
         const size_t count = std::min(block, ntraces - first);
+        params.edge_taper_traces = std::min(requested_taper, (count - 1) / 2);
         float* gather = data.samples.data() + first * nsamples;
         basalt::fk_filter_gather(gather, gather, count, nsamples, params);
     }
