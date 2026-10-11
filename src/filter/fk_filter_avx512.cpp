@@ -35,9 +35,10 @@ void apply_fk_filter_avx512_impl(basalt::kernel::ComplexSoA& data,
     const double dk = 1.0 / (static_cast<double>(cols) * params.dx);
 
     const __m512 v_steep = _mm512_set1_ps(10.0f / static_cast<float>(params.taper_width));
-    const __m512 v_cut = _mm512_set1_ps(static_cast<float>(params.mute_vel_max));
-    const __m512 v_eps = _mm512_set1_ps(1e-6f);
-    const __m512 abs_mask = _mm512_castsi512_ps(_mm512_set1_epi32(0x7FFFFFFF));
+    const __m512 v_min = _mm512_set1_ps(static_cast<float>(params.mute_vel_min));
+    const __m512 v_max = _mm512_set1_ps(static_cast<float>(params.mute_vel_max));
+    const __m512 one = _mm512_set1_ps(1.0f);
+    const __m512 zero = _mm512_setzero_ps();
 
     for (size_t tile_row = 0; tile_row < rows; tile_row += plan.tile_rows) {
         const size_t row_end = std::min(tile_row + plan.tile_rows, rows);
@@ -73,15 +74,21 @@ void apply_fk_filter_avx512_impl(basalt::kernel::ComplexSoA& data,
                     const __mmask16 lane_mask = remaining >= 16
                         ? static_cast<__mmask16>(0xFFFF)
                         : static_cast<__mmask16>((1u << remaining) - 1u);
-                    const __m512 vk = _mm512_maskz_load_ps(lane_mask, k_vals.data());
-                    const __m512 vel = _mm512_div_ps(vf, _mm512_add_ps(vk, v_eps));
-                    __m512 x = _mm512_sub_ps(_mm512_and_ps(vel, abs_mask), v_cut);
-                    x = _mm512_mul_ps(x, v_steep);
-                    const __m512 weight = _mm512_mask_mov_ps(
-                        _mm512_setzero_ps(),
-                        lane_mask,
-                        fast_sigmoid_avx512_split(x)
-                    );
+                    // k_vals holds all 16 lanes (1.0 past the last column), so a full load is valid.
+                    const __m512 vk = _mm512_load_ps(k_vals.data());
+                    // k == 0 lanes (zero-wavenumber column, incl. DC) have v = +/-inf and are kept:
+                    // the divisor is replaced by 1 and the weight is forced to 1 via the mask.
+                    const __mmask16 k_is_zero = _mm512_cmp_ps_mask(vk, zero, _CMP_EQ_OQ);
+                    const __m512 vk_safe = _mm512_mask_mov_ps(vk, k_is_zero, one);
+                    const __m512 vel = _mm512_div_ps(vf, vk_safe);
+                    // Signed band [v_min, v_max] with a sigmoid edge on each side.
+                    const __m512 rise = fast_sigmoid_avx512_split(
+                        _mm512_mul_ps(_mm512_sub_ps(vel, v_min), v_steep));
+                    const __m512 fall = fast_sigmoid_avx512_split(
+                        _mm512_mul_ps(_mm512_sub_ps(v_max, vel), v_steep));
+                    const __m512 inside = _mm512_mul_ps(rise, fall);
+                    const __m512 mute_weight = _mm512_sub_ps(one, inside);
+                    const __m512 weight = _mm512_mask_mov_ps(mute_weight, k_is_zero, one);
                     const size_t offset = i * cols + j;
                     __m512 real = _mm512_maskz_loadu_ps(lane_mask, data.real + offset);
                     __m512 imag = _mm512_maskz_loadu_ps(lane_mask, data.imag + offset);

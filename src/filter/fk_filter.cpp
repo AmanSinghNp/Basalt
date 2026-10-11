@@ -49,10 +49,11 @@ void apply_fk_filter_avx2(basalt::kernel::ComplexSoA& data,
     const double dk = 1.0 / (static_cast<double>(cols) * params.dx);
 
     const float steepness = 10.0f / static_cast<float>(params.taper_width);
-    const float v_cut_pos = static_cast<float>(params.mute_vel_max);
     const __m256 v_steep = _mm256_set1_ps(steepness);
-    const __m256 v_cut = _mm256_set1_ps(v_cut_pos);
-    const __m256 v_eps = _mm256_set1_ps(1e-6f);
+    const __m256 v_min = _mm256_set1_ps(static_cast<float>(params.mute_vel_min));
+    const __m256 v_max = _mm256_set1_ps(static_cast<float>(params.mute_vel_max));
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 zero = _mm256_setzero_ps();
 
     for (size_t tile_row = 0; tile_row < rows; tile_row += plan.tile_rows) {
         const size_t row_end = std::min(tile_row + plan.tile_rows, rows);
@@ -94,11 +95,20 @@ void apply_fk_filter_avx2(basalt::kernel::ComplexSoA& data,
                     }
 
                     const __m256 vk = _mm256_load_ps(k_vals.data());
-                    const __m256 vk_safe = _mm256_add_ps(vk, v_eps);
+                    // Lanes with k == 0 (zero-wavenumber column, incl. DC) have v = +/-inf and
+                    // are kept. Their divisor is replaced by 1 so the division stays finite,
+                    // and their weight is forced to 1 by the blend below.
+                    const __m256 k_is_zero = _mm256_cmp_ps(vk, zero, _CMP_EQ_OQ);
+                    const __m256 vk_safe = _mm256_blendv_ps(vk, one, k_is_zero);
                     const __m256 vel = _mm256_div_ps(vf, vk_safe);
-                    __m256 x = _mm256_sub_ps(detail::absolute_ps(vel), v_cut);
-                    x = _mm256_mul_ps(x, v_steep);
-                    const __m256 weight = basalt::utils::fast_sigmoid_avx(x);
+                    // Signed band [v_min, v_max] with a sigmoid edge on each side.
+                    const __m256 rise = basalt::utils::fast_sigmoid_avx(
+                        _mm256_mul_ps(_mm256_sub_ps(vel, v_min), v_steep));
+                    const __m256 fall = basalt::utils::fast_sigmoid_avx(
+                        _mm256_mul_ps(_mm256_sub_ps(v_max, vel), v_steep));
+                    const __m256 inside = _mm256_mul_ps(rise, fall);
+                    const __m256 mute_weight = _mm256_sub_ps(one, inside);
+                    const __m256 weight = _mm256_blendv_ps(mute_weight, one, k_is_zero);
 
                     const size_t remaining = col_end - j;
                     if (remaining >= 8) {
@@ -136,7 +146,9 @@ void apply_fk_filter(basalt::kernel::ComplexSoA& data,
                      size_t rows, size_t cols,
                      const FKParams& params,
                      basalt::kernel::SimdMode simd_mode) {
-    if (params.taper_width <= 0.0 || rows == 0 || cols == 0) {
+    // No-op for a non-positive taper, an empty band (min >= max, also catches NaN) or empty data.
+    if (!(params.taper_width > 0.0) || !(params.mute_vel_min < params.mute_vel_max) ||
+        rows == 0 || cols == 0) {
         return;
     }
 

@@ -45,9 +45,4 @@ inline float wrapped_wavenumber(size_t index, size_t size, double step) {
     );
 }
 
-inline __m256 absolute_ps(__m256 value) {
-    const __m256 mask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
-    return _mm256_and_ps(value, mask);
-}
-
 } // namespace basalt::filter::detail
