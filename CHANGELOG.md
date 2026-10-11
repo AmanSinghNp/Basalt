@@ -14,10 +14,12 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
   `Reject` and `Pass` modes. `basalt::fk_mute_weight` exposes the per-bin weight.
 - Design contract `docs/design/FK_PIPELINE.md` covering the f-k pipeline, SEG-Y I/O, the CLI and the Python API
 - SEG-Y reader and writer in `basalt/io/segy_file.hpp`. Reads IBM32, INT32, INT16, IEEE32 and INT8 samples
-  and writes IBM32 and IEEE32. Headers are kept as raw bytes and written back unchanged apart from the format code.
+  and writes IBM32 and IEEE32. Headers are kept as raw bytes and written back from them. On write, the binary
+  header's format code is set to the output format and its extended textual header count is set to 0.
 - `basalt` command line tool with `info` and `filter` commands. `filter` runs on whole files or in blocks of
   traces (`--gather-size`), selects the output sample format, and returns exit status 0, 1 or 2 for success,
-  runtime errors and usage errors.
+  runtime errors and usage errors. `filter --dt` rewrites the sample-interval fields in the binary header and in
+  each trace header that has one.
 - Python package `basalt` built with pybind11 (`-DBASALT_BUILD_PYTHON=ON`, or `pip install .`), providing
   `fk_filter`, `fk_mute_weight`, `read_segy` and `write_segy`
 - Benchmarks of the f-k pipeline: `fk_gather_bench` (C++, with legacy and pocketfft-only rows) and
@@ -33,8 +35,6 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
   power-of-two API is documented in its own section
 - Legacy `apply_fk_filter` now uses smooth, two-sided band edges and no longer adds an epsilon to the velocity
   divisor. Its output differs from 0.1.0; the changes are listed under Fixed
-- Tests built with AddressSanitizer run with `allocator_may_return_null=1`, so an oversized allocation raises
-  `std::bad_alloc` (reported as out of memory) instead of aborting, as it does in a normal build
 
 ### Fixed
 

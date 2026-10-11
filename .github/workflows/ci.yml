@@ -49,8 +49,8 @@ jobs:
       if: matrix.build_type == 'Release'
       run: |
         cd build
-        ./fft_benchmark || true
-        ./fk_benchmark || true
+        ./fft_benchmark
+        ./fk_benchmark
 
   python-bindings:
     name: Build & Test (Python bindings, Ubuntu - Release)

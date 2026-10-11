@@ -126,7 +126,7 @@ PYTHONPATH=build/python python3 example.py
 
 `fk_filter` takes a 2D array of shape `(ntraces, nsamples)`, trace-major, and returns a new
 float32 array of the same shape. Other dtypes and non-contiguous arrays are converted. The
-signature is in `python/basalt/__init__.py` and the contract is in
+signatures and argument defaults are in `python/src/basalt_py.cpp`, and the contract is in
 [docs/design/FK_PIPELINE.md](docs/design/FK_PIPELINE.md), section 7.
 
 ### C++
@@ -204,11 +204,11 @@ returns the weight of any single f-k bin for the same parameters.
 
 ## Apparent velocity and the mute modes
 
-Each f-k sample has apparent velocity `v = -f / k`. An event whose arrival time rises with trace
+Each f-k sample has apparent velocity `v = -f / k`, so an event whose arrival time rises with trace
 position (`t = t0 + x / V` with `V > 0`) has `v = +V`, and one whose time falls has `v = -V`.
-`FKMode::Reject` mutes the samples whose velocity lies in `[v_min, v_max]` and keeps the rest,
-and `FKMode::Pass` keeps only that band. The band edges are raised-cosine tapers with half-width
-`0.5 * taper * |edge|`. The full definition, including the `k = 0` and DC cases, is in
+`FKMode::Reject` mutes the samples whose velocity lies in `[v_min, v_max]` and keeps the rest, and
+`FKMode::Pass` keeps only that band, with raised-cosine edges of half-width `0.5 * taper * |edge|`.
+The full definition, including the `k = 0` and DC cases, is in
 [docs/design/FK_PIPELINE.md](docs/design/FK_PIPELINE.md), sections 2 and 3.
 
 ## Performance
@@ -224,7 +224,8 @@ not certified. Methodology, hardware and caveats are in [PERFORMANCE.md](PERFORM
 The original API works on single-precision complex data in a structure-of-arrays layout
 (`ComplexSoA`), and it requires both dimensions to be powers of two. It is declared in
 `basalt/filter/fk_filter.hpp` and `basalt/kernel/fft2d.hpp`. Its velocity is `v = f / k`, the
-opposite sign to the pipeline above. Use the pipeline for new code.
+opposite sign to the pipeline above. Use the pipeline for new code. The snippet below is a complete
+program; link it against `Basalt::basalt_core` as in the C++ section.
 
 ```cpp
 #include <basalt/arena.hpp>
@@ -232,27 +233,32 @@ opposite sign to the pipeline above. Use the pipeline for new code.
 #include <basalt/kernel/complex_soa.hpp>
 #include <basalt/kernel/fft2d.hpp>
 
-size_t rows = 1024;
-size_t cols = 1024;
-size_t total = rows * cols;
+#include <cstddef>
 
-basalt::MemoryArena arena(total * sizeof(float) * 2 + 4096);
-basalt::kernel::ComplexSoA data(arena, total);
+int main() {
+    const size_t rows = 1024;
+    const size_t cols = 1024;
+    const size_t total = rows * cols;
 
-basalt::MemoryArena scratch(total * sizeof(float) * 2 + 8192);
-basalt::kernel::FFT2DConfig fft_config;
+    basalt::MemoryArena arena(total * sizeof(float) * 2 + 4096);
+    basalt::kernel::ComplexSoA data(arena, total);
 
-basalt::kernel::fft2d_forward(data.real, data.imag, rows, cols, scratch, fft_config);
+    basalt::MemoryArena scratch(total * sizeof(float) * 2 + 8192);
+    basalt::kernel::FFT2DConfig fft_config;
 
-basalt::filter::FKParams params;
-params.mute_vel_min = -1500.0;
-params.mute_vel_max = 1500.0;
-params.taper_width = 100.0;
+    basalt::kernel::fft2d_forward(data.real, data.imag, rows, cols, scratch, fft_config);
 
-basalt::filter::apply_fk_filter(data, rows, cols, params);
+    basalt::filter::FKParams params;
+    params.mute_vel_min = -1500.0;
+    params.mute_vel_max = 1500.0;
+    params.taper_width = 100.0;
 
-scratch.reset();
-basalt::kernel::fft2d_inverse(data.real, data.imag, rows, cols, scratch, fft_config);
+    basalt::filter::apply_fk_filter(data, rows, cols, params);
+
+    scratch.reset();
+    basalt::kernel::fft2d_inverse(data.real, data.imag, rows, cols, scratch, fft_config);
+    return 0;
+}
 ```
 
 ## Build and install
@@ -278,6 +284,9 @@ ctest --output-on-failure
 ```
 
 With `-DBASALT_BUILD_PYTHON=ON`, `ctest` also runs the Python tests, which need NumPy and pybind11.
+In an AddressSanitizer build, run `basalt_tests` directly with `ASAN_OPTIONS=allocator_may_return_null=1`
+set. Without it, `CliRuntime.OversizedPadReportsOutOfMemory` fails, because the oversized allocation
+aborts instead of raising `std::bad_alloc`. `ctest` sets this variable itself.
 Continuous integration builds Release and a sanitizer (AddressSanitizer and UBSan, Debug) configuration
 on Linux, and has a separate job for the Python bindings. See
 [.github/workflows/ci.yml](.github/workflows/ci.yml).
@@ -295,6 +304,10 @@ on Linux, and has a separate job for the Python bindings. See
 ```bash
 ./build/basalt_bench --sizes 256,512,1024 --threads 1,2,4 --simd auto,avx2,avx512 --numa off,auto --memory-policy bind-worker-buffers,bind-inputs-if-possible --csv-out benchmark.csv --json-out benchmark.json
 ```
+
+The example above runs 108 configurations (3 sizes x 3 thread counts x 3 SIMD modes x 2 NUMA modes
+x 2 memory policies), each with the default 64 timed shots. It can take well over 15 minutes. For a
+quick run, give shorter lists, or pass smaller values for `--shots` and `--warmup`.
 
 CSV output uses flat `|`-delimited counter fields for locality metrics. JSON emits the same
 metrics as numeric arrays. The comparison against NumPy and SciPy, and how to reproduce it, are
