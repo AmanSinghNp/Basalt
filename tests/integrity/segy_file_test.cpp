@@ -11,6 +11,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -296,7 +297,9 @@ TEST(SegyFileTest, ReadsIbm32Format1WithKnownValues) {
 
 TEST(SegyFileTest, ReadsInt32Format2WithNegatives) {
     const std::vector<int32_t> t0 = {1, -2, 300000, -7};
-    const std::vector<int32_t> t1 = {-2147483647, 0, 42, -1};
+    // Values are kept within float's exact integer range (2^24): beyond it the decoded float
+    // rounds, and a comparison against a rounded expectation cannot detect an off-by-one.
+    const std::vector<int32_t> t1 = {-16777215, 0, 42, -1};
     TempFile file("fmt2");
     write_all_bytes(file.path(), file_image(ascii_text("C 1 INT32"), binary_header(2, 4000, 4), {},
                                             {trace(1, 4, int32_bytes(t0)), trace(2, 4, int32_bytes(t1))}));
@@ -304,7 +307,7 @@ TEST(SegyFileTest, ReadsInt32Format2WithNegatives) {
     const SegyData d = read_segy(file.path());
     EXPECT_EQ(d.format, SampleFormat::INT32);
     const std::vector<float> expected = {1.0f, -2.0f, 300000.0f, -7.0f,
-                                         -2147483647.0f, 0.0f, 42.0f, -1.0f};
+                                         -16777215.0f, 0.0f, 42.0f, -1.0f};
     EXPECT_EQ(d.samples, expected);
 }
 
@@ -442,10 +445,11 @@ TEST(SegyFileTest, RawHeadersArePreservedOnWriteExceptFormatCode) {
     EXPECT_TRUE(std::equal(text.begin(), text.end(), out.begin()));
 
     // Binary header: identical except the format code (bytes 3225-3226 -> index 24-25).
-    std::vector<uint8_t> expected_bin = bin;
-    expected_bin[24] = 0x00;
-    expected_bin[25] = 0x01;  // IBM32
-    EXPECT_TRUE(std::equal(expected_bin.begin(), expected_bin.end(), out.begin() + 3200));
+    // Compared in two ranges around the format code, so the expected header is never patched in place.
+    EXPECT_TRUE(std::equal(bin.begin(), bin.begin() + 24, out.begin() + 3200));
+    EXPECT_TRUE(std::equal(bin.begin() + 26, bin.end(), out.begin() + 3200 + 26));
+    EXPECT_EQ(out[3200 + 24], 0x00);
+    EXPECT_EQ(out[3200 + 25], 0x01);  // IBM32
 
     // Trace headers: identical.
     const size_t ibm_trace = 240 + nsamples * 4;
@@ -549,9 +553,21 @@ TEST(SegyFileTest, WriteRejectsUnsupportedOutputFormat) {
 }
 
 TEST(SegyFileTest, WriteRejectsSampleCountMismatch) {
-    SegyData data = make_segy({1.0f, 2.0f, 3.0f, 4.0f}, 2, 2, 0.001, SampleFormat::IEEE32);
-    data.nsamples = 4;  // headers still say 2
+    // The samples vector is sized for nsamples = 4, so only the binary-header check can fire.
+    SegyData data = make_segy({1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f}, 2, 4, 0.001,
+                              SampleFormat::IEEE32);
+    data.raw_binary_header[20] = 0;  // bytes 3221-3222 hold 2 samples per trace
+    data.raw_binary_header[21] = 2;
     TempFile file("nsamples_mismatch");
+    EXPECT_THROW(write_segy(file.path(), data, SampleFormat::IEEE32), std::invalid_argument);
+}
+
+TEST(SegyFileTest, WriteRejectsTraceSampleCountMismatch) {
+    SegyData data = make_segy({1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f}, 2, 4, 0.001,
+                              SampleFormat::IEEE32);
+    data.raw_trace_headers[1][114] = 0;
+    data.raw_trace_headers[1][115] = 3;  // trace 1 header says 3 samples
+    TempFile file("trace_nsamples_mismatch");
     EXPECT_THROW(write_segy(file.path(), data, SampleFormat::IEEE32), std::invalid_argument);
 }
 
@@ -606,4 +622,92 @@ TEST(SegyFileTest, MakeSegyWritesValidHeaders) {
     EXPECT_EQ((static_cast<uint32_t>(b[3600 + 114]) << 8) | b[3600 + 115], nsamples);
     EXPECT_EQ((static_cast<uint32_t>(b[3600 + 116]) << 8) | b[3600 + 117], 2000u);
     EXPECT_EQ((static_cast<uint32_t>(b[t1 + 114]) << 8) | b[t1 + 115], nsamples);
+}
+
+// --- Edge cases ---
+
+TEST(SegyFileTest, NulPaddedAsciiTextHeaderIsDetected) {
+    // NUL bytes are neutral, so an ASCII label followed by NUL padding is still read as ASCII.
+    const std::string label = "C 1 NUL PADDED ASCII HEADER";
+    std::vector<uint8_t> text = ascii_text(label);
+    std::fill(text.begin() + static_cast<std::ptrdiff_t>(label.size()), text.end(), uint8_t{0});
+    TempFile file("nul_padded_text");
+    write_all_bytes(file.path(), file_image(text, binary_header(5, 4000, 2), {},
+                                            {trace(1, 2, ieee_bytes({1.0f, 2.0f}))}));
+
+    const SegyData d = read_segy(file.path());
+    ASSERT_EQ(d.text_header.size(), 3200u);
+    EXPECT_EQ(d.text_header.substr(0, label.size()), label);
+    EXPECT_EQ(d.samples, (std::vector<float>{1.0f, 2.0f}));
+}
+
+TEST(SegyFileTest, ZeroSampleIntervalThrows) {
+    TempFile file("zero_interval");
+    write_all_bytes(file.path(), file_image(ascii_text("C 1"), binary_header(5, 0, 2), {},
+                                            {trace(1, 2, ieee_bytes({1.0f, 2.0f}))}));
+    expect_read_error(file.path(), "sample interval");
+}
+
+TEST(SegyFileTest, ExtendedHeaderCountIsZeroedOnWrite) {
+    // The input declares two extended headers. They are skipped on read and not retained, so the
+    // written file must not claim them: its count is zero and its layout has no extended headers.
+    const size_t nsamples = 3;
+    const std::vector<float> t0 = {0.5f, -0.5f, 2.0f};
+    const std::vector<float> t1 = {-3.0f, 4.0f, -5.0f};
+    TempFile in_file("ext_in");
+    TempFile out_file("ext_out");
+    write_all_bytes(in_file.path(),
+                    file_image(ascii_text("C 1 MAIN"), binary_header(5, 4000, 3, 2),
+                               std::vector<uint8_t>(2 * 3200, 'X'),
+                               {trace(1, 3, ieee_bytes(t0)), trace(2, 3, ieee_bytes(t1))}));
+
+    const SegyData d = read_segy(in_file.path());
+    write_segy(out_file.path(), d, SampleFormat::IEEE32);
+
+    const auto out = read_all_bytes(out_file.path());
+    ASSERT_EQ(out.size(), 3600 + 2 * (240 + nsamples * 4));
+    EXPECT_EQ((static_cast<uint32_t>(out[3200 + 304]) << 8) | out[3200 + 305], 0u);
+    const SegyData back = read_segy(out_file.path());
+    EXPECT_EQ(back.ntraces, 2u);
+    EXPECT_EQ(back.samples, d.samples);
+}
+
+TEST(SegyFileTest, IbmWriteRejectsNonFiniteSamples) {
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    for (float bad : {inf, -inf, nan}) {
+        const SegyData data = make_segy({1.0f, bad}, 1, 2, 0.001, SampleFormat::IEEE32);
+        TempFile file("ibm_nonfinite");
+        std::remove(file.path().c_str());
+        EXPECT_THROW(write_segy(file.path(), data, SampleFormat::IBM32), std::invalid_argument);
+        // The check runs before the output file is created.
+        std::ifstream probe(file.path());
+        EXPECT_FALSE(probe.good()) << "output file should not exist for value " << bad;
+    }
+}
+
+TEST(SegyFileTest, IeeeWriteKeepsNonFiniteAndSubnormalValues) {
+    const float inf = std::numeric_limits<float>::infinity();
+    const float subnormal = 1.4e-45f;
+    const SegyData data = make_segy({inf, -inf, subnormal, -subnormal}, 1, 4, 0.001, SampleFormat::IEEE32);
+    TempFile file("ieee_special");
+    write_segy(file.path(), data, SampleFormat::IEEE32);
+    const SegyData back = read_segy(file.path());
+    EXPECT_EQ(back.samples, data.samples);
+}
+
+TEST(SegyFileTest, IbmWriteFlushesSubnormalsToZero) {
+    // IEEE subnormals (below 1.2e-38) are written as zero words. ieee_to_ibm would otherwise write
+    // a nonzero word that is mis-scaled. The raw words are checked because the reader's own
+    // underflow handling would hide the difference after decoding.
+    const SegyData data = make_segy({1.4e-45f, -1.4e-45f, 1.0e-40f, 1.0f}, 1, 4, 0.001, SampleFormat::IEEE32);
+    TempFile file("ibm_subnormal");
+    write_segy(file.path(), data, SampleFormat::IBM32);
+    const auto bytes = read_all_bytes(file.path());
+    ASSERT_EQ(bytes.size(), 3600u + 240u + 16u);
+    const size_t off = 3600 + 240;
+    EXPECT_EQ(get_be32(bytes, off + 0), 0u);
+    EXPECT_EQ(get_be32(bytes, off + 4), 0u);
+    EXPECT_EQ(get_be32(bytes, off + 8), 0u);
+    EXPECT_EQ(get_be32(bytes, off + 12), 0x41100000u);  // 1.0 in IBM32
 }

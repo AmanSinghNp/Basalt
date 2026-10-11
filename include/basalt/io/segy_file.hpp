@@ -33,9 +33,11 @@ SegyData read_segy(const std::string& path);
 
 // Writes a SEG-Y file. Text and trace headers are written back from the raw arrays and the
 // binary header is written from its raw bytes, except that the format code is set to
-// `out_format` and the extended textual header count is set to zero. Samples are encoded in
-// `out_format`. Supports writing IBM32 and IEEE32; throws std::invalid_argument otherwise, or
-// when the sample count does not match the raw headers. Throws std::runtime_error on I/O failure.
+// `out_format` and the extended textual header count is set to zero. The `dt`, `text_header`
+// and `format` fields are not written: to change the headers, edit the raw arrays. Samples are
+// encoded in `out_format`. Supports writing IBM32 and IEEE32; throws std::invalid_argument
+// otherwise, when the sample count does not match the raw headers, or when IBM32 output would
+// contain NaN or infinite samples. Throws std::runtime_error on I/O failure.
 void write_segy(const std::string& path, const SegyData& data,
                 SampleFormat out_format = SampleFormat::IEEE32);
 

@@ -3,6 +3,7 @@
 #include "basalt/segy_format.hpp"
 #include "basalt/utils/ibm_float.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -97,10 +98,12 @@ float decode_sample(const uint8_t* p, SampleFormat format) {
 }
 
 // Encodes a sample as big-endian IEEE32 or IBM32 (the only writable formats).
+// ieee_to_ibm mis-scales IEEE subnormals (it assumes an implicit leading bit), so they are flushed
+// to zero here (magnitude below 1.2e-38). Non-finite values are rejected by write_segy beforehand.
 void encode_sample(uint8_t* p, float value, SampleFormat format) {
     uint32_t bits;
     if (format == SampleFormat::IBM32) {
-        bits = utils::ieee_to_ibm(value);
+        bits = (std::fpclassify(value) == FP_SUBNORMAL) ? 0u : utils::ieee_to_ibm(value);
     } else {
         std::memcpy(&bits, &value, sizeof(bits));
     }
@@ -108,16 +111,22 @@ void encode_sample(uint8_t* p, float value, SampleFormat format) {
 }
 
 // A text header is ASCII when most of its bytes are printable. EBCDIC space (0x40) is '@' in
-// ASCII, so it is not counted; otherwise a blank EBCDIC header would look like ASCII.
+// ASCII, so it is not counted as printable; otherwise a blank EBCDIC header would look like ASCII.
+// NUL bytes are neutral: they are padding in some ASCII headers and say nothing about the encoding.
 bool looks_like_ascii(const std::array<uint8_t, kTextHeaderSize>& text) {
+    size_t considered = 0;
     size_t printable = 0;
     for (uint8_t b : text) {
+        if (b == 0) {
+            continue;
+        }
+        ++considered;
         const bool printable_ascii = (b >= 0x20 && b <= 0x7E && b != 0x40);
         if (printable_ascii || b == '\t' || b == '\n' || b == '\r') {
             ++printable;
         }
     }
-    return printable * 2 > text.size();
+    return printable * 2 > considered;
 }
 
 // ASCII to EBCDIC (code page 037) for the printable characters used in generated headers.
@@ -227,7 +236,11 @@ SegyData read_segy(const std::string& path) {
         fail(path, "binary header declares zero samples per trace");
     }
     data.nsamples = nsamples;
-    data.dt = static_cast<double>(get_be16(&bin[kBinSampleIntervalOff])) * 1e-6;
+    const uint16_t interval_us = get_be16(&bin[kBinSampleIntervalOff]);
+    if (interval_us == 0) {
+        fail(path, "binary header declares a zero sample interval");
+    }
+    data.dt = static_cast<double>(interval_us) * 1e-6;
 
     const size_t bps = bytes_per_sample(data.format);
     const uint64_t trace_bytes = kTraceHeaderSize + static_cast<uint64_t>(nsamples) * bps;
@@ -278,6 +291,11 @@ void write_segy(const std::string& path, const SegyData& data, SampleFormat out_
     }
     if (data.samples.size() != data.ntraces * data.nsamples) {
         throw std::invalid_argument("write_segy: samples size does not equal ntraces * nsamples");
+    }
+    // Checked before any file is created, so a rejected write leaves no partial file behind.
+    if (out_format == SampleFormat::IBM32 &&
+        !std::all_of(data.samples.begin(), data.samples.end(), [](float v) { return std::isfinite(v); })) {
+        throw std::invalid_argument("write_segy: IBM32 cannot encode NaN or infinite samples");
     }
     if (data.raw_trace_headers.size() != data.ntraces) {
         throw std::invalid_argument("write_segy: one raw trace header is required per trace");
