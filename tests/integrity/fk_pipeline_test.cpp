@@ -416,7 +416,8 @@ TEST(FKWeight, SignConventionVelocityIsMinusFOverK) {
 
 TEST(FKWeight, HardEdgeBandIsHalfOpen) {
     // taper = 0: the band is (v_min, v_max]. Pass [500, 2000] excludes v = 500 and includes
-    // v = 2000 (spec section 3, boundary convention).
+    // v = 2000. The half-open convention is not in the contract; it is a proposed amendment
+    // (commit c878967) pending the contract decision.
     FKMuteParams p = event_params();
     p.taper = 0.0;
     p.mode = FKMode::Pass;
@@ -429,7 +430,9 @@ TEST(FKWeight, HardEdgeBandIsHalfOpen) {
 
 TEST(FKWeight, NyquistLinesAreNotHermitian) {
     // dt = 2 ms gives F = 250 Hz; dx = 25 m gives K = 0.02 cycles/m. Both are their own
-    // negatives on the grid, so W(-f, -k) != W(f, k) there (spec section 2). Pass [5000, 20000]:
+    // negatives on the grid, so W(-f, -k) != W(f, k) there. That is not in the contract, which
+    // states Hermitian symmetry everywhere; the proposed amendment is in commit c878967.
+    // Pass [5000, 20000]:
     // (F, +K) gives v = -12500 (outside) and (F, -K) gives v = +12500 (inside).
     FKMuteParams p;
     p.dt = 0.002;
@@ -632,7 +635,8 @@ TEST(FKPipeline, EdgeTaperFormulaWithEmptyBand) {
 }
 
 TEST(FKPipeline, EdgeTapersMultiplyWhenTheyOverlap) {
-    // One trace is reached by both the start and the end taper (spec section 4, step 3), so its
+    // One trace is reached by both the start and the end taper. The contract does not state
+    // how overlapping tapers combine; this pins the implemented product (commit c878967). The
     // weight is w(0)^2 with N = 4. w(0) = 0.5 - 0.5 cos(pi / 5), so w(0)^2 = 0.00911863.
     // An empty Reject band leaves the tapered input as the output.
     const size_t ntr = 1;
@@ -680,11 +684,11 @@ TEST(FKPipeline, EdgeTaperSizeMaxStaysFinite) {
 
 TEST(FKPipeline, RejectEmptyBandKeepsInteriorTraces) {
     // Events at +-1000 m/s. The band [-400, 400] lies between them, so it holds no event
-    // energy. Spec section 4 states the 1e-4 criterion for inputs smooth along x. The events
-    // therefore carry a Hann envelope, which keeps truncation leakage well below the bound.
-    // The spec's literal hard-edged events leak about 5.7e-3 here (measured), so this test
-    // deliberately deviates from that synthetic setup. Interior traces (outside the 4-trace
-    // edge taper zone) must come back unchanged.
+    // energy. The contract's 1e-4 criterion does not say the input must be smooth along x; the
+    // proposed amendment (commit c878967) does. Hard-edged events leak about 5.7e-3 here
+    // (measured), so this test uses Hann-envelope events and deliberately deviates from the
+    // contract's literal synthetic setup until the decision. Interior traces (outside the
+    // 4-trace edge taper zone) must come back unchanged.
     const auto in = two_event_gather(true, true, true);
     FKMuteParams p = event_params();
     p.v_min = -400.0;
@@ -715,7 +719,8 @@ TEST(FKPipeline, AllPassIsIdentity) {
 }
 
 TEST(FKPipeline, AllPassOnRawInputRemovesOnlyTraceMean) {
-    // Spec section 4 (as amended) requires the all-pass configuration to return
+    // The contract's all-pass clause (input back to 1e-5) cannot hold: k = 0 (v = +inf) is
+    // dropped. The proposed amendment (commit c878967) requires
     //   out(t, s) = in(t, s) - m(s) + M,
     // where m(s) = sum_t in(t, s) / ntr_pad and M = sum(in) / (ntr_pad * ns_pad). The k = 0,
     // f != 0 row has v = +inf (section 2), which lies outside any finite band, so Pass drops
@@ -780,9 +785,8 @@ TEST(FKPipeline, PreserveDCControlsOffsetWithEmptyBand) {
                          static_cast<double>(fk_padded_samples(ns, p));
     p.preserve_dc = true;
     const auto kept = fk_filter_gather(in, ntr, ns, p);
-    for (float v : kept) {
-        EXPECT_NEAR(v, sum / scale, 1e-5);
-    }
+    const std::vector<float> want(kept.size(), static_cast<float>(sum / scale));
+    EXPECT_LE(rel_rms(kept, want), 1e-5);
 
     p.preserve_dc = false;
     const auto dropped = fk_filter_gather(in, ntr, ns, p);
