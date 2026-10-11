@@ -1,0 +1,4 @@
+CPU(s):                                  4
+Model name:                              Intel(R) Xeon(R) Processor @ 2.10GHz
+6.18.44-fc-v114
+g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0

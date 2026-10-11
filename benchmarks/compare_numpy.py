@@ -28,7 +28,7 @@ timed interval covers the whole call, so Python call overhead is included on bot
 Contract: docs/design/FK_PIPELINE.md (sections 2-4 and 7).
 
 Usage (after building the Python extension, see PERFORMANCE.md):
-  python3 benchmarks/compare_numpy.py --basalt-python build-ws/python
+  python3 benchmarks/compare_numpy.py --basalt-python build/python
 """
 
 import argparse
@@ -356,7 +356,7 @@ def main():
     ap.add_argument("--runs", type=int, default=9, help="timed runs per case, >= 7 (default 9)")
     ap.add_argument("--warmup", type=int, default=2, help="untimed runs per case (default 2)")
     ap.add_argument("--pad", type=float, default=1.5, help="pad_factor (default 1.5)")
-    ap.add_argument("--basalt-python", default=os.path.join(REPO_ROOT, "build-ws", "python"),
+    ap.add_argument("--basalt-python", default=os.path.join(REPO_ROOT, "build", "python"),
                     help="directory containing the basalt package (default: %(default)s)")
     ap.add_argument("--csv-out", default=DEFAULT_CSV, help="CSV output path (default: %(default)s)")
     args = ap.parse_args()

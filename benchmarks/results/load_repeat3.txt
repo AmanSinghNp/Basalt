@@ -1,4 +1,0 @@
-invocation 1 compare_numpy start: 10:05:55 loadavg 0.18 0.48 0.49
-invocation 2 compare_numpy start: 10:06:00 loadavg 0.48 0.54 0.51
-invocation 3 compare_numpy start: 10:06:05 loadavg 0.52 0.55 0.52
-invocation 4 compare_numpy start: 10:06:10 loadavg 0.56 0.56 0.52

@@ -28,6 +28,12 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 - Test coverage for the pipeline, SEG-Y I/O, the CLI and the Python bindings
 - CI job that builds and tests the Python bindings
 
+### Performance
+
+- `fk_filter_gather` caches the per-bin weight table per (padded size, parameters), reuses per-thread
+  workspaces, zeroes only the padding, and splits the copy-in, weight multiply and copy-out across
+  `threads`. The end-to-end call is now within 3 to 11% of the bare FFT pair single-threaded.
+
 ### Changed
 
 - Project version is 0.2.0 (CMake project version, `basalt --version`, Python `basalt.__version__`)

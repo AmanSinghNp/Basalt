@@ -219,8 +219,10 @@ The full definition, including the `k = 0` and DC cases, is in
 
 ## Performance
 
-The f-k pipeline is faster than numpy's 2D FFT round trip, and it is roughly on par with `scipy.fft`
-single-threaded. The measurements, hardware and caveats are in [PERFORMANCE.md](PERFORMANCE.md).
+On a 4-vCPU test machine, the f-k pipeline is 1.6x to 3.2x faster than the equivalent
+`numpy.fft.rfft2`/`irfft2` round trip. It is level with or faster than `scipy.fft` single-threaded,
+and faster than `scipy.fft` with 4 threads on large gathers (1.5x to 1.7x at 1024x1024 and
+2048x2048, C++ API). The measurements, hardware and caveats are in [PERFORMANCE.md](PERFORMANCE.md).
 
 ## Legacy power-of-two API
 
