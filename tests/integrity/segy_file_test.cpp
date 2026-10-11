@@ -648,6 +648,26 @@ TEST(SegyFileTest, MakeSegyWritesValidHeaders) {
     EXPECT_EQ((static_cast<uint32_t>(b[t1 + 114]) << 8) | b[t1 + 115], nsamples);
 }
 
+TEST(SegyFileTest, MakeSegyIbmWritesIbmFormatCodeAndWords) {
+    // The format code must say IBM (1), not IEEE (5), when the samples are written as IBM32.
+    const SegyData data = make_segy({1.0f, -2.5f, 0.5f, 4.0f}, 1, 4, 0.004, SampleFormat::IBM32);
+    TempFile file("make_ibm_headers");
+    write_segy(file.path(), data, SampleFormat::IBM32);
+    const auto b = read_all_bytes(file.path());
+    ASSERT_EQ(b.size(), 3600u + 240u + 4u * 4u);
+    EXPECT_EQ((static_cast<uint32_t>(b[3200 + 24]) << 8) | b[3200 + 25], 1u);  // bytes 3225-3226
+    EXPECT_EQ(get_be32(b, 3600 + 240), 0x41100000u);                          // 1.0 in IBM32
+}
+
+TEST(SegyFileTest, WriteToUnwritablePathThrowsRuntimeError) {
+    // The directory does not exist, so the output file cannot be created. This is an I/O failure,
+    // not bad arguments, so it must throw std::runtime_error rather than std::invalid_argument.
+    const SegyData data = make_segy({1.0f, 2.0f}, 1, 2, 0.001, SampleFormat::IEEE32);
+    const std::string path = ::testing::TempDir() + "basalt_segy_no_such_dir/out.segy";
+    EXPECT_THROW(write_segy(path, data, SampleFormat::IEEE32), std::runtime_error);
+    EXPECT_THROW(write_segy(path, data, SampleFormat::IBM32), std::runtime_error);
+}
+
 // --- Edge cases ---
 
 TEST(SegyFileTest, NulPaddedAsciiTextHeaderIsDetected) {
@@ -775,15 +795,18 @@ TEST(SegyFileTest, IbmWordBeyondIeeeRangeIsRejectedOnRead) {
 }
 
 TEST(SegyFileTest, IbmLargestFiniteWordReadsAsFiniteValue) {
-    // 0x60800000 is 0.5 * 16^32 = 2^127, the largest IBM word with a normalised fraction that fits
-    // in IEEE single precision. It must read back exactly, not be rejected.
+    // 0x60800000 is 0.5 * 16^32 = 2^127, a finite IEEE value near the top of the range.
+    // 0x60FFFFFF is (1 - 2^-24) * 16^32 = 2^128 - 2^104, which is exactly FLT_MAX, the largest
+    // finite IEEE single. Both must read back exactly, not be rejected.
     TempFile file("ibm_range_edge");
-    write_all_bytes(file.path(), file_image(ascii_text("C 1"), binary_header(1, 4000, 1), {},
-                                            {trace(1, 1, raw32_bytes({0x60800000u}))}));
+    write_all_bytes(file.path(), file_image(ascii_text("C 1"), binary_header(1, 4000, 2), {},
+                                            {trace(1, 2, raw32_bytes({0x60800000u, 0x60FFFFFFu}))}));
     const SegyData d = read_segy(file.path());
-    ASSERT_EQ(d.samples.size(), 1u);
+    ASSERT_EQ(d.samples.size(), 2u);
     EXPECT_TRUE(std::isfinite(d.samples[0]));
     EXPECT_EQ(d.samples[0], std::ldexp(1.0f, 127));
+    EXPECT_TRUE(std::isfinite(d.samples[1]));
+    EXPECT_EQ(d.samples[1], std::numeric_limits<float>::max());
 }
 
 TEST(SegyFileTest, NonAsciiBytesInAsciiTextHeaderBecomeSpacesInTextHeader) {
