@@ -295,6 +295,30 @@ TEST(SegyFileTest, ReadsIbm32Format1WithKnownValues) {
     EXPECT_EQ(d.samples, expected);
 }
 
+TEST(SegyFileTest, ReadsInexactIbm32WordsFromHandEncodedWords) {
+    // IBM32 keeps a 24-bit fraction in units of 16^-6 with a base-16 exponent (value = f/2^24 *
+    // 16^(e-64)), so most decimal values are rounded. The expected results are the exact fractions
+    // of the stored words, written as integers over a power of two.
+    //   0.1    -> 0x4019999A, fraction 0x19999A = 1677722  (1677722 / 2^24)
+    //   -0.1   -> 0xC019999A, same fraction, negative sign (-1677722 / 2^24)
+    //   1/3    -> 0x40555555, fraction 0x555555 = 5592405  (5592405 / 2^24)
+    //   1234.5 -> 0x434D2800, exact: fraction 0x4D2800 / 2^24 * 16^3
+    const std::vector<uint32_t> t0 = {0x4019999Au, 0xC019999Au, 0x40555555u, 0x434D2800u};
+    TempFile file("fmt1_inexact");
+    write_all_bytes(file.path(), file_image(ascii_text("C 1 IBM"), binary_header(1, 4000, 4), {},
+                                            {trace(1, 4, raw32_bytes(t0))}));
+
+    const SegyData d = read_segy(file.path());
+    ASSERT_EQ(d.samples.size(), 4u);
+    EXPECT_EQ(d.samples[0], 1677722.0f / 16777216.0f);
+    EXPECT_EQ(d.samples[1], -1677722.0f / 16777216.0f);
+    EXPECT_EQ(d.samples[2], 5592405.0f / 16777216.0f);
+    EXPECT_EQ(d.samples[3], 1234.5f);
+    // The rounded words stay within IBM32 precision (relative error below 2^-20) of the decimal values.
+    EXPECT_NEAR(d.samples[0], 0.1, 0.1 * std::ldexp(1.0, -20));
+    EXPECT_NEAR(d.samples[2], 1.0 / 3.0, (1.0 / 3.0) * std::ldexp(1.0, -20));
+}
+
 TEST(SegyFileTest, ReadsInt32Format2WithNegatives) {
     const std::vector<int32_t> t0 = {1, -2, 300000, -7};
     // Values are kept within float's exact integer range (2^24): beyond it the decoded float
