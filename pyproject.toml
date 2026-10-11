@@ -1,0 +1,28 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.12", "cmake>=3.18"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "basalt-fk"
+version = "0.2.0"
+description = "Seismic f-k velocity-band muting with SEG-Y I/O (pybind11 bindings for basalt)"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy"]
+classifiers = [
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+
+[project.urls]
+Homepage = "https://github.com/AmanSinghNp/Basalt"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+cmake.version = ">=3.18"
+cmake.build-type = "Release"
+cmake.define = { BASALT_BUILD_PYTHON = "ON" }
+wheel.packages = ["python/basalt"]
+# Only the Python component goes into the wheel: not the CLI, headers or static library.
+install.components = ["python"]
