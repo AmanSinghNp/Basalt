@@ -10,11 +10,13 @@ The measured subject is the end-to-end f-k pipeline (`basalt::fk_filter_gather`,
 `basalt.fk_filter` that wraps it) on float32 gathers with the default parameters.
 
 - **Basalt is faster than numpy at every size and thread count tested.** Single-threaded, Basalt
-  takes 0.17 to 0.38 of the time of `numpy.fft.fft2`/`ifft2` and 0.38 to 0.76 of the time of
-  `numpy.fft.rfft2`/`irfft2`. These ranges are over all 18 `compare_numpy` invocations in the repo,
-  including the 1024x1024 recheck and repeats (r2c 0.40 to 0.59 at 1024x1024). The committed table alone
-  gives 0.19 to 0.38 and 0.44 to 0.68. numpy has no thread option here. The 1024x1024 numpy figures
-  moved between invocations (see Known Limitations).
+  takes 0.17 to 0.25 of the time of `numpy.fft.fft2`/`ifft2` and 0.38 to 0.59 of the time of
+  `numpy.fft.rfft2`/`irfft2`. These ranges are over the `compare_numpy` invocations that cover
+  1001x1500 (nine) and 1024x1024 (eighteen, including the recheck and repeats; r2c 0.40 to 0.59 at
+  1024x1024). The committed table alone gives 0.19 to 0.38 and 0.44 to 0.68. The committed 240x1001 rows,
+  which appear only in the three committed invocations, give 0.34 to 0.38 of numpy c2c and 0.48 to 0.76 of
+  numpy r2c. numpy has no thread option here. The 1024x1024 numpy figures moved between invocations
+  (see Known Limitations).
 - **Basalt is not faster than `scipy.fft`.** All three get the same padded grid, but numpy and scipy
   also get a weight mask precomputed outside the timed loop. Basalt has no mask: it computes its
   weights inside every timed call. Python harness, single-threaded: Basalt takes 17 percent longer at
@@ -24,20 +26,20 @@ The measured subject is the end-to-end f-k pipeline (`basalt::fk_filter_gather`,
   Python harness, 4 threads: Basalt takes 46 and 65 percent longer at 240x1001 and 2048x2048 (committed
   invocations only). At 1001x1500 the committed table shows a tie, which the nine invocations at that size
   do not support: Basalt is behind scipy in seven of nine, with paired ratios 0.91 to 1.48 (median 1.17),
-  so the sign is not settled. At 1024x1024 Basalt is behind in 13 of 14 invocations, with paired ratios
-  1.00 to 1.79 (median 1.41). The direction is consistent, but the size of that gap is not stable and
+  so the sign is not settled. At 1024x1024 Basalt is behind in 17 of 18 invocations, with paired ratios
+  1.00 to 1.99 (median 1.40). The direction is consistent, but the size of that gap is not stable and
   should not be quoted as one figure (see Results). The C++ harness does not time scipy, so its Basalt
   numbers are compared with scipy only across harnesses (see Where Basalt wins and loses).
-- **The FFT library is not the reason.** Basalt's transform is the vendored pocketfft. Its
-  real-to-complex and complex-to-real pair is faster than scipy's ducc0 pair in five of the eight cells
-  of the committed table, tied in one and slower in two. The floors are not allocation-matched, so this is
-  indicative only (see Why). The gap is in
-  the work around the transform. In the C++ harness that work is 33 to 45 percent of Basalt's
+- **Whether the FFT library is the reason is unresolved.** Basalt's transform is the vendored pocketfft.
+  Its real-to-complex and complex-to-real pair is faster than scipy's ducc0 pair in five of the eight
+  cells of the committed table, tied in one and slower in two. The floors are not allocation-matched, so
+  this is indicative only and does not rule the library out (see Why). What the measurements do show is
+  that the gap is in the work around the transform. In the C++ harness that work is 33 to 45 percent of Basalt's
   single-thread call and 44 to 77 percent of its 4-thread call in the committed table. Across the
   repeat invocations the 4-thread share is 56 to 78 percent at 1001x1500 (nine invocations) and 55 to
   77 percent at 1024x1024 (twelve), so the committed 77 percent is the top of its range (median 74 at that size).
 - **Basalt scales worse with threads than scipy.** From 1 to 4 threads Basalt-Python's median speedup is
-  1.69x at 1001x1500 (nine invocations) and 1.74x at 1024x1024 (fourteen invocations), against scipy's
+  1.69x at 1001x1500 (nine invocations) and 1.70x at 1024x1024 (eighteen invocations), against scipy's
   2.09x and 2.14x. The ranges overlap at the edges. The transform parallelises. The surrounding
   work in `fk_filter_gather` is serial.
 - **Basalt is faster than the legacy power-of-two path** (1.6 to 1.9x at 1024x1024, 1.9x on the
@@ -78,6 +80,9 @@ exists for the committed invocations, so their load at start cannot be checked f
   repeat3 invocations were load-gated: each started only when the 1-minute load was below 1.5 (the gate
   never had to wait; the logged values are in `load_repeat2.txt` and `load_repeat3.txt`, 0.12 to 1.49).
   The 1-minute average includes the benchmark's own previous invocation, so it is only a partial check.
+  The Reproduce steps now carry the same gate for every invocation, including steps 3, 4 and 6, which
+  the committed invocations did not have. The committed numbers are therefore not load-gated, and the
+  gate is a rule for future runs, not a property of the results above.
 - Use `basalt_bench` for matrix sweeps and `fft2d_schedule_benchmark` for tile/schedule tuning.
   These are the legacy batch tools and were not run for this report.
 - Keep PMU validation on self-hosted Linux with usable `perf` counters.
@@ -161,12 +166,14 @@ print('numpy', numpy.__version__); print('scipy', scipy.__version__); print('pyb
 # 3. C++ gather benchmark, three invocations (defaults: sizes 240x1001,1001x1500,1024x1024,2048x2048;
 #    threads 1 and hardware concurrency; 21 timed calls and 3 warmup calls; pad 1.5)
 for n in 1 2 3; do
+  while awk '$1 >= 1.5 {exit 0} {exit 1}' /proc/loadavg; do sleep 5; done
   ./build-ws/fk_gather_bench --csv-out benchmarks/results/fk_gather_bench_run$n.csv \
       > benchmarks/results/fk_gather_bench_run$n.txt 2>&1
 done
 
 # 4. numpy, scipy and Basalt-Python comparison, three invocations (9 timed runs, 2 warmup)
 for n in 1 2 3; do
+  while awk '$1 >= 1.5 {exit 0} {exit 1}' /proc/loadavg; do sleep 5; done
   python3 benchmarks/compare_numpy.py --basalt-python build-ws/python --runs 9 --warmup 2 \
       --csv-out benchmarks/results/compare_numpy_run$n.csv > benchmarks/results/compare_numpy_run$n.txt 2>&1
 done
@@ -187,6 +194,7 @@ EOF
 # 6. Supplementary 1024x1024 repeat, three invocations of each script, with the load averages logged
 #    before each start (kept out of the tables above)
 for n in 1 2 3; do
+  while awk '$1 >= 1.5 {exit 0} {exit 1}' /proc/loadavg; do sleep 5; done
   echo "invocation $n fk_gather_bench start: $(date -u +%H:%M:%S) loadavg $(cut -d' ' -f1-3 /proc/loadavg)" >> benchmarks/results/load_1024_repeat.txt
   ./build-ws/fk_gather_bench --sizes 1024x1024 --threads 1,4 \
       --csv-out benchmarks/results/fk_gather_bench_1024_repeat_run$n.csv > benchmarks/results/fk_gather_bench_1024_repeat_run$n.txt 2>&1
@@ -254,12 +262,12 @@ single-threaded and appears only in the single-thread table.
 
 † 1024x1024 with 4 threads is the least stable cell. Its three committed C++ invocations gave 22.4,
 33.4 and 33.0 ms. The repeat sets add nine more C++ invocations at that size (three 1024 repeat, six
-repeat2), giving C++ medians of 17.8 to 33.4 ms across twelve. Python medians over fourteen invocations
-(the committed three, three 1024 repeat, six repeat2 and the two recheck runs) range from 13.4 to 21.8
-ms, and scipy (workers=-1) medians from 8.7 to 15.4 ms. Basalt Python was behind scipy in 13 of those 14
-invocations and level in the 14th (paired ratio 0.998). The paired ratios run from 1.00 to 1.79, with a
-median of 1.41. The size of the gap is therefore unstable, from no difference to 79 percent, and no
-single figure is given for it. The C++ value should be read as 18 to 33 ms, and the C++ comparison with
+repeat2), giving C++ medians of 17.8 to 33.4 ms across twelve. Python medians over eighteen invocations
+(the committed three, three 1024 repeat, six repeat2, the two recheck runs and four repeat3) range from
+13.4 to 21.8 ms, and scipy (workers=-1) medians from 8.7 to 15.4 ms. Basalt Python was behind scipy in
+17 of those 18 invocations and level in the 18th (paired ratio 0.998). The paired ratios run from 1.00 to
+1.99, with a median of 1.40. The size of the gap is therefore unstable, from no difference to 99 percent,
+and no single figure is given for it. The C++ value should be read as 18 to 33 ms, and the C++ comparison with
 Python at this size as inconclusive. At one thread the supplementary Python medians (24.1 to 26.7 ms)
 overlap the committed range (25.4 to 27.0 ms), and the C++ single-thread cell moved as well (27.9 to
 29.5 ms in the supplementary 1024 set, 32.0 to 45.6 ms committed). The supplementary raw files are
@@ -267,25 +275,25 @@ overlap the committed range (25.4 to 27.0 ms), and the C++ single-thread cell mo
 
 ### Supplementary repeat invocations
 These sets are kept out of the committed tables above. Each row pools the committed invocations with the
-repeat sets for that size: nine invocations at 1001x1500 (three committed, six repeat2) and fourteen at
-1024x1024 (three committed, three 1024 repeat, six repeat2, two recheck). The C++ columns use nine and
+repeat sets for that size: nine invocations at 1001x1500 (three committed, six repeat2) and eighteen at
+1024x1024 (three committed, three 1024 repeat, six repeat2, two recheck, four repeat3). The C++ columns use nine and
 twelve invocations respectively, because the recheck did not run the C++ harness. Paired ratios compare
 Basalt-Python and scipy within the same invocation. Medians are over invocations, with ranges in parentheses.
 
 | Gather (4 threads) | Invocations | Basalt Python (ms) | scipy r2c, workers=-1 (ms) | Basalt / scipy, paired | Basalt behind in | Basalt C++ (ms) | pocketfft floor, C++ (ms) |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1001 x 1500 | 9 | 23.6 (17.1-26.5) | 20.3 (16.7-22.6) | 1.17 (0.91-1.48) | 7 of 9 | 29.3 (27.8-42.4) | 9.0 (7.1-15.1) |
-| 1024 x 1024 | 14 | 16.1 (13.4-21.8) | 12.0 (8.7-15.4) | 1.41 (1.00-1.79) | 13 of 14 | 24.0 (17.8-33.4) | 6.8 (4.8-8.6) |
+| 1024 x 1024 | 18 | 16.1 (13.4-21.8) | 12.0 (8.7-15.4) | 1.40 (1.00-1.99) | 17 of 18 | 24.0 (17.8-33.4) | 6.8 (4.8-8.6) |
 
 - At 1001x1500 the committed tie does not hold. Basalt is behind in seven of nine invocations, with a median
   ratio of 1.17, and two invocations are ahead. Nine invocations do not establish the direction, but they
-  do not support a tie either. At 1024x1024 Basalt is behind in 13 of 14, with a magnitude that is not stable.
+  do not support a tie either. At 1024x1024 Basalt is behind in 17 of 18, with a magnitude that is not stable.
   Neither size supports a claim that Basalt-Python is faster than scipy at four threads.
 - Single-thread paired ratios (Basalt-Python over scipy workers=1) are 0.80 to 1.04 (median 0.97) at
-  1001x1500 and 0.94 to 1.18 (median 1.04) at 1024x1024. Both are ties within spread, as the committed
-  table says.
+  1001x1500 (nine invocations) and 0.94 to 1.18 (median 1.04) at 1024x1024 (eighteen invocations). Both
+  are ties within spread, as the committed table says.
 - Speed-up from 1 to 4 threads (median, range): Basalt-Python 1.69 (1.47 to 2.11) at 1001x1500 and
-  1.74 (1.20 to 2.12) at 1024x1024; scipy 2.09 (1.83 to 2.54) and 2.14 (1.74 to 2.78).
+  1.70 (1.20 to 2.12) at 1024x1024; scipy 2.09 (1.83 to 2.54) and 2.14 (1.74 to 2.78).
 - At 1001x1500 with 4 threads, the C++ to Python median ratio is 1.24 (29.3 against 23.6 ms). The committed
   figure of 1.42 (29.3 against 20.6 ms) does not reproduce. At 1024x1024 it is 1.49 (24.0 against 16.1 ms).
 - The scipy share outside its transform at 4 threads is 44 percent at 1001x1500 (range 22 to 57) and 28
@@ -293,8 +301,9 @@ Basalt-Python and scipy within the same invocation. Medians are over invocations
   floor is larger than the full call, so that share has no meaning at this size.
 - Raw files: `fk_gather_bench_repeat2_run{1..6}.{txt,csv}`, `compare_numpy_repeat2_run{1..6}.{txt,csv}` and
   `load_repeat2.txt`, plus `compare_numpy_repeat3_run{1..4}.{txt,csv}` and `load_repeat3.txt` (four further
-  1024x1024 invocations of compare_numpy, load-gated). The committed `compare_numpy_1024_recheck_run{1,2}`
-  files are included in the counts above.
+  1024x1024 invocations of compare_numpy, load-gated). These four, the committed
+  `compare_numpy_1024_recheck_run{1,2}` files and the repeat sets are all in the 1024x1024 counts above,
+  which cover eighteen invocations.
 
 ### Basalt Python time relative to each comparison
 Values below 1.00 mean Basalt is faster. Ratios of the Python medians, committed invocations only
@@ -347,7 +356,8 @@ cost of the legacy kernel.
 
 ### Where Basalt wins and loses
 - **Wins against numpy** at every size and both thread counts. Single-threaded, against numpy c2c it
-  takes 0.17 to 0.38 of the time, and against numpy r2c 0.38 to 0.76 (all invocations). At four threads the
+  takes 0.17 to 0.25 of the time, and against numpy r2c 0.38 to 0.59 (the invocations at 1001x1500 and
+  1024x1024; the committed 240x1001 rows reach 0.76). At four threads the
   committed ratios are 0.11 to 0.30 and 0.25 to 0.54.
 - **Wins against the legacy path** at 1024x1024 and 2048x2048 (C++, 1 thread): 1.6 to 1.9x (1.9x on the
   medians) and 1.8x.
@@ -360,13 +370,13 @@ cost of the legacy kernel.
 - **Behind scipy with 4 threads**: Basalt takes 46 and 65 percent longer at 240x1001 and 2048x2048
   (committed Python invocations). At 1001x1500 the committed tie does not hold: Basalt is behind in seven of
   nine invocations (paired ratio 0.91 to 1.48, median 1.17), so the direction there is not settled. At
-  1024x1024 Basalt is behind in 13 of 14 invocations (paired ratio 1.00 to 1.79, median 1.41), with an
+  1024x1024 Basalt is behind in 17 of 18 invocations (paired ratio 1.00 to 1.99, median 1.40), with an
   unstable magnitude (see †). Across harnesses, the committed C++ Basalt medians are 1.4x to 3.4x the
   Python-harness scipy medians at 4 threads (the 3.4x is the 1024x1024 cell, the least stable).
 - **Loses to scipy's transform alone** at every size and thread count, by a wide margin at 4 threads.
 
 ### Why the numbers look like this
-- **The FFT library is not the cause.** Basalt's transform is the vendored pocketfft
+- **The FFT library is not shown to be the cause.** Basalt's transform is the vendored pocketfft
   (`third_party/pocketfft`). scipy 1.18.1 uses ducc0 for `scipy.fft` by default, so the two do not
   share a library, contrary to the brief. On this machine Basalt's pocketfft transform pair is
   faster than scipy's ducc0 pair in five of the eight committed cells, by 5 to 34 percent: for example 18.4
@@ -498,6 +508,14 @@ Toolchain matrix (legacy path):
   (committed, both repeat sets, the recheck and repeat3), numpy c2c at one thread ranges from 103 to 150
   ms and r2c from 43 to 70 ms, and the Basalt-to-numpy r2c ratio from 0.40 to 0.59. The numpy figures at
   this size are therefore reported as ranges.
+- Float32 range. The forward r2c and the inverse c2r run unnormalised in float32 (the 1/(ntr_pad *
+  ns_pad) scale is applied in the inverse). Reproduced with the identity configuration (Reject, empty
+  band, taper 0, no edge tapers) on a 1001x1500 gather of uniform values in [-1, 1] times the amplitude,
+  seed 1: amplitude 1e31 gives 0 non-finite outputs, 1e32 gives 1,010 of 1,501,500, and 1e33 gives
+  1,501,497 of 1,501,500. The C++ `fk_filter_gather` returns those values without throwing. The Python
+  binding raises `ValueError` ("output is not finite") in the same case. Neither `include/basalt/fk.hpp`
+  nor `docs/design/FK_PIPELINE.md` documents this limit. Realistic seismic amplitudes are far below it,
+  so it is a documentation gap for the contract, not a result in this report.
 - The reason for numpy's gap to scipy, and the cost of Basalt's weight loop, are not profiled.
 - AVX-512 is currently applied only to the legacy f-k filter path.
 - FFT remains AVX2-only until blocked FFT profiling shows a consistent compute-side win for AVX-512.
