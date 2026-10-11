@@ -45,6 +45,11 @@ struct FKParams {
 ///
 /// The call is a no-op (data unchanged) when taper_width <= 0, mute_vel_min >= mute_vel_max,
 /// or rows == 0 or cols == 0.
+///
+/// The SIMD paths work in single precision. If the steepness 10 / taper_width, a band edge, or
+/// a frequency or wavenumber step lies outside the normal float range, all bins are computed in
+/// double precision on a scalar path instead, whatever simd_mode is requested. A bin exactly on
+/// a band edge then gets the sigmoid value 1/2 for that edge, as the formula gives.
 void apply_fk_filter(basalt::kernel::ComplexSoA& data,
                      size_t rows, size_t cols,
                      const FKParams& params);

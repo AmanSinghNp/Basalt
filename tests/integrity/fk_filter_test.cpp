@@ -306,7 +306,8 @@ TEST(FKFilterTest, EmptyBandIsNoOp) {
         make_params(500.0, 500.0, 50.0),     // min == max
         make_params(2000.0, 500.0, 50.0),    // min > max
         make_params(0.0, 0.0, 100.0),        // degenerate zero-width band at the origin
-        make_params(-1500.0, 1500.0, 0.0),   // non-positive taper
+        make_params(-1500.0, 1500.0, 0.0),   // zero taper
+        make_params(-1500.0, 1500.0, -10.0), // negative taper
     };
 
     for (const FKParams& params : cases) {
@@ -323,6 +324,65 @@ TEST(FKFilterTest, EmptyBandIsNoOp) {
         EXPECT_EQ(std::memcmp(data.imag, imag.data(), total * sizeof(float)), 0)
             << "imag changed for min=" << params.mute_vel_min << " max=" << params.mute_vel_max
             << " taper=" << params.taper_width;
+    }
+}
+
+TEST(FKFilterTest, BandEdgeTieGivesHalfWeight) {
+    // dt = 0.004, dx = 5, 64 x 64: bin (4, 5) has v = +1000 m/s and bin (4, 59) has v = -1000 m/s,
+    // up to float rounding. A band edge placed exactly on such a bin gives its sigmoid the value 1/2.
+    constexpr size_t rows = 64;
+    constexpr size_t cols = 64;
+    const size_t pos_bin = 4 * cols + 5;
+    const size_t neg_bin = 4 * cols + (cols - 5);
+    const SimdMode modes[] = {SimdMode::Auto, SimdMode::AVX2, SimdMode::AVX512};
+    for (const SimdMode mode : modes) {
+        // Upper edge on +1000: fall = 1/2, rise = 1, so the mute weight is 1/2.
+        const std::vector<float> upper = filter_ones(rows, cols, make_params(-1e5, 1000.0, 100.0), mode);
+        EXPECT_NEAR(upper[pos_bin], 0.5f, 1e-3f) << "simd mode " << static_cast<int>(mode);
+        // Lower edge on +1000: rise = 1/2, fall = 1.
+        const std::vector<float> lower = filter_ones(rows, cols, make_params(1000.0, 1e5, 100.0), mode);
+        EXPECT_NEAR(lower[pos_bin], 0.5f, 1e-3f) << "simd mode " << static_cast<int>(mode);
+        // Lower edge on -1000.
+        const std::vector<float> neg = filter_ones(rows, cols, make_params(-1000.0, 1e5, 100.0), mode);
+        EXPECT_NEAR(neg[neg_bin], 0.5f, 1e-3f) << "simd mode " << static_cast<int>(mode);
+    }
+}
+
+TEST(FKFilterTest, ExtremeTaperAndEdgesStayFiniteAndMatchReference) {
+    // Parameters where float steepness or edges overflow or underflow. Every bin must match the
+    // double-precision formula and none may become NaN or keep the wrong value.
+    struct Case {
+        double vmin;
+        double vmax;
+        double taper_width;
+    };
+    const Case cases[] = {
+        {-1e39, 1e39, 1e40},    // steepness underflows in float, edges overflow in float
+        {1e39, 2e39, 1e40},     // band lies entirely beyond the float range
+        {0.0, 1500.0, 1e-40},   // steepness overflows in float; v = 0 ties the lower edge
+        {1e300, 2e300, 1e300},  // steepness underflows to zero even in double-precision float
+    };
+    constexpr size_t rows = 16;   // even sizes: Nyquist row and column are included
+    constexpr size_t cols = 16;
+    const SimdMode modes[] = {SimdMode::Auto, SimdMode::AVX2, SimdMode::AVX512};
+
+    for (const Case& c : cases) {
+        const FKParams params = make_params(c.vmin, c.vmax, c.taper_width);
+        const double df = 1.0 / (static_cast<double>(rows) * params.dt);
+        const double dk = 1.0 / (static_cast<double>(cols) * params.dx);
+        for (const SimdMode mode : modes) {
+            const std::vector<float> out = filter_ones(rows, cols, params, mode);
+            for (size_t i = 0; i < rows; ++i) {
+                for (size_t j = 0; j < cols; ++j) {
+                    const double expected = expected_weight(i, j, rows, cols, df, dk, params);
+                    const double got = static_cast<double>(out[i * cols + j]);
+                    EXPECT_FALSE(std::isnan(got)) << "NaN at (" << i << ", " << j << ")";
+                    EXPECT_NEAR(got, expected, 1e-5)
+                        << "vmin=" << c.vmin << " vmax=" << c.vmax << " taper=" << c.taper_width
+                        << " bin (" << i << ", " << j << ") simd mode " << static_cast<int>(mode);
+                }
+            }
+        }
     }
 }
 

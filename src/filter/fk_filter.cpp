@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <immintrin.h>
+#include <limits>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -161,6 +162,81 @@ void apply_fk_filter_avx2(basalt::kernel::ComplexSoA& data,
     }
 }
 
+namespace {
+
+// Double-precision helpers for the out-of-range path. Index `index` of an axis with `size`
+// bins and step `step` is wrapped to the signed range, as in the single-precision helpers.
+double wrapped_axis_double(size_t index, size_t size, double step) {
+    if (index <= size / 2) {
+        return static_cast<double>(index) * step;
+    }
+    return -static_cast<double>(size - index) * step;
+}
+
+// Logistic sigmoid 1 / (1 + exp(-distance * steepness)). A NaN argument only arises from
+// 0 * inf (an exact tie with an infinite steepness), where the limit of the sigmoid is 1/2.
+double edge_sigmoid(double distance, double steepness) {
+    double arg = distance * steepness;
+    if (std::isnan(arg)) {
+        arg = 0.0;
+    }
+    return 1.0 / (1.0 + std::exp(-arg));
+}
+
+} // namespace
+
+bool float_path_is_in_range(const FKParams& params, size_t rows, size_t cols) {
+    constexpr double kFloatMax = static_cast<double>(std::numeric_limits<float>::max());
+    constexpr double kFloatMin = static_cast<double>(std::numeric_limits<float>::min());
+    const double df = 1.0 / (static_cast<double>(rows) * params.dt);
+    const double dk = 1.0 / (static_cast<double>(cols) * params.dx);
+    const double steepness = 10.0 / params.taper_width;
+    const auto normal = [](double x) { return x >= kFloatMin && x <= kFloatMax; };
+    return normal(steepness) && normal(df) && normal(dk) &&
+           static_cast<double>(rows / 2) * df <= kFloatMax &&
+           static_cast<double>(cols / 2) * dk <= kFloatMax &&
+           std::abs(params.mute_vel_min) <= kFloatMax &&
+           std::abs(params.mute_vel_max) <= kFloatMax;
+}
+
+void apply_fk_filter_double(basalt::kernel::ComplexSoA& data,
+                            size_t rows, size_t cols,
+                            const FKParams& params) {
+    constexpr double kMax = std::numeric_limits<double>::max();
+    const double df = 1.0 / (static_cast<double>(rows) * params.dt);
+    const double dk = 1.0 / (static_cast<double>(cols) * params.dx);
+    const double steepness = 10.0 / params.taper_width;
+    const bool has_nyquist_col = (cols % 2) == 0;
+    const size_t nyquist_col = cols / 2;
+
+    const auto inside_at = [&](double velocity) {
+        const double rise = edge_sigmoid(velocity - params.mute_vel_min, steepness);
+        const double fall = edge_sigmoid(params.mute_vel_max - velocity, steepness);
+        return rise * fall;
+    };
+
+    for (size_t i = 0; i < rows; ++i) {
+        const double f = wrapped_axis_double(i, rows, df);
+        const bool row_is_nyquist = (rows % 2) == 0 && i == rows / 2;
+        for (size_t j = 0; j < cols; ++j) {
+            const double k = wrapped_axis_double(j, cols, dk);
+            if (k == 0.0) {
+                continue; // zero-wavenumber column (incl. DC) is always kept
+            }
+            // Clamping keeps the velocity finite; a saturated sigmoid is unchanged by it.
+            const double velocity = std::clamp(f / k, -kMax, kMax);
+            double inside = inside_at(velocity);
+            if (row_is_nyquist || (has_nyquist_col && j == nyquist_col)) {
+                inside = 0.5 * (inside + inside_at(-velocity));
+            }
+            const double weight = 1.0 - inside;
+            const size_t offset = i * cols + j;
+            data.real[offset] = static_cast<float>(static_cast<double>(data.real[offset]) * weight);
+            data.imag[offset] = static_cast<float>(static_cast<double>(data.imag[offset]) * weight);
+        }
+    }
+}
+
 } // namespace detail
 
 void apply_fk_filter(basalt::kernel::ComplexSoA& data,
@@ -176,6 +252,13 @@ void apply_fk_filter(basalt::kernel::ComplexSoA& data,
     // No-op for a non-positive taper, an empty band (min >= max, also catches NaN) or empty data.
     if (!(params.taper_width > 0.0) || !(params.mute_vel_min < params.mute_vel_max) ||
         rows == 0 || cols == 0) {
+        return;
+    }
+
+    // The SIMD paths compute in float and are only exact while every float quantity is normal
+    // and finite. Outside that range the scalar double-precision path is used for any simd_mode.
+    if (!detail::float_path_is_in_range(params, rows, cols)) {
+        detail::apply_fk_filter_double(data, rows, cols, params);
         return;
     }
 
