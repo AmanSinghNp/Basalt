@@ -364,7 +364,11 @@ TEST(SegyFileTest, ReadsInt8Format8WithNegatives) {
 // --- Header handling ---
 
 TEST(SegyFileTest, DtAndNsamplesAreParsed) {
-    const std::vector<float> samples(3 * 5, 0.25f);
+    // Every sample is distinct, so a reordered or misplaced trace changes the comparison below.
+    std::vector<float> samples(3 * 5);
+    for (size_t i = 0; i < samples.size(); ++i) {
+        samples[i] = static_cast<float>(i) * 0.25f - 1.0f;
+    }
     TempFile file("dt_nsamples");
     // First trace leaves its header sample count at zero (unset), which must be accepted.
     const std::vector<float> s0(samples.begin(), samples.begin() + 5);
@@ -781,8 +785,8 @@ TEST(SegyFileTest, WriteRejectsMissingTraceHeader) {
 }
 
 TEST(SegyFileTest, IbmWordBeyondIeeeRangeIsRejectedOnRead) {
-    // 0x61800000 is 2^131 and 0x7F123456 is near 16^190. Neither fits in IEEE single precision,
-    // so the reader must refuse the file instead of returning infinity.
+    // 0x61800000 is 2^131 and 0x7F123456 is about 0.07 * 16^63 (roughly 2^248). Neither fits in
+    // IEEE single precision, so the reader must refuse the file instead of returning infinity.
     TempFile file("ibm_overflow");
     write_all_bytes(file.path(), file_image(ascii_text("C 1"), binary_header(1, 4000, 2), {},
                                             {trace(1, 2, raw32_bytes({0x41100000u, 0x61800000u}))}));

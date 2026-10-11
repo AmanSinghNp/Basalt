@@ -134,14 +134,13 @@ struct SegyData {
 };
 
 // Reads a big-endian SEG-Y rev 0/1 file with fixed trace length. Supports formats 1, 2, 3, 5, 8.
-// Honors extended textual headers count (bytes 3505-3506) by skipping them; they are not retained.
+// Honors extended textual headers count (bytes 3505-3506) by skipping them.
 // Throws std::runtime_error with a clear message on malformed input.
 SegyData read_segy(const std::string& path);
 
 // Writes a SEG-Y file. Headers are written back from the raw arrays, except that the
-// binary header format code is updated to `out_format` and the extended textual header count
-// (bytes 3505-3506) is set to zero, since extended headers are not retained. Samples are
-// encoded in `out_format`. Supports writing IBM32 and IEEE32.
+// binary header format code is updated to `out_format` and samples are encoded in it.
+// Supports writing IBM32 and IEEE32.
 void write_segy(const std::string& path, const SegyData& data,
                 SampleFormat out_format = SampleFormat::IEEE32);
 
@@ -154,18 +153,6 @@ SegyData make_segy(const std::vector<float>& samples, size_t ntraces, size_t nsa
 Use the existing `basalt/utils/ibm_float.hpp`, `basalt/utils/ebcdic.hpp` and
 `basalt/segy_format.hpp` helpers. Do not use memory mapping in the reader (plain
 `std::ifstream` is fine); correctness first.
-
-Behaviour not covered above (normative):
-- Text header detection: a header is ASCII when most of its non-NUL bytes are printable ASCII.
-  Byte 0x40 is not counted as printable, because it is EBCDIC space; otherwise a blank EBCDIC
-  header would be read as ASCII. An ASCII `text_header` replaces bytes >= 0x80 with spaces.
-- Reader rejections: a zero sample interval (bytes 3217-3218), a zero samples-per-trace count,
-  and IBM words whose value exceeds the IEEE single range (an infinity would otherwise be read).
-- Reader underflow: IBM words below the IEEE normal range (about 1.2e-38) decode to 0.0.
-- Writer: for IBM32 output, NaN and infinite samples are rejected before the file is created,
-  and IEEE subnormal samples are written as zero words.
-- `make_segy`: `dt` must be a whole number of microseconds in [1, 65535] us. Other values are
-  rejected, not rounded.
 
 ## 6. CLI
 
