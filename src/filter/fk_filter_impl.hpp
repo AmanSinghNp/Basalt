@@ -27,6 +27,15 @@ void apply_fk_filter_avx512(basalt::kernel::ComplexSoA& data,
                             const FKParams& params,
                             const FKFilterExecutionPlan& plan);
 
+// True when steepness, band edges and grid steps are finite and normal floats, so the
+// single-precision paths cannot produce NaN or zero out a non-zero bin.
+bool float_path_is_in_range(const FKParams& params, size_t rows, size_t cols);
+
+// Scalar double-precision weights for parameters outside the float range.
+void apply_fk_filter_double(basalt::kernel::ComplexSoA& data,
+                            size_t rows, size_t cols,
+                            const FKParams& params);
+
 inline float wrapped_frequency(size_t index, size_t size, double step) {
     if (index <= size / 2) {
         return static_cast<float>(static_cast<double>(index) * step);
@@ -43,11 +52,6 @@ inline float wrapped_wavenumber(size_t index, size_t size, double step) {
     return static_cast<float>(
         static_cast<double>(static_cast<int>(index) - static_cast<int>(size)) * step
     );
-}
-
-inline __m256 absolute_ps(__m256 value) {
-    const __m256 mask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
-    return _mm256_and_ps(value, mask);
 }
 
 } // namespace basalt::filter::detail

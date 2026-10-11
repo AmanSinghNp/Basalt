@@ -221,8 +221,9 @@ TEST(BatchExecutorTest, SingleThreadMatchesDirectPath) {
         }
     });
 
-    constexpr uint64_t kGoldenReal = 10207506452863427905ULL;
-    constexpr uint64_t kGoldenImag = 7712529816265703748ULL;
+    // Regenerated after the signed-band mute change (DC bin is now kept; see FKParams docs).
+    constexpr uint64_t kGoldenReal = 1004242690794432412ULL;
+    constexpr uint64_t kGoldenImag = 9617113568401630474ULL;
 
     EXPECT_EQ(hash_floats(out_real.data(), total), hash_floats(direct_real.data(), total));
     EXPECT_EQ(hash_floats(out_imag.data(), total), hash_floats(direct_imag.data(), total));
