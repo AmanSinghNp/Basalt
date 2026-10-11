@@ -360,7 +360,7 @@ TEST(FKFilterTest, ExtremeTaperAndEdgesStayFiniteAndMatchReference) {
         {-1e39, 1e39, 1e40},    // steepness underflows in float, edges overflow in float
         {1e39, 2e39, 1e40},     // band lies entirely beyond the float range
         {0.0, 1500.0, 1e-40},   // steepness overflows in float; v = 0 ties the lower edge
-        {1e300, 2e300, 1e300},  // steepness underflows to zero even in double-precision float
+        {1e300, 2e300, 1e300},  // steepness 1e-299 is normal in double but underflows to zero in float
     };
     constexpr size_t rows = 16;   // even sizes: Nyquist row and column are included
     constexpr size_t cols = 16;
@@ -541,7 +541,8 @@ TEST(FKFilterTest, NyquistColumnFollowsAmendedMeanNotLiteralWeight) {
     // Spec amendment (see fk_filter.hpp): a Nyquist bin takes the mean of the literal weights at
     // v and -v. For an asymmetric band this differs from the literal weight at v, so the test
     // checks both the amended value and the gap to the literal formula. A silent revert to
-    // either behaviour fails here. Parameters match the 64 x 128 case in the review report.
+    // either behaviour fails here. Parameters are the 64 x 128 asymmetric-band case of the
+    // Nyquist fix (commit 2e3badb).
     constexpr size_t rows = 64;
     constexpr size_t cols = 128;
     FKParams params = make_params(-700.0, 1900.0, 150.0);
