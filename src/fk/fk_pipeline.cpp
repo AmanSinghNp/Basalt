@@ -114,8 +114,9 @@ inline double edge_taper_weight(size_t i, size_t n) {
 }
 
 // Product of the start and end edge tapers along a line of length `len`. When the two tapers
-// reach the same sample (len < 2n) their weights multiply. FK_PIPELINE.md section 4 step 3 does
-// not state this case; the product is the implemented choice and is open for a contract decision.
+// reach the same sample (len < 2n) their weights multiply. Section 4, step 3 of
+// FK_PIPELINE.md defines each taper and does not cover the overlap, so the product is the
+// behaviour of this implementation.
 std::vector<double> make_edge_taper(size_t len, size_t n) {
     std::vector<double> w(len, 1.0);
     const size_t m = std::min(n, len);
@@ -216,15 +217,14 @@ void fk_filter_gather(const float* in, float* out,
 
     // Step 5: weight every bin. f_j = j / (ns_pad dt); k_i = fftfreq(ntr_pad, dx)[i]
     // using numpy's convention (indices above (n - 1) / 2 are negative).
-    // Note: W(-f, -k) = W(f, k) holds everywhere except on two Nyquist lines, which are their
-    // own negatives. For even ntr_pad, the k-Nyquist row has k = -K, and v(f, -K) = f / K is
-    // not v(-f, -K). For even ns_pad, the f-Nyquist column has f = +F, and +F and -F are the
-    // same bin, so v flips sign with k and W(F, k) != W(F, -k) in general. Both cases only
-    // matter in the aliasing regime (|v| >= dx / dt). The c2r inverse below takes the real
-    // part, so these bins are applied exactly as the spec's rfft2/irfft2 algorithm defines
-    // them. A Hermitian-symmetrised filter differs by a few percent relRMS on such grids
-    // (e.g. 37 x 53 gathers). FK_PIPELINE.md section 2 states Hermitian symmetry everywhere,
-    // which is false on these lines; the contract text needs correcting by its owner.
+    // Note: W(-f, -k) = W(f, k) holds everywhere except on the Nyquist row and column, which
+    // are their own mirror images (FK_PIPELINE.md section 3, Nyquist note). For even ntr_pad,
+    // the k-Nyquist row has k = -K, and v(f, -K) = f / K is not v(-f, -K). For even ns_pad, the
+    // f-Nyquist column has f = +F, and +F and -F are the same bin, so v flips sign with k and
+    // W(F, k) != W(F, -k) in general. Both cases only matter for aliased data (|v| >= dx / dt).
+    // These Nyquist bins are not special-cased. The c2r inverse below keeps only their
+    // Hermitian part, which matches numpy.fft.irfft2(rfft2(x) * w). A Hermitian-symmetrised
+    // filter differs by a few percent relRMS on such grids (e.g. 37 x 53 gathers).
     const BandCoeffs band = make_band(params);
     const double df = 1.0 / (static_cast<double>(ns_pad) * params.dt);
     const double dk = 1.0 / (static_cast<double>(ntr_pad) * params.dx);
