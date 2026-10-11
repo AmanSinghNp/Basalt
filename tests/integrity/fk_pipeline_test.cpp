@@ -542,6 +542,50 @@ TEST(FKPipeline, AllPassIsIdentity) {
     EXPECT_LE(rel_rms(out, in), 1e-5);
 }
 
+TEST(FKPipeline, AllPassOnRawInputRemovesOnlyTraceMean) {
+    // Spec section 4 says the all-pass configuration returns raw input to 1e-5. That cannot hold:
+    // k = 0, f != 0 has v = +inf (section 2), which lies outside any finite band, so Pass drops
+    // that row. With preserve_dc the (0, 0) bin is kept, so the output is
+    //   out(t, s) = in(t, s) - m(s) + M,
+    // where m(s) = sum_t in(t, s) / ntr_pad and M = sum(in) / (ntr_pad * ns_pad). Both sums run
+    // over the valid block; the zero padding counts in the normalisation.
+    const size_t ntr = 40;
+    const size_t ns = 128;
+    const auto in = random_gather(ntr, ns, 5);
+    FKMuteParams p;
+    p.v_min = -1e30;
+    p.v_max = 1e30;
+    p.taper = 0.0;
+    p.mode = FKMode::Pass;
+    p.edge_taper_traces = 0;
+    p.edge_taper_samples = 0;
+    const auto out = fk_filter_gather(in, ntr, ns, p);
+
+    const double ntr_pad = static_cast<double>(fk_padded_traces(ntr, p));
+    const double ns_pad = static_cast<double>(fk_padded_samples(ns, p));
+    std::vector<double> m(ns, 0.0);
+    double total = 0.0;
+    for (size_t t = 0; t < ntr; ++t) {
+        for (size_t s = 0; s < ns; ++s) {
+            m[s] += in[t * ns + s];
+            total += in[t * ns + s];
+        }
+    }
+    for (double& ms : m) {
+        ms /= ntr_pad;
+    }
+    const double mean_all = total / (ntr_pad * ns_pad);
+    std::vector<float> want(ntr * ns);
+    for (size_t t = 0; t < ntr; ++t) {
+        for (size_t s = 0; s < ns; ++s) {
+            want[t * ns + s] = static_cast<float>(in[t * ns + s] - m[s] + mean_all);
+        }
+    }
+    EXPECT_LE(rel_rms(out, want), 1e-5);
+    // Guard against the test silently passing as an identity check: the trace mean is not zero.
+    EXPECT_GT(rel_rms(out, in), 1e-2);
+}
+
 TEST(FKPipeline, PreserveDCControlsOffsetWithEmptyBand) {
     // With an empty Pass band only the DC bin can survive, so the output is the constant
     // sum(in) / (ntr_pad * ns_pad) when preserve_dc is true, and zero otherwise.

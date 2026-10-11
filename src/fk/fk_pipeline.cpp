@@ -7,7 +7,6 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
-#include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <thread>
@@ -97,6 +96,7 @@ inline double bin_weight(double f_hz, double k_cpm, const BandCoeffs& b) {
         if (b.preserve_dc) {
             return 1.0;
         }
+        // -f / k is 0 / 0 here. The DC bin is evaluated at v = 0 (documented in fk.hpp).
         inside = band_inside(0.0, b);
     } else if (k_cpm == 0.0) {
         // Vertical / flat event: v = +inf, outside any finite band.

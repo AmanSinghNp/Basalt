@@ -23,7 +23,8 @@ struct FKMuteParams {
     double pad_factor = 1.5;        // >= 1.0; each axis padded to a good FFT size >= n * pad_factor
     size_t edge_taper_traces = 4;   // Cosine taper on the first/last N traces before the FFT
     size_t edge_taper_samples = 0;  // Cosine taper on the first/last N samples of each trace
-    bool preserve_dc = true;        // Keep the (f = 0, k = 0) bin in both modes
+    bool preserve_dc = true;        // Keep the (f = 0, k = 0) bin in both modes. If false, that
+                                    // bin is evaluated at v = 0, since -f/k is undefined there
     size_t threads = 1;             // FFT threads; 0 = hardware concurrency
 };
 
