@@ -186,6 +186,13 @@ void fk_filter_gather(const float* in, float* out,
     if (ntr_pad > std::numeric_limits<size_t>::max() / ns_pad) {
         throw std::invalid_argument("fk: padded grid is too large");
     }
+    // Frequency and wavenumber steps. A tiny dt or dx makes 1 / (n * step) overflow to inf, and
+    // the zero bin would then be 0 * inf = NaN. Reject that before any buffer is allocated.
+    const double df = 1.0 / (static_cast<double>(ns_pad) * params.dt);
+    const double dk = 1.0 / (static_cast<double>(ntr_pad) * params.dx);
+    if (!(std::isfinite(df) && std::isfinite(dk))) {
+        throw std::invalid_argument("fk: dt or dx is too small; frequency or wavenumber step overflows");
+    }
     const size_t nthreads = resolve_threads(params.threads);
 
     // Step 3: copy the input into the top-left of a zeroed padded buffer, with edge tapers.
@@ -226,8 +233,6 @@ void fk_filter_gather(const float* in, float* out,
     // (e.g. 37 x 53 gathers). FK_PIPELINE.md section 2 states Hermitian symmetry everywhere,
     // which is false on these lines; the contract text needs correcting by its owner.
     const BandCoeffs band = make_band(params);
-    const double df = 1.0 / (static_cast<double>(ns_pad) * params.dt);
-    const double dk = 1.0 / (static_cast<double>(ntr_pad) * params.dx);
     const size_t k_pos_max = (ntr_pad - 1) / 2;
     for (size_t i = 0; i < ntr_pad; ++i) {
         const double k_index = (i <= k_pos_max)

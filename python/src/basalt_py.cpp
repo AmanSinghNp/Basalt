@@ -10,6 +10,7 @@
 #include <pybind11/pybind11.h>
 
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <stdexcept>
@@ -76,10 +77,24 @@ size_t to_count(const py::handle value, const char* name) {
     return static_cast<size_t>(count);
 }
 
-// Filesystem path from str, bytes or any os.PathLike, via os.fspath.
+// Filesystem path from str, bytes or any os.PathLike, via os.fspath. An embedded NUL is a
+// ValueError, as in open(): the C file API would otherwise silently truncate the name.
 std::string to_path(const py::handle path) {
     const py::object text = py::module_::import("os").attr("fspath")(path);
-    return py::cast<std::string>(text);
+    std::string file = py::cast<std::string>(text);
+    if (file.find('\0') != std::string::npos) {
+        throw std::invalid_argument("path must not contain a NUL byte");
+    }
+    return file;
+}
+
+bool all_finite(const float* values, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        if (!std::isfinite(values[i])) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // 2D float32 gather from any array-like. Ragged lists, strings and other values that do not
@@ -150,20 +165,34 @@ py::array_t<float> filter_gather(const py::object& data, double dt, double dx, d
     const size_t ntraces = static_cast<size_t>(nrows);
     const size_t nsamples = static_cast<size_t>(ncols);
 
+    // A NaN or inf sample would spread through every bin of the transform and come back as an
+    // all-NaN gather, so it is rejected up front.
+    const float* in_ptr = gather.data();
+    if (!all_finite(in_ptr, ntraces * nsamples)) {
+        throw std::invalid_argument("fk_filter: data must contain only finite values (no NaN or inf)");
+    }
+
     py::array_t<float> out(std::vector<py::ssize_t>{nrows, ncols});
     // `gather` holds a reference to the input buffer for the whole call, so the raw pointers
     // stay valid while the GIL is released. Nothing below touches Python objects.
-    const float* in_ptr = gather.data();
     float* out_ptr = out.mutable_data();
     {
         py::gil_scoped_release release;
         fk_filter_gather(in_ptr, out_ptr, ntraces, nsamples, params);
+    }
+    // Finite input can still overflow float32 inside the transform (for example at 1e36 scale).
+    if (!all_finite(out_ptr, ntraces * nsamples)) {
+        throw std::invalid_argument(
+            "fk_filter: output is not finite; the data is too large for the float32 transform");
     }
     return out;
 }
 
 double mute_weight(double f_hz, double k_cpm, double v_min, double v_max, double taper,
                    const py::object& mode) {
+    if (!(std::isfinite(f_hz) && std::isfinite(k_cpm))) {
+        throw std::invalid_argument("fk_mute_weight: f_hz and k_cpm must be finite");
+    }
     FKMuteParams params;
     params.v_min = v_min;
     params.v_max = v_max;

@@ -8,6 +8,7 @@ from the C++ source, so it is an independent check of the pipeline.
 import math
 import os
 import pathlib
+import struct
 import tempfile
 import threading
 import time
@@ -122,6 +123,31 @@ def _dipping_event(nt, ns, dt, dx, velocity, t_center, wavelet_hz=25.0):
     a = np.pi * wavelet_hz
     ricker = (1.0 - 2.0 * (a * tau) ** 2) * np.exp(-((a * tau) ** 2))
     return (envelope[:, None] * ricker).astype(np.float32)
+
+
+_RAW_SEGY_DTYPES = {3: ">i2", 2: ">i4", 8: ">i1"}   # SEG-Y format codes for int16, int32, int8
+
+
+def _write_raw_segy(path, values, format_code, dt_us):
+    """Writes a big-endian SEG-Y file with integer samples (the writer only does IBM and IEEE).
+
+    `values` is an integer array of shape (ntraces, nsamples). The textual header is blank, the
+    extended header count is 0 and each trace header carries its sample count.
+    """
+    ntraces, nsamples = values.shape
+    binary = bytearray(400)
+    struct.pack_into(">H", binary, 16, dt_us)        # bytes 3217-3218: sample interval (us)
+    struct.pack_into(">H", binary, 20, nsamples)     # bytes 3221-3222: samples per trace
+    struct.pack_into(">H", binary, 24, format_code)  # bytes 3225-3226: sample format code
+    payload = values.astype(_RAW_SEGY_DTYPES[format_code])
+    body = bytearray()
+    for t in range(ntraces):
+        header = bytearray(240)
+        struct.pack_into(">H", header, 114, nsamples)  # bytes 115-116: trace sample count
+        body += header
+        body += payload[t].tobytes()
+    with open(path, "wb") as fh:
+        fh.write(b" " * 3200 + bytes(binary) + bytes(body))
 
 
 # --- tests -------------------------------------------------------------------
@@ -456,6 +482,113 @@ def test_two_threads_filter_concurrently():
     assert not errors, errors
     for result in results:
         assert np.array_equal(result, expected)
+
+
+def test_tiny_gathers_match_reference():
+    rng = np.random.default_rng(12)
+    for shape in ((1, 1), (1, 9), (9, 1)):
+        gather = rng.standard_normal(shape).astype(np.float32)
+        # Identity band without edge tapers returns the input.
+        out = basalt.fk_filter(gather, 0.004, 25.0, v_min=1e29, v_max=1e30, taper=0.0,
+                               edge_taper_traces=0, edge_taper_samples=0)
+        assert _relrms(out, gather) < 1e-5, (shape, _relrms(out, gather))
+        # A reject band without edge tapers matches the reference.
+        params = dict(v_min=300.0, v_max=900.0, taper=0.1, edge_taper_traces=0,
+                      edge_taper_samples=0)
+        expected = _reference_fk_filter(gather, 0.004, 25.0, reject=True, **params)
+        out = basalt.fk_filter(gather, 0.004, 25.0, **params)
+        assert _relrms(out, expected) < 1e-4, (shape, _relrms(out, expected))
+        # Default edge tapers wider than a short gather are accepted; the result stays finite.
+        assert np.all(np.isfinite(basalt.fk_filter(gather, 0.004, 25.0))), shape
+
+
+def test_spec_size_1001_by_1500_matches_reference():
+    rng = np.random.default_rng(13)
+    gather = rng.standard_normal((1001, 1500)).astype(np.float32)
+    params = dict(v_min=-800.0, v_max=1200.0, taper=0.1, edge_taper_traces=4,
+                  edge_taper_samples=0)
+    expected = _reference_fk_filter(gather, 0.004, 25.0, reject=True, **params)
+    out = basalt.fk_filter(gather, 0.004, 25.0, mode="reject", **params)
+    assert out.shape == (1001, 1500)
+    assert _relrms(out, expected) < 1e-4, _relrms(out, expected)
+
+
+def test_pass_mode_huge_band_removes_trace_mean_but_keeps_dc():
+    rng = np.random.default_rng(14)
+    nt, ns = 37, 53
+    gather = rng.standard_normal((nt, ns)).astype(np.float32)
+    params = dict(v_min=-1e30, v_max=1e30, taper=0.0, edge_taper_traces=0,
+                  edge_taper_samples=0)
+    out = basalt.fk_filter(gather, 0.004, 25.0, mode="pass", **params)
+    # Every finite velocity is inside the band and the k = 0 row (v = +inf) is outside it, so
+    # only the DC bin of that row survives. On the padded grid that removes the per-sample
+    # trace mean and keeps the grand mean (spec section 2 and section 4 note).
+    ntr_pad = _smooth_at_least(math.ceil(nt * 1.5), (2, 3, 5, 7, 11))
+    ns_pad = _smooth_at_least(math.ceil(ns * 1.5), (2, 3, 5))
+    padded = np.zeros((ntr_pad, ns_pad))
+    padded[:nt, :ns] = gather
+    trace_mean = padded.sum(axis=0) / ntr_pad
+    grand_mean = padded.sum() / (ntr_pad * ns_pad)
+    expected = (padded - (trace_mean - grand_mean)[None, :])[:nt, :ns]
+    assert _relrms(out, expected) < 1e-4, _relrms(out, expected)
+    reference = _reference_fk_filter(gather, 0.004, 25.0, reject=False, **params)
+    assert _relrms(out, reference) < 1e-4, _relrms(out, reference)
+
+
+def test_segy_integer_formats_decode():
+    dt_us = 4000
+    cases = {
+        "int8": (8, np.array([[-128, -1, 0, 1, 127, 42], [5, -5, 100, -100, 64, 3]])),
+        "int16": (3, np.array([[-32768, -1, 0, 1, 32767, 1024],
+                               [7, -7, 300, -300, 16384, 2]])),
+        "int32": (2, np.array([[-(2 ** 30), -1, 0, 1, 2 ** 30, 3 * 2 ** 20],
+                               [9, -9, 2 ** 24, -2 ** 24, 65536, 4]])),
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, (code, values) in cases.items():
+            path = os.path.join(tmp, name + ".sgy")
+            _write_raw_segy(path, values, code, dt_us)
+            got = basalt.read_segy(path)
+            assert got["format"] == name, (name, got["format"])
+            assert got["ntraces"] == 2 and got["nsamples"] == 6, name
+            assert abs(got["dt"] - 0.004) < 1e-12, name
+            assert got["samples"].dtype == np.float32, name
+            assert np.array_equal(got["samples"], values.astype(np.float32)), name
+
+
+def test_embedded_nul_in_path_raises_value_error():
+    samples = np.ones((2, 8), dtype=np.float32)
+    with tempfile.TemporaryDirectory() as tmp:
+        bad = os.path.join(tmp, "nul\x00name.sgy")
+        _raises(ValueError, basalt.write_segy, bad, samples, 0.004)
+        _raises(ValueError, basalt.write_segy, os.fsencode(bad), samples, 0.004)
+        _raises(ValueError, basalt.read_segy, bad)
+        # Nothing is created: the name is not truncated to "nul" in the target directory.
+        assert os.listdir(tmp) == []
+
+
+def test_non_finite_gather_raises_value_error():
+    gather = np.ones((4, 8), dtype=np.float32)
+    for bad in (np.nan, np.inf, -np.inf):
+        corrupted = gather.copy()
+        corrupted[2, 3] = bad
+        _raises(ValueError, basalt.fk_filter, corrupted, 0.004, 25.0)
+
+
+def test_non_finite_frequency_or_wavenumber_raises_value_error():
+    for f, k in ((math.nan, 0.01), (math.inf, 0.01), (10.0, math.nan), (10.0, -math.inf)):
+        _raises(ValueError, basalt.fk_mute_weight, f, k, v_min=500.0, v_max=2000.0)
+
+
+def test_step_overflow_and_output_overflow_raise_value_error():
+    gather = np.ones((37, 53), dtype=np.float32)
+    # 1 / (ns_pad * dt) and 1 / (ntr_pad * dx) overflow to inf for subnormal steps.
+    _raises(ValueError, basalt.fk_filter, gather, 1e-320, 25.0, v_min=-800.0, v_max=1200.0)
+    _raises(ValueError, basalt.fk_filter, gather, 0.004, 1e-320, v_min=-800.0, v_max=1200.0)
+    # Finite input whose transform overflows float32 is reported, not returned as NaN.
+    rng = np.random.default_rng(15)
+    big = (rng.standard_normal((37, 53)) * 1e36).astype(np.float32)
+    _raises(ValueError, basalt.fk_filter, big, 0.004, 25.0, v_min=-800.0, v_max=1200.0)
 
 
 def _run_all():

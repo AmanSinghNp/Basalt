@@ -201,6 +201,11 @@ if(BASALT_BUILD_PYTHON)
     if(CMAKE_VERSION VERSION_LESS 3.18)
         message(FATAL_ERROR "BASALT_BUILD_PYTHON requires CMake 3.18 or newer (FindPython Development.Module)")
     endif()
+    # The core is built with -mavx2 -mfma (BASALT_COMMON_FLAGS) and uses x86 intrinsics, so the
+    # extension only builds on x86-64. Say so here rather than fail inside the compiler.
+    if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86|X86|AMD64|amd64")
+        message(FATAL_ERROR "BASALT_BUILD_PYTHON requires an x86-64 host (AVX2 and FMA); target processor is '${CMAKE_SYSTEM_PROCESSOR}'")
+    endif()
     # The extension is a shared module that links the static basalt_core library.
     set_target_properties(basalt_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
