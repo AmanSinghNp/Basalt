@@ -477,6 +477,39 @@ TEST(FKFilterTest, AsymmetricBandWeightsAreHermitianIncludingNyquist) {
     }
 }
 
+TEST(FKFilterTest, NyquistColumnFollowsAmendedMeanNotLiteralWeight) {
+    // Spec amendment (see fk_filter.hpp): a Nyquist bin takes the mean of the literal weights at
+    // v and -v. For an asymmetric band this differs from the literal weight at v, so the test
+    // checks both the amended value and the gap to the literal formula. A silent revert to
+    // either behaviour fails here. Parameters match the 64 x 128 case in the review report.
+    constexpr size_t rows = 64;
+    constexpr size_t cols = 128;
+    FKParams params = make_params(-700.0, 1900.0, 150.0);
+    params.dx = 12.5;
+    const double df = 1.0 / (static_cast<double>(rows) * params.dt);
+    const double dk = 1.0 / (static_cast<double>(cols) * params.dx);
+    const size_t nyquist_col = cols / 2;
+    const double k_nyquist = wrapped_axis(nyquist_col, cols, dk);   // +k_N
+
+    const std::vector<float> out = filter_ones(rows, cols, params, SimdMode::AVX2);
+
+    double max_amended_err = 0.0;
+    double max_literal_gap = 0.0;
+    for (size_t i = 0; i < rows; ++i) {
+        const double f = wrapped_axis(i, rows, df);
+        const double literal = reference_weight(f, k_nyquist, params.mute_vel_min,
+                                                params.mute_vel_max, params.taper_width);
+        const double mirror = reference_weight(-f, k_nyquist, params.mute_vel_min,
+                                               params.mute_vel_max, params.taper_width);
+        const double amended = 0.5 * (literal + mirror);
+        const double got = static_cast<double>(out[i * cols + nyquist_col]);
+        max_amended_err = std::max(max_amended_err, std::abs(got - amended));
+        max_literal_gap = std::max(max_literal_gap, std::abs(got - literal));
+    }
+    EXPECT_LT(max_amended_err, 1e-4) << "Nyquist column does not match the amended mean weight";
+    EXPECT_GT(max_literal_gap, 0.1) << "Nyquist column equals the literal weight; the amendment is lost";
+}
+
 TEST(FKFilterTest, AsymmetricBandKeepsRealGatherReal) {
     // Forward 2D DFT of a real gather, filter, inverse DFT. The output must stay real
     // for an asymmetric band, which includes the Nyquist row and column (even sizes).
