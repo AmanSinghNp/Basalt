@@ -63,8 +63,9 @@ void print_help(std::ostream& os) {
        << "  --dt S           sample interval, s, a whole number of microseconds in\n"
        << "                   [1e-6, 0.065535] (from the file header)\n"
        << "  --pad P          FFT padding factor, >= 1 (1.5)\n"
-       << "  --edge-taper N   cosine taper over the first and last N traces of each block (4),\n"
-       << "                   at most (block size - 1) / 2 per block\n"
+       << "  --edge-taper N   cosine taper over the first and last N traces of each block (4).\n"
+       << "                   In a block shorter than 2N traces the two tapers overlap and\n"
+       << "                   their weights multiply; a warning is printed\n"
        << "  --threads N      FFT threads, 0 = all cores (1)\n"
        << "  --gather-size N  filter consecutive blocks of N traces (whole file)\n"
        << "  --format F       output sample format, ibm or ieee (input format if\n"
@@ -378,26 +379,23 @@ int run_filter(const std::vector<std::string>& args) {
     const size_t ntraces = data.ntraces;
     const size_t nsamples = data.nsamples;
     const size_t block = gather_size != 0 ? std::min(gather_size, ntraces) : ntraces;
-    // The edge taper weights the first and last N traces of each block. The two tapers must not
-    // meet on a trace (their weights would multiply), so for a block of `count` traces N is at most
-    // (count - 1) / 2: at least one trace in the middle stays untapered. A larger request is
-    // reduced for the blocks that need it. A last block shorter than the others may need that.
-    // Each block size that is reduced gets its own warning, naming the size and the new taper.
-    const size_t requested_taper = params.edge_taper_traces;
+    // The edge taper weights the first and last N traces of each block, and the requested N is
+    // used as given for every block (FK_PIPELINE.md, section 4). For a block of `count` traces the
+    // two tapers share a trace when N > count / 2. The contract does not define that case yet, so
+    // the library multiplies the two weights there. A warning names each block size that overlaps.
+    const size_t edge_taper = params.edge_taper_traces;
     const size_t tail = ntraces % block;
-    const size_t full_limit = (block - 1) / 2;
-    if (requested_taper > full_limit) {
-        std::cerr << "basalt: warning: --edge-taper " << requested_taper << " is reduced to "
-                  << full_limit << " per end for " << block << "-trace blocks\n";
+    if (edge_taper > block / 2) {
+        std::cerr << "basalt: warning: --edge-taper " << edge_taper << " overlaps within " << block
+                  << "-trace blocks (the start and end tapers multiply)\n";
     }
-    if (tail != 0 && requested_taper > (tail - 1) / 2) {
-        std::cerr << "basalt: warning: --edge-taper " << requested_taper << " is reduced to "
-                  << (tail - 1) / 2 << " per end for the last " << tail << "-trace block\n";
+    if (tail != 0 && edge_taper > tail / 2) {
+        std::cerr << "basalt: warning: --edge-taper " << edge_taper << " overlaps within the last "
+                  << tail << "-trace block (the start and end tapers multiply)\n";
     }
     const auto started = std::chrono::steady_clock::now();
     for (size_t first = 0; first < ntraces; first += block) {
         const size_t count = std::min(block, ntraces - first);
-        params.edge_taper_traces = std::min(requested_taper, (count - 1) / 2);
         float* gather = data.samples.data() + first * nsamples;
         basalt::fk_filter_gather(gather, gather, count, nsamples, params);
     }

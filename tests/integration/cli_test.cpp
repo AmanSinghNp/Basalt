@@ -193,6 +193,23 @@ double relative_rms(const std::vector<float>& actual, const std::vector<float>& 
 const std::vector<std::string> kIdentityFlags = {"--vmin",  "1e29", "--vmax",       "1e30",
                                                  "--taper", "0",    "--edge-taper", "0"};
 
+// Filters `samples` (ntraces x nsamples) with the library one block of `block` traces at a time,
+// as the CLI does with --gather-size. `params` carries the taper and band; the last block may be
+// shorter. Returns the filtered blocks concatenated in trace order.
+std::vector<float> library_per_block(const std::vector<float>& samples, size_t ntraces,
+                                     size_t nsamples, size_t block,
+                                     const basalt::FKMuteParams& params) {
+    std::vector<float> filtered;
+    for (size_t first = 0; first < ntraces; first += block) {
+        const size_t count = std::min(block, ntraces - first);
+        const auto begin = samples.begin() + static_cast<std::ptrdiff_t>(first * nsamples);
+        const std::vector<float> part(begin, begin + static_cast<std::ptrdiff_t>(count * nsamples));
+        const std::vector<float> out = basalt::fk_filter_gather(part, count, nsamples, params);
+        filtered.insert(filtered.end(), out.begin(), out.end());
+    }
+    return filtered;
+}
+
 // Runs `filter in out` with `flags`, expects success and returns the samples written to `out`.
 std::vector<float> cli_filter(const std::string& in, const std::string& out,
                               const std::vector<std::string>& flags) {
@@ -474,21 +491,10 @@ TEST(CliFilter, GatherSizeMatchesFilteringEachBlockWithLibrary) {
     params.dx = 5.0;
     params.v_min = 500.0;
     params.v_max = 2000.0;
-    std::vector<float> expected;
-    for (size_t first = 0; first < kTraces; first += kBlock) {
-        const size_t count = std::min(kBlock, kTraces - first);
-        // Proposed per-block rule, pending a contract decision (not yet in FK_PIPELINE.md): the
-        // CLI reduces the default edge taper of 4 to (count - 1) / 2 for each block. If the rule
-        // is rejected, this expectation and the reduction in src/main.cpp revert together.
-        params.edge_taper_traces = std::min<size_t>(4, (count - 1) / 2);
-        const auto begin = input.samples.begin() + static_cast<std::ptrdiff_t>(first * kSamples);
-        const std::vector<float> block(begin,
-                                       begin + static_cast<std::ptrdiff_t>(count * kSamples));
-        const std::vector<float> filtered =
-            basalt::fk_filter_gather(block, count, kSamples, params);
-        expected.insert(expected.end(), filtered.begin(), filtered.end());
-    }
-    ASSERT_EQ(cli_result.size(), expected.size());
+    // The library default edge taper (4 traces per end) is applied as given to every block,
+    // including the 6-trace tail block, where the two tapers overlap.
+    const std::vector<float> expected =
+        library_per_block(input.samples, kTraces, kSamples, kBlock, params);
     EXPECT_LT(relative_rms(cli_result, expected), 1e-6);
 
     // The blocks are real: filtering the whole 20-trace gather gives a different result.
@@ -496,6 +502,35 @@ TEST(CliFilter, GatherSizeMatchesFilteringEachBlockWithLibrary) {
         run_cli({"filter", in, out_whole, "--vmin", "500", "--vmax", "2000", "--dx", "5"});
     ASSERT_EQ(whole.exit_code, 0) << whole.err;
     EXPECT_GT(relative_rms(basalt::io::read_segy(out_whole).samples, expected), 1e-3);
+}
+
+TEST(CliFilter, ExplicitEdgeTaperIsUsedForEveryBlock) {
+    constexpr size_t kTraces = 20;
+    constexpr size_t kSamples = 100;
+    constexpr size_t kBlock = 7;
+    const std::string in = test_path("in.segy");
+    const std::string out = test_path("out.segy");
+    write_fixture(in, random_samples(kTraces * kSamples, 25), kTraces, kSamples, 0.004,
+                  SampleFormat::IEEE32);
+    const SegyData input = basalt::io::read_segy(in);
+
+    // A taper of 3 per end fits in blocks of 7 and in the 6-trace tail (3 + 3 <= 6), so the
+    // tapers do not overlap and the CLI must print no warning.
+    const CliResult r = run_cli({"filter", in, out, "--vmin", "500", "--vmax", "2000", "--dx", "5",
+                                 "--gather-size", "7", "--edge-taper", "3"});
+    ASSERT_EQ(r.exit_code, 0) << r.err;
+    EXPECT_FALSE(contains(r.err, "warning")) << r.err;
+
+    basalt::FKMuteParams params;
+    params.dt = input.dt;
+    params.dx = 5.0;
+    params.v_min = 500.0;
+    params.v_max = 2000.0;
+    params.edge_taper_traces = 3;
+    const std::vector<float> expected =
+        library_per_block(input.samples, kTraces, kSamples, kBlock, params);
+    ASSERT_EQ(basalt::io::read_segy(out).samples.size(), expected.size());
+    EXPECT_LT(relative_rms(basalt::io::read_segy(out).samples, expected), 1e-6);
 }
 
 TEST(CliFilter, IbmInputKeepsIbmOutputAndFormatOverrides) {
@@ -707,23 +742,22 @@ TEST(CliFilter, PadEdgeTaperAndThreadsReachTheLibrary) {
         1e-3);
 }
 
-TEST(CliFilter, EdgeTaperIsReducedWithWarningForShortBlocks) {
+TEST(CliFilter, OverlappingEdgeTapersAreReportedForShortBlocks) {
     const std::string in = test_path("in.segy");
     const std::string out = test_path("out.segy");
     write_fixture(in, random_samples(20 * 100, 20), 20, 100, 0.004, SampleFormat::IEEE32);
 
-    // Default taper 4 on blocks of 7 and a last block of 6 traces: at most 3 and 2 traces per end
-    // fit, so both sizes are reduced and each gets its own warning.
+    // Default taper 4 on blocks of 7 and a last block of 6 traces: 4 > 7 / 2 and 4 > 6 / 2, so the
+    // tapers overlap in both sizes and each gets its own warning. The taper itself is not reduced.
     const CliResult tapered = run_cli({"filter", in, out, "--gather-size", "7"});
     EXPECT_EQ(tapered.exit_code, 0) << tapered.err;
-    EXPECT_TRUE(
-        contains(tapered.err, "warning: --edge-taper 4 is reduced to 3 per end for 7-trace blocks"))
+    EXPECT_TRUE(contains(tapered.err, "warning: --edge-taper 4 overlaps within 7-trace blocks"))
         << tapered.err;
-    EXPECT_TRUE(contains(
-        tapered.err, "warning: --edge-taper 4 is reduced to 2 per end for the last 6-trace block"))
+    EXPECT_TRUE(
+        contains(tapered.err, "warning: --edge-taper 4 overlaps within the last 6-trace block"))
         << tapered.err;
 
-    // Blocks of 10 traces fit a taper of 4 per end, and no taper means no warning.
+    // Blocks of 10 traces hold two non-overlapping tapers of 4 (4 <= 10 / 2), so no warning.
     const CliResult long_blocks = run_cli({"filter", in, out, "--gather-size", "10"});
     EXPECT_EQ(long_blocks.exit_code, 0) << long_blocks.err;
     EXPECT_FALSE(contains(long_blocks.err, "warning")) << long_blocks.err;
@@ -734,17 +768,16 @@ TEST(CliFilter, EdgeTaperIsReducedWithWarningForShortBlocks) {
     EXPECT_FALSE(contains(no_taper.err, "warning")) << no_taper.err;
 }
 
-TEST(CliFilter, WarningNamesOnlyTheShortTailBlockWhenOnlyItIsReduced) {
-    // Blocks of 10 traces keep the default taper of 4, but the last block of 2 traces gets none.
-    // The warning must name the tail block and must not claim that the 10-trace blocks change.
+TEST(CliFilter, WarningNamesOnlyTheShortTailBlockWhenOnlyItOverlaps) {
+    // Blocks of 10 traces do not overlap at taper 4, but the last block of 2 traces does. The
+    // warning must name the tail block and must not mention the 10-trace blocks.
     const std::string in = test_path("in.segy");
     const std::string out = test_path("out.segy");
     write_fixture(in, random_samples(22 * 100, 24), 22, 100, 0.004, SampleFormat::IEEE32);
 
     const CliResult r = run_cli({"filter", in, out, "--gather-size", "10"});
     EXPECT_EQ(r.exit_code, 0) << r.err;
-    EXPECT_TRUE(contains(
-        r.err, "warning: --edge-taper 4 is reduced to 0 per end for the last 2-trace block"))
+    EXPECT_TRUE(contains(r.err, "warning: --edge-taper 4 overlaps within the last 2-trace block"))
         << r.err;
     EXPECT_FALSE(contains(r.err, "10-trace blocks")) << r.err;
 }
@@ -803,24 +836,22 @@ TEST(CliFilter, SingleTraceAndSingleSampleFilesReproduceInputInIdentityConfigura
     EXPECT_LT(relative_rms(sample_result, one_sample), 1e-5);
 }
 
-TEST(CliFilter, SingleTraceIsNotTaperedByDefault) {
+TEST(CliFilter, SingleTraceUsesDefaultTaperAndWarnsOfOverlap) {
     constexpr size_t kSamples = 50;
     const std::string in = test_path("in.segy");
     const std::string out = test_path("out.segy");
     const std::vector<float> samples = random_samples(kSamples, 23);
     write_fixture(in, samples, 1, kSamples, 0.004, SampleFormat::IEEE32);
 
-    // A one-trace block has no room for an edge taper, so the default taper of 4 is reduced to
-    // zero and the CLI says so. The output equals the library run without edge tapers.
+    // A one-trace block has both edge tapers on its only trace, so the default taper of 4 gives
+    // the weight w(0) * w(0) with w(0) = 0.5 - 0.5 cos(pi / 5). The CLI applies the taper as
+    // given and warns about the overlap. The output equals the library run with default parameters.
     const CliResult r = run_cli({"filter", in, out});
     ASSERT_EQ(r.exit_code, 0) << r.err;
-    EXPECT_TRUE(
-        contains(r.err, "warning: --edge-taper 4 is reduced to 0 per end for 1-trace blocks"))
-        << r.err;
+    EXPECT_TRUE(contains(r.err, "warning: --edge-taper 4 overlaps within 1-trace blocks")) << r.err;
 
     basalt::FKMuteParams params;
     params.dt = 0.004;
-    params.edge_taper_traces = 0;
     const std::vector<float> expected = basalt::fk_filter_gather(samples, 1, kSamples, params);
     const std::vector<float> result = basalt::io::read_segy(out).samples;
     ASSERT_EQ(result.size(), expected.size());
