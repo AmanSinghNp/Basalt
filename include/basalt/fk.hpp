@@ -31,7 +31,8 @@ struct FKMuteParams {
     size_t threads = 1;             // Threads for the FFT and the copy, weight and table passes;
                                     // 0 = hardware concurrency. Each calling thread keeps its work
                                     // buffers and weight tables until it exits (about 101 MB for a
-                                    // 2048 x 2048 gather)
+                                    // 2048 x 2048 gather, plus up to 38 MB when the mixed columns
+                                    // form several runs)
 };
 
 /// Filters a trace-major gather (`data[t * nsamples + s]`) in f-k space.

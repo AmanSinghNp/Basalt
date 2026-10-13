@@ -4,9 +4,10 @@
 // The 2D transform is evaluated in stages that give the same result as one 2D real FFT:
 //   1. Time-axis r2c on the ntraces data rows only. Padded trace rows are zero in time, so
 //      their time spectrum is zero and is written as zeros.
-//   2. Per frequency column, a spatial c2c, weight and inverse c2c over the padded traces.
+//   2. Spatial c2c, weight and inverse c2c over the padded traces, for the mixed columns only.
 //      Columns whose weights are all exactly 1 are skipped, because that transform pair is the
-//      identity. Columns whose weights are all exactly 0 are zeroed.
+//      identity. Columns whose weights are all exactly 0 are zeroed. The mixed columns take one
+//      call pair however many runs they form (see transform_mixed_columns).
 //   3. Time-axis c2r on the ntraces rows that are cropped into the output.
 // Column classes are derived from the cached weight table, so they share its key and LRU.
 
@@ -388,6 +389,89 @@ void transform_columns(std::complex<float>* spec, const float* weights, size_t n
     pocketfft::c2c<float>(shape, stride, stride, axes, false, block, block, inv_ntr, nthreads);
 }
 
+// Spatial forward transform, weighting and inverse transform of every mixed column (the runs of
+// class kColTransform), in place. Each column gets the transform pair of transform_columns.
+//
+// One mixed run is transformed where it lies. Several runs are packed first into a contiguous
+// ntr_pad x m block, so the whole set costs one forward and one inverse call. A call builds a
+// pocketfft plan and may start worker threads, so one call per run would make the fixed cost of a
+// gather grow with the number of runs, up to nfreq when the classes alternate. Packing copies the
+// mixed columns in and out once. The block is kept per calling thread, and at most one spectrum
+// in size.
+void transform_mixed_columns(std::complex<float>* spec, const float* weights, size_t nfreq,
+                             size_t ntr_pad, const std::vector<ColRun>& runs, float inv_ntr,
+                             size_t nthreads) {
+    size_t nmixed_runs = 0;
+    size_t m = 0;
+    const ColRun* single = nullptr;
+    for (const ColRun& r : runs) {
+        if (r.cls == kColTransform) {
+            ++nmixed_runs;
+            m += r.end - r.begin;
+            single = &r;
+        }
+    }
+    if (nmixed_runs == 0) {
+        return;
+    }
+    if (nmixed_runs == 1) {
+        transform_columns(spec, weights, nfreq, ntr_pad, single->begin, single->end - single->begin,
+                          inv_ntr, nthreads);
+        return;
+    }
+
+    // Column index of each packed column, ascending.
+    std::vector<size_t> cols;
+    cols.reserve(m);
+    for (const ColRun& r : runs) {
+        if (r.cls == kColTransform) {
+            for (size_t j = r.begin; j < r.end; ++j) {
+                cols.push_back(j);
+            }
+        }
+    }
+
+    thread_local std::vector<std::complex<float>> packed; // ntr_pad x m, row-major
+    packed.resize(ntr_pad * m);
+    std::complex<float>* pk = packed.data();
+    const pocketfft::shape_t shape{ntr_pad, m};
+    const pocketfft::shape_t axes{0};
+    const pocketfft::stride_t stride{static_cast<std::ptrdiff_t>(m * sizeof(std::complex<float>)),
+                                     static_cast<std::ptrdiff_t>(sizeof(std::complex<float>))};
+
+    for_each_row_range(ntr_pad, nthreads, ntr_pad * m, [&](size_t i0, size_t i1) {
+        for (size_t i = i0; i < i1; ++i) {
+            const std::complex<float>* src = spec + i * nfreq;
+            std::complex<float>* dst = pk + i * m;
+            for (size_t q = 0; q < m; ++q) {
+                dst[q] = src[cols[q]];
+            }
+        }
+    });
+    pocketfft::c2c<float>(shape, stride, stride, axes, true, pk, pk, 1.0f, nthreads);
+    for_each_row_range(ntr_pad, nthreads, ntr_pad * m, [&](size_t i0, size_t i1) {
+        for (size_t i = i0; i < i1; ++i) {
+            // The arithmetic is that of scale_bins, with the weight of each packed column found.
+            float* f = reinterpret_cast<float*>(pk + i * m);
+            const float* w = weights + i * nfreq;
+            for (size_t q = 0; q < m; ++q) {
+                f[2 * q] *= w[cols[q]];
+                f[2 * q + 1] *= w[cols[q]];
+            }
+        }
+    });
+    pocketfft::c2c<float>(shape, stride, stride, axes, false, pk, pk, inv_ntr, nthreads);
+    for_each_row_range(ntr_pad, nthreads, ntr_pad * m, [&](size_t i0, size_t i1) {
+        for (size_t i = i0; i < i1; ++i) {
+            std::complex<float>* dst = spec + i * nfreq;
+            const std::complex<float>* src = pk + i * m;
+            for (size_t q = 0; q < m; ++q) {
+                dst[cols[q]] = src[q];
+            }
+        }
+    });
+}
+
 } // namespace
 
 size_t fk_padded_traces(size_t ntraces, const FKMuteParams& params) {
@@ -444,8 +528,10 @@ void fk_filter_gather(const float* in, float* out,
 
     // Work buffers persist per calling thread, so repeated calls do not allocate. Retention:
     // these buffers and the weight tables (see weight_table) are kept until the calling thread
-    // exits. For a 2048 x 2048 gather (padded 3072 x 3072) that is about 101 MB per calling
-    // thread: about 63 MB of work buffers plus two 19 MB weight tables.
+    // exits, and so is the packed block of transform_mixed_columns. For a 2048 x 2048 gather
+    // (padded 3072 x 3072) that is about 101 MB per calling thread: about 63 MB of work buffers
+    // plus two 19 MB weight tables. The packed block adds up to one 38 MB spectrum-sized buffer,
+    // and only when the mixed columns form several runs.
     thread_local std::vector<float> real;                // ntraces x ns_pad (time domain)
     thread_local std::vector<std::complex<float>> spec;  // ntr_pad x nfreq (spectrum)
     real.resize(ntraces * ns_pad);
@@ -543,12 +629,7 @@ void fk_filter_gather(const float* in, float* out,
     // the full scale of section 4. A skipped ones column gets only 1 / ns_pad, which is correct
     // because its spatial pair is the identity with no scale.
     const float inv_ntr = static_cast<float>(1.0 / static_cast<double>(ntr_pad));
-    for (const ColRun& r : runs) {
-        if (r.cls == kColTransform) {
-            transform_columns(spec_ptr, weights, nfreq, ntr_pad, r.begin, r.end - r.begin,
-                              inv_ntr, nthreads);
-        }
-    }
+    transform_mixed_columns(spec_ptr, weights, nfreq, ntr_pad, runs, inv_ntr, nthreads);
 
     // Step 6 (A): complex-to-real inverse on the ntraces rows that are cropped into the output.
     const float inv_ns = static_cast<float>(1.0 / static_cast<double>(ns_pad));

@@ -1564,3 +1564,184 @@ TEST(FKPipeline, ExtremeEdgeGeometryGivesFiniteOutput) {
     ASSERT_EQ(out.size(), ntr * ns);
     EXPECT_TRUE(std::all_of(out.begin(), out.end(), [](float v) { return std::isfinite(v); }));
 }
+
+// ---- Separable reference and the parallel passes ----
+
+namespace {
+
+// The definitions of direct_fk_reference (section 4, steps 3 to 7), evaluated one axis at a time
+// with tabulated roots. The 2D DFT is separable, so this is O(n0 * n1 * (ntraces + nsamples))
+// instead of O(n^4), which reaches gather sizes at which the parallel passes run. It shares no code
+// with pocketfft.
+std::vector<float> separable_fk_reference(const std::vector<float>& in, size_t ntr, size_t ns,
+                                          const FKMuteParams& p) {
+    using cd = std::complex<double>;
+    const size_t n0 = fk_padded_traces(ntr, p);
+    const size_t n1 = fk_padded_samples(ns, p);
+    const size_t nf = n1 / 2 + 1;
+
+    // Roots exp(-2 pi i a / n). The inverse transform uses their conjugates.
+    std::vector<cd> r0(n0);
+    std::vector<cd> r1(n1);
+    for (size_t a = 0; a < n0; ++a) {
+        const double ang = -2.0 * kPi * static_cast<double>(a) / static_cast<double>(n0);
+        r0[a] = cd(std::cos(ang), std::sin(ang));
+    }
+    for (size_t a = 0; a < n1; ++a) {
+        const double ang = -2.0 * kPi * static_cast<double>(a) / static_cast<double>(n1);
+        r1[a] = cd(std::cos(ang), std::sin(ang));
+    }
+
+    // Step 3: edge taper weights, as in direct_fk_reference.
+    std::vector<double> wt(ntr, 1.0);
+    for (size_t t = 0; t < ntr; ++t) {
+        if (t < p.edge_taper_traces) {
+            wt[t] *= taper_weight(t, p.edge_taper_traces);
+        }
+        if (ntr - 1 - t < p.edge_taper_traces) {
+            wt[t] *= taper_weight(ntr - 1 - t, p.edge_taper_traces);
+        }
+    }
+    std::vector<double> ws(ns, 1.0);
+    for (size_t s = 0; s < ns; ++s) {
+        if (s < p.edge_taper_samples) {
+            ws[s] *= taper_weight(s, p.edge_taper_samples);
+        }
+        if (ns - 1 - s < p.edge_taper_samples) {
+            ws[s] *= taper_weight(ns - 1 - s, p.edge_taper_samples);
+        }
+    }
+
+    // Time DFT of each data row, for the half spectrum: z(t, j) = sum_s x(t, s) exp(-2 pi i js/n1).
+    // j * s mod n1 is advanced by j, which is below n1, so one subtraction reduces it.
+    std::vector<cd> z(ntr * nf);
+    for (size_t t = 0; t < ntr; ++t) {
+        for (size_t j = 0; j < nf; ++j) {
+            cd acc(0.0, 0.0);
+            size_t idx = 0;
+            for (size_t s = 0; s < ns; ++s) {
+                acc += (static_cast<double>(in[t * ns + s]) * wt[t] * ws[s]) * r1[idx];
+                idx += j;
+                if (idx >= n1) {
+                    idx -= n1;
+                }
+            }
+            z[t * nf + j] = acc;
+        }
+    }
+
+    // Trace DFT, then the mute weight of each bin:
+    // y(i, j) = w(i, j) sum_t z(t, j) exp(-2 pi i it/n0).
+    std::vector<cd> y(n0 * nf);
+    const double df = 1.0 / (static_cast<double>(n1) * p.dt);
+    const double dk = 1.0 / (static_cast<double>(n0) * p.dx);
+    for (size_t i = 0; i < n0; ++i) {
+        const double k_index = (i <= (n0 - 1) / 2)
+                                   ? static_cast<double>(i)
+                                   : static_cast<double>(i) - static_cast<double>(n0);
+        for (size_t j = 0; j < nf; ++j) {
+            cd acc(0.0, 0.0);
+            size_t idx = 0;
+            for (size_t t = 0; t < ntr; ++t) {
+                acc += z[t * nf + j] * r0[idx];
+                idx += i;
+                if (idx >= n0) {
+                    idx -= n0;
+                }
+            }
+            const double w = fk_mute_weight(static_cast<double>(j) * df, k_index * dk, p);
+            y[i * nf + j] = acc * w;
+        }
+    }
+
+    // Inverse, using the Hermitian extension of the half spectrum as in direct_fk_reference.
+    auto yfull = [&](size_t i, size_t j) -> cd {
+        if (j < nf) {
+            return y[i * nf + j];
+        }
+        return std::conj(y[((n0 - i) % n0) * nf + (n1 - j)]);
+    };
+    // g(i, s) = sum_j yfull(i, j) exp(+2 pi i js/n1). ns <= n1, so s is below n1 as well.
+    std::vector<cd> g(n0 * ns);
+    for (size_t i = 0; i < n0; ++i) {
+        for (size_t s = 0; s < ns; ++s) {
+            cd acc(0.0, 0.0);
+            size_t idx = 0;
+            for (size_t j = 0; j < n1; ++j) {
+                acc += yfull(i, j) * std::conj(r1[idx]);
+                idx += s;
+                if (idx >= n1) {
+                    idx -= n1;
+                }
+            }
+            g[i * ns + s] = acc;
+        }
+    }
+    std::vector<float> out(ntr * ns);
+    const double scale = 1.0 / (static_cast<double>(n0) * static_cast<double>(n1));
+    for (size_t t = 0; t < ntr; ++t) {
+        for (size_t s = 0; s < ns; ++s) {
+            cd acc(0.0, 0.0);
+            size_t idx = 0;
+            for (size_t i = 0; i < n0; ++i) {
+                acc += g[i * ns + s] * std::conj(r0[idx]);
+                idx += t;
+                if (idx >= n0) {
+                    idx -= n0;
+                }
+            }
+            out[t * ns + s] = static_cast<float>(acc.real() * scale);
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+TEST(FKPipeline, SeparableReferenceMatchesDirectReference) {
+    // The separable reference is trusted at large sizes only after it agrees with the direct one
+    // at a small odd size, with both edge tapers.
+    FKMuteParams p = event_params();
+    p.edge_taper_traces = 3;
+    p.edge_taper_samples = 2;
+    const size_t ntr = 9;
+    const size_t ns = 33;
+    const auto in = random_gather(ntr, ns, 911);
+    const auto direct = direct_fk_reference(in, ntr, ns, p);
+    const auto separable = separable_fk_reference(in, ntr, ns, p);
+    EXPECT_LE(error_vs_input(separable, direct, in), 1e-6);
+}
+
+TEST(FKPipeline, ParallelPassesAndPackedColumnsMatchReferenceAtLargeSize) {
+    // 512 x 512 at pad 1.5 gives a 768 x 768 padded grid. The weight table, the copy-in, the
+    // spatial passes over the packed mixed columns and the crop all exceed kParallelMinWork, so
+    // threads = 4 runs them on workers. The narrow band has ten runs of mixed columns, so the
+    // spatial transform is packed rather than run in place.
+    FKMuteParams p;
+    p.dt = 0.004;
+    p.dx = 1.0;
+    p.v_min = 1400.0;
+    p.v_max = 1550.0;
+    p.taper = 0.0;
+    p.mode = FKMode::Reject;
+    const size_t ntr = 512;
+    const size_t ns = 512;
+    const std::string cls = column_classes(ntr, ns, p);
+    size_t mixed_runs = 0;
+    size_t mixed = 0;
+    for (size_t j = 0; j < cls.size(); ++j) {
+        mixed += cls[j] == 'm' ? 1 : 0;
+        mixed_runs += (cls[j] == 'm' && (j == 0 || cls[j - 1] != 'm')) ? 1 : 0;
+    }
+    EXPECT_GE(mixed_runs, size_t{2}) << cls;
+    EXPECT_GE(fk_padded_traces(ntr, p) * mixed, size_t{262144}) << cls;
+
+    const auto in = random_gather(ntr, ns, 515);
+    const auto ref = separable_fk_reference(in, ntr, ns, p);
+    for (size_t threads : {size_t{1}, size_t{4}}) {
+        FKMuteParams pt = p;
+        pt.threads = threads;
+        const auto out = fk_filter_gather(in, ntr, ns, pt);
+        EXPECT_LE(error_vs_input(out, ref, in), 1e-5) << "threads " << threads;
+    }
+}
