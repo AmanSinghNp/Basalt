@@ -15,8 +15,13 @@
 // padded grid, with the same pocketfft version. They are the floor for the transform inside
 // basalt-c++, so the difference between the two rows is the cost of the work around it.
 //
+// With --batch N, each size is instead timed as N gathers per call: fk_filter_gathers over the N
+// gathers (batch-api rows) against N separate fk_filter_gather calls with the same thread count
+// (loop-fk_filter_gather rows). The batch output is checked bit for bit against per-gather
+// fk_filter_gather with threads = 1 before timing. gathers/s counts gathers, not calls.
+//
 // Usage: fk_gather_bench [--sizes NTRxNS,...] [--threads N,...] [--iterations N] [--warmup N]
-//                        [--pad P] [--csv-out FILE]
+//                        [--pad P] [--csv-out FILE] [--batch N]
 // Run `fk_gather_bench --help` for details. Contract: docs/design/FK_PIPELINE.md.
 
 #include "basalt/arena.hpp"
@@ -35,6 +40,7 @@
 #include <complex>
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -61,6 +67,7 @@ struct Config {
     size_t warmup = 3;
     double pad_factor = 1.5;
     std::string csv_out;
+    size_t batch = 0;  // gathers per call for the batch comparison; 0 = the default sections
 };
 
 struct TimingStats {
@@ -76,6 +83,7 @@ struct Row {
     size_t ntr_pad = 0;
     size_t ns_pad = 0;
     size_t threads = 1;
+    size_t gathers_per_call = 1;  // gathers filtered by one timed call
     TimingStats stats;
     double checksum = 0.0;  // sum of the output samples; a sanity figure, not a correctness check
 };
@@ -89,7 +97,9 @@ void print_usage(std::ostream& os) {
        << "  --iterations N     timed calls per configuration (default 21)\n"
        << "  --warmup N         untimed calls per configuration (default 3)\n"
        << "  --pad P            pad_factor, >= 1 (default 1.5)\n"
-       << "  --csv-out FILE     also write the results as CSV\n";
+       << "  --csv-out FILE     also write the results as CSV\n"
+       << "  --batch N          time N gathers per call: fk_filter_gathers against a loop of\n"
+       << "                     fk_filter_gather (the batch comparison; replaces the other rows)\n";
 }
 
 [[noreturn]] void usage_error(const std::string& msg) {
@@ -201,6 +211,17 @@ std::vector<float> make_gather(const GatherSize& s) {
         v = dist(rng);
     }
     return gather;
+}
+
+// `count` gathers of size `s`, generated as one stream so that every gather differs.
+std::vector<float> make_gathers(const GatherSize& s, size_t count) {
+    std::mt19937 rng(20260101u);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    std::vector<float> gathers(count * s.ntraces * s.nsamples);
+    for (float& v : gathers) {
+        v = dist(rng);
+    }
+    return gathers;
 }
 
 double checksum(const float* data, size_t count) {
@@ -354,20 +375,81 @@ Row run_transform_floor(const GatherSize& s, size_t threads, const Config& cfg,
     return row;
 }
 
+// Batch comparison for one size and thread count. `in` holds cfg.batch gathers. The batch output
+// is compared bit for bit with per-gather fk_filter_gather at threads = 1 (outside the timed
+// region). Returns false on a mismatch.
+bool run_batch(const GatherSize& s, size_t threads, const Config& cfg, const std::vector<float>& in,
+               std::vector<float>& out, std::vector<Row>& rows) {
+    basalt::FKMuteParams params;
+    params.pad_factor = cfg.pad_factor;
+    params.threads = threads;
+    const size_t gather_len = s.ntraces * s.nsamples;
+    const size_t count = cfg.batch;
+
+    std::vector<float> reference(in.size());
+    basalt::FKMuteParams single = params;
+    single.threads = 1;
+    for (size_t g = 0; g < count; ++g) {
+        basalt::fk_filter_gather(in.data() + g * gather_len, reference.data() + g * gather_len,
+                                 s.ntraces, s.nsamples, single);
+    }
+
+    auto batch_call = [&]() {
+        basalt::fk_filter_gathers(in.data(), out.data(), count, s.ntraces, s.nsamples, params);
+    };
+    batch_call();
+    const bool identical = std::memcmp(out.data(), reference.data(),
+                                       out.size() * sizeof(float)) == 0;
+    const std::vector<double> batch_ms = time_calls(batch_call, cfg.warmup, cfg.iterations);
+
+    auto loop_call = [&]() {
+        for (size_t g = 0; g < count; ++g) {
+            basalt::fk_filter_gather(in.data() + g * gather_len, out.data() + g * gather_len,
+                                     s.ntraces, s.nsamples, params);
+        }
+    };
+    const std::vector<double> loop_ms = time_calls(loop_call, cfg.warmup, cfg.iterations);
+
+    const size_t ntr_pad = basalt::fk_padded_traces(s.ntraces, params);
+    const size_t ns_pad = basalt::fk_padded_samples(s.nsamples, params);
+    const struct {
+        const char* impl;
+        const std::vector<double>* ms;
+    } variants[] = {{"batch-api", &batch_ms}, {"loop-fk_filter_gather", &loop_ms}};
+    for (const auto& v : variants) {
+        Row row;
+        row.impl = v.impl;
+        row.size = s;
+        row.ntr_pad = ntr_pad;
+        row.ns_pad = ns_pad;
+        row.threads = threads;
+        row.gathers_per_call = count;
+        row.stats = summarize(*v.ms);
+        row.checksum = checksum(out.data(), out.size());
+        rows.push_back(row);
+    }
+    std::cout << "bit-identical to per-gather fk_filter_gather (threads = 1): "
+              << (identical ? "yes" : "NO") << " (" << s.ntraces << "x" << s.nsamples << ", "
+              << count << " gathers, threads " << threads << ")\n";
+    return identical;
+}
+
 void print_table(const std::vector<Row>& rows, const Config& cfg) {
     std::cout << std::left << std::setw(12) << "impl" << std::right
               << std::setw(9) << "ntraces" << std::setw(9) << "nsamps"
               << std::setw(9) << "ntr_pad" << std::setw(9) << "ns_pad"
-              << std::setw(9) << "threads" << std::setw(12) << "median_ms"
-              << std::setw(10) << "p90_ms" << std::setw(10) << "min_ms"
+              << std::setw(9) << "threads" << std::setw(9) << "gathers" << std::setw(12)
+              << "median_ms" << std::setw(10) << "p90_ms" << std::setw(10) << "min_ms"
               << std::setw(10) << "mean_ms" << std::setw(13) << "gathers/s" << "\n";
     std::cout << std::fixed << std::setprecision(3);
     for (const Row& r : rows) {
-        const double gathers_per_s = 1000.0 / r.stats.median_ms;
+        const double gathers_per_s =
+            static_cast<double>(r.gathers_per_call) * 1000.0 / r.stats.median_ms;
         std::cout << std::left << std::setw(12) << r.impl << std::right
                   << std::setw(9) << r.size.ntraces << std::setw(9) << r.size.nsamples
                   << std::setw(9) << r.ntr_pad << std::setw(9) << r.ns_pad
-                  << std::setw(9) << r.threads << std::setw(12) << r.stats.median_ms
+                  << std::setw(9) << r.threads << std::setw(9) << r.gathers_per_call
+                  << std::setw(12) << r.stats.median_ms
                   << std::setw(10) << r.stats.p90_ms << std::setw(10) << r.stats.min_ms
                   << std::setw(10) << r.stats.mean_ms << std::setw(13)
                   << std::setprecision(2) << gathers_per_s << std::setprecision(3) << "\n";
@@ -382,15 +464,16 @@ void write_csv(const std::string& path, const std::vector<Row>& rows, const Conf
         throw std::runtime_error("cannot open CSV output '" + path + "'");
     }
     out << "impl,ntraces,nsamples,ntraces_padded,nsamples_padded,threads,iterations,warmup,"
-        << "pad_factor,median_ms,p90_ms,min_ms,mean_ms,gathers_per_s,checksum\n";
+        << "pad_factor,median_ms,p90_ms,min_ms,mean_ms,gathers_per_s,checksum,gathers_per_call\n";
     out << std::setprecision(9);
     for (const Row& r : rows) {
         out << r.impl << ',' << r.size.ntraces << ',' << r.size.nsamples << ','
             << r.ntr_pad << ',' << r.ns_pad << ',' << r.threads << ','
             << cfg.iterations << ',' << cfg.warmup << ',' << cfg.pad_factor << ','
             << r.stats.median_ms << ',' << r.stats.p90_ms << ',' << r.stats.min_ms << ','
-            << r.stats.mean_ms << ',' << 1000.0 / r.stats.median_ms << ','
-            << r.checksum << '\n';
+            << r.stats.mean_ms << ','
+            << static_cast<double>(r.gathers_per_call) * 1000.0 / r.stats.median_ms << ','
+            << r.checksum << ',' << r.gathers_per_call << '\n';
     }
     if (!out) {
         throw std::runtime_error("write failed for CSV output '" + path + "'");
@@ -423,6 +506,8 @@ int main(int argc, char** argv) {
                 cfg.pad_factor = parse_pad(value());
             } else if (arg == "--csv-out") {
                 cfg.csv_out = value();
+            } else if (arg == "--batch") {
+                cfg.batch = parse_count(value(), "batch", 1);
             } else if (arg == "--help" || arg == "-h") {
                 print_usage(std::cout);
                 return 0;
@@ -444,7 +529,16 @@ int main(int argc, char** argv) {
 
         const std::vector<size_t> threads = resolve_thread_list(cfg.threads);
         std::vector<Row> results;
+        bool identical = true;
         for (const GatherSize& s : cfg.sizes) {
+            if (cfg.batch > 0) {
+                const std::vector<float> in = make_gathers(s, cfg.batch);
+                std::vector<float> out(in.size());
+                for (size_t t : threads) {
+                    identical = run_batch(s, t, cfg, in, out, results) && identical;
+                }
+                continue;
+            }
             const std::vector<float> in = make_gather(s);
             std::vector<float> out(in.size());
             for (size_t t : threads) {
@@ -464,7 +558,7 @@ int main(int argc, char** argv) {
             write_csv(cfg.csv_out, results, cfg);
             std::cout << "csv: " << cfg.csv_out << "\n";
         }
-        return 0;
+        return identical ? 0 : 1;
     } catch (const std::exception& e) {
         std::cerr << "fk_gather_bench: " << e.what() << "\n";
         return 1;

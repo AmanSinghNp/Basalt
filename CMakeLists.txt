@@ -71,6 +71,7 @@ add_library(basalt_core
     src/internal/numa_topology.cpp
     src/internal/thread_pool.cpp
     src/fk/fk_pipeline.cpp
+    src/fk/fk_batch.cpp
     src/io/segy_file.cpp
 )
 target_include_directories(basalt_core
@@ -159,6 +160,7 @@ add_executable(basalt_tests
     tests/integration/benchmark_contract_test.cpp
     tests/integration/pipeline_test.cpp
     tests/integrity/fk_pipeline_test.cpp
+    tests/integrity/fk_batch_test.cpp
     tests/integrity/segy_file_test.cpp
     tests/integration/cli_test.cpp
 )

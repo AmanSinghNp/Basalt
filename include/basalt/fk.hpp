@@ -28,11 +28,14 @@ struct FKMuteParams {
     size_t edge_taper_samples = 0;  // Cosine taper on the first/last N samples of each trace
     bool preserve_dc = true;        // Keep the (f = 0, k = 0) bin in both modes. If false, that
                                     // bin is evaluated at v = 0, since -f/k is undefined there
-    size_t threads = 1;             // Threads for the FFT and the copy, weight and table passes;
-                                    // 0 = hardware concurrency. Each calling thread keeps its work
-                                    // buffers and weight tables until it exits (about 101 MB for a
-                                    // 2048 x 2048 gather, plus up to 38 MB when the mixed columns
-                                    // form several runs)
+    size_t threads = 1;             // fk_filter_gather: threads for the FFT and the copy, weight
+                                    // and table passes; 0 = hardware concurrency.
+                                    // fk_filter_gathers:
+                                    // threads that filter gathers in parallel. Each calling thread
+                                    // keeps its work buffers and weight tables until it exits
+                                    // (about 101 MB for a 2048 x 2048 gather, plus up to 38 MB when
+                                    // the mixed columns form several runs). Batch worker threads
+                                    // release theirs when idle (see fk_filter_gathers)
 };
 
 /// Filters a trace-major gather (`data[t * nsamples + s]`) in f-k space.
@@ -52,6 +55,30 @@ void fk_filter_gather(const float* in, float* out,
 std::vector<float> fk_filter_gather(const std::vector<float>& in,
                                     size_t ntraces, size_t nsamples,
                                     const FKMuteParams& params);
+
+/// Filters `ngathers` consecutive gathers of identical shape. Gather g is the block
+/// `in + g * ntraces * nsamples` (each block laid out as in fk_filter_gather), and it is written
+/// to the same offset in `out`.
+///
+/// With ngathers >= 2, the result is bit-identical to calling fk_filter_gather with threads = 1
+/// on each gather, for any params.threads. Gathers run in parallel on up to params.threads
+/// threads (0 = hardware concurrency), and the calling thread is one of them. Each gather is
+/// filtered on one thread. The weight table and column classes are built once per call and only
+/// read afterwards. With ngathers == 1 the call is exactly fk_filter_gather(in, out, ntraces,
+/// nsamples, params), so params.threads also parallelises that one gather.
+///
+/// ngathers == 0 is a no-op. The parameters, dimensions, pointers and padded geometry are still
+/// validated, so the same invalid arguments throw whatever the gather count.
+///
+/// Throws std::invalid_argument on everything fk_filter_gather rejects, and also when
+/// ngathers * ntraces * nsamples overflows size_t. Any NaN or infinite sample in any gather
+/// throws ("fk: input contains NaN or infinite samples"). The whole input is scanned, in
+/// parallel, before any gather is filtered, so no output is written and an aliased `in` is
+/// unchanged. Calls may run concurrently from different threads.
+///
+/// `in` and `out` must either be the same pointer (in-place filtering) or not overlap.
+void fk_filter_gathers(const float* in, float* out, size_t ngathers,
+                       size_t ntraces, size_t nsamples, const FKMuteParams& params);
 
 /// Mute weight of the f-k bin with frequency `f_hz` (Hz) and wavenumber `k_cpm`
 /// (cycles per metre). Pure function of its arguments. Throws std::invalid_argument

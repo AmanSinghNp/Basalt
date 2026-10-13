@@ -66,8 +66,13 @@ void print_help(std::ostream& os) {
        << "  --edge-taper N   cosine taper over the first and last N traces of each block (4).\n"
        << "                   In a block shorter than 2N traces the two tapers overlap and\n"
        << "                   their weights multiply; a warning is printed\n"
-       << "  --threads N      FFT threads, 0 = all cores (1)\n"
-       << "  --gather-size N  filter consecutive blocks of N traces (whole file)\n"
+       << "  --threads N      worker threads, 0 = all cores (1): used to read and write the\n"
+       << "                   file and for the FFTs of a single gather. When --gather-size\n"
+       << "                   gives two or more gathers, they run in parallel, each on one\n"
+       << "                   thread, and the output is identical for every N\n"
+       << "  --gather-size N  filter consecutive blocks of N traces (whole file). The blocks\n"
+       << "                   run in parallel as one batch; a short last block is filtered after\n"
+       << "                   them\n"
        << "  --format F       output sample format, ibm or ieee (input format if\n"
        << "                   IBM32 or IEEE32, otherwise ieee)\n"
        << "\nother options:\n"
@@ -362,7 +367,7 @@ int run_filter(const std::vector<std::string>& args) {
         print_diagnostics();
     }
 
-    basalt::io::SegyData data = basalt::io::read_segy(in_path);
+    basalt::io::SegyData data = basalt::io::read_segy(in_path, params.threads);
     if (data.ntraces == 0) {
         // The library rejects empty gathers; refuse before writing so no empty output is left.
         throw std::runtime_error("input has no traces to filter: " + in_path);
@@ -393,16 +398,29 @@ int run_filter(const std::vector<std::string>& args) {
         std::cerr << "basalt: warning: --edge-taper " << edge_taper << " overlaps within the last "
                   << tail << "-trace block (the start and end tapers multiply)\n";
     }
+    // The full blocks are one batch call, which runs them in parallel, and the short last block is
+    // filtered on its own afterwards. With two or more gathers each gather is filtered on one
+    // thread, so the output does not depend on --threads. A single gather is filtered with
+    // --threads threads, since there is nothing to run it alongside.
+    const size_t nfull = ntraces / block;
+    const bool several_gathers = nfull + (tail != 0 ? 1 : 0) >= 2;
+    basalt::FKMuteParams single = params;
+    single.threads = several_gathers ? 1 : params.threads;
+    float* samples = data.samples.data();
     const auto started = std::chrono::steady_clock::now();
-    for (size_t first = 0; first < ntraces; first += block) {
-        const size_t count = std::min(block, ntraces - first);
-        float* gather = data.samples.data() + first * nsamples;
-        basalt::fk_filter_gather(gather, gather, count, nsamples, params);
+    if (nfull >= 2) {
+        basalt::fk_filter_gathers(samples, samples, nfull, block, nsamples, params);
+    } else if (nfull == 1) {
+        basalt::fk_filter_gather(samples, samples, block, nsamples, single);
+    }
+    if (tail != 0) {
+        float* last = samples + nfull * block * nsamples;
+        basalt::fk_filter_gather(last, last, tail, nsamples, single);
     }
     const auto finished = std::chrono::steady_clock::now();
     const double elapsed_ms = std::chrono::duration<double, std::milli>(finished - started).count();
 
-    basalt::io::write_segy(out_path, data, out_format);
+    basalt::io::write_segy(out_path, data, out_format, params.threads);
 
     std::cout << std::fixed << std::setprecision(3) << "filtered " << ntraces << " traces, "
               << nsamples << " samples in " << elapsed_ms << " ms -> " << out_path << " ("

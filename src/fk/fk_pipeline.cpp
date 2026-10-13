@@ -10,8 +10,11 @@
 //      call pair however many runs they form (see transform_mixed_columns).
 //   3. Time-axis c2r on the ntraces rows that are cropped into the output.
 // Column classes are derived from the cached weight table, so they share its key and LRU.
+// The batch path (fk_batch.cpp) builds one weight table per call and passes it to
+// fk_internal::filter_gather_impl, which then reads it without touching the cache.
 
 #include "basalt/fk.hpp"
+#include "fk_internal.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -270,49 +273,22 @@ struct WeightCacheEntry {
     bool valid = false;
     uint64_t last_use = 0;          // value of the per-thread use counter at the last hit or build
     WeightKey key{};
-    std::vector<float> table;       // ntr_pad x nfreq, row i holds the bins of wavenumber index i
-    std::vector<uint8_t> col_class; // nfreq, kColTransform / kColOnes / kColZeros
+    fk_internal::WeightTable table; // weights (ntr_pad x nfreq) and column classes (nfreq)
 };
 
-// Returns the cache entry (weight table and column classes) for `params`, building it on a miss.
-// Entries are cached per calling thread, at most kWeightCacheEntries of them. A hit counts as a
-// use, and on a miss when the cache is full the least recently used entry is overwritten. The
-// reference stays valid until the calling thread next calls this function.
-const WeightCacheEntry& weight_table(const FKMuteParams& params, size_t ntr_pad, size_t ns_pad,
-                                     double df, double dk, size_t nthreads) {
-    thread_local std::vector<WeightCacheEntry> cache;
-    thread_local uint64_t use_counter = 0;
-
-    ++use_counter;
-    const WeightKey key = make_weight_key(params, ntr_pad, ns_pad);
-    for (WeightCacheEntry& entry : cache) {
-        if (entry.valid && same_key(entry.key, key)) {
-            entry.last_use = use_counter;
-            return entry;
-        }
-    }
-
-    size_t slot = 0;
-    if (cache.size() < kWeightCacheEntries) {
-        cache.reserve(kWeightCacheEntries);
-        cache.emplace_back();
-        slot = cache.size() - 1;
-    } else {
-        for (size_t i = 1; i < cache.size(); ++i) {
-            if (cache[i].last_use < cache[slot].last_use) {
-                slot = i;
-            }
-        }
-    }
-    WeightCacheEntry& entry = cache[slot];
-    entry.valid = false;
-    entry.last_use = use_counter;
+// Builds the weight table and column classes for one geometry into `t`, on `nthreads` threads.
+void build_table(const FKMuteParams& params, const fk_internal::Geometry& geo, size_t nthreads,
+                 fk_internal::WeightTable& t) {
+    const size_t ntr_pad = geo.ntr_pad;
+    const size_t ns_pad = geo.ns_pad;
+    const double df = geo.df;
+    const double dk = geo.dk;
 
     // f_j = j * df for j = 0 .. nfreq - 1; k_i = fftfreq(ntr_pad, dx)[i] (negative above the
     // middle, numpy convention). Both are evaluated exactly as the per-bin loop always did.
     const size_t nfreq = ns_pad / 2 + 1;
-    entry.table.resize(ntr_pad * nfreq);
-    float* table = entry.table.data();
+    t.weights.resize(ntr_pad * nfreq);
+    float* table = t.weights.data();
     const BandCoeffs band = make_band(params);
     const size_t k_pos_max = (ntr_pad - 1) / 2;
     for_each_row_range(ntr_pad, nthreads, ntr_pad * nfreq, [&](size_t i0, size_t i1) {
@@ -340,11 +316,48 @@ const WeightCacheEntry& weight_table(const FKMuteParams& params, size_t ntr_pad,
             all_zero[j] = static_cast<uint8_t>(all_zero[j] & static_cast<uint8_t>(row[j] == 0.0f));
         }
     }
-    entry.col_class.resize(nfreq);
+    t.col_class.resize(nfreq);
     for (size_t j = 0; j < nfreq; ++j) {
-        entry.col_class[j] = all_one[j] != 0 ? kColOnes
+        t.col_class[j] = all_one[j] != 0 ? kColOnes
             : (all_zero[j] != 0 ? kColZeros : kColTransform);
     }
+}
+
+// Returns the cache entry (weight table and column classes) for `params`, building it on a miss.
+// Entries are cached per calling thread, at most kWeightCacheEntries of them. A hit counts as a
+// use, and on a miss when the cache is full the least recently used entry is overwritten. The
+// reference stays valid until the calling thread next calls this function.
+const WeightCacheEntry& weight_table(const FKMuteParams& params,
+                                     const fk_internal::Geometry& geo, size_t nthreads) {
+    thread_local std::vector<WeightCacheEntry> cache;
+    thread_local uint64_t use_counter = 0;
+
+    ++use_counter;
+    const WeightKey key = make_weight_key(params, geo.ntr_pad, geo.ns_pad);
+    for (WeightCacheEntry& entry : cache) {
+        if (entry.valid && same_key(entry.key, key)) {
+            entry.last_use = use_counter;
+            return entry;
+        }
+    }
+
+    size_t slot = 0;
+    if (cache.size() < kWeightCacheEntries) {
+        cache.reserve(kWeightCacheEntries);
+        cache.emplace_back();
+        slot = cache.size() - 1;
+    } else {
+        for (size_t i = 1; i < cache.size(); ++i) {
+            if (cache[i].last_use < cache[slot].last_use) {
+                slot = i;
+            }
+        }
+    }
+    WeightCacheEntry& entry = cache[slot];
+    entry.valid = false;
+    entry.last_use = use_counter;
+
+    build_table(params, geo, nthreads, entry.table);
 
     entry.key = key;
     entry.valid = true;
@@ -495,37 +508,52 @@ double fk_mute_weight(double f_hz, double k_cpm, const FKMuteParams& params) {
     return bin_weight(f_hz, k_cpm, make_band(params));
 }
 
-void fk_filter_gather(const float* in, float* out,
-                      size_t ntraces, size_t nsamples,
-                      const FKMuteParams& params) {
+namespace fk_internal {
+
+Geometry check_geometry(const FKMuteParams& params, size_t ntraces, size_t nsamples) {
     validate_params(params);
     validate_dims(ntraces, nsamples);
-    if (in == nullptr || out == nullptr) {
-        throw std::invalid_argument("fk: null input or output pointer");
-    }
-
-    const size_t ntr_pad = fk_padded_traces(ntraces, params);
-    const size_t ns_pad = fk_padded_samples(nsamples, params);
-    const size_t nfreq = ns_pad / 2 + 1;
+    Geometry geo{};
+    geo.ntr_pad = fk_padded_traces(ntraces, params);
+    geo.ns_pad = fk_padded_samples(nsamples, params);
+    geo.nfreq = geo.ns_pad / 2 + 1;
     // The padded grid holds ntr_pad * ns_pad elements, and the spectrum ntr_pad * nfreq with
     // nfreq <= ns_pad. Reject a product that would wrap size_t before anything indexes or
     // allocates with it. ns_pad >= 1, so the division is safe.
-    if (ntr_pad > std::numeric_limits<size_t>::max() / ns_pad) {
+    if (geo.ntr_pad > std::numeric_limits<size_t>::max() / geo.ns_pad) {
         throw std::invalid_argument("fk: padded grid is too large");
     }
     // Frequency and wavenumber steps. A tiny dt or dx makes 1 / (n * step) overflow to inf, and
     // the zero bin would then be 0 * inf = NaN. A huge dt or dx makes n * step overflow to inf, so
     // the step becomes 0 and every bin collapses onto f = 0 or k = 0, which silently gives a wrong
     // result. Reject both before any buffer is allocated.
-    const double df = 1.0 / (static_cast<double>(ns_pad) * params.dt);
-    const double dk = 1.0 / (static_cast<double>(ntr_pad) * params.dx);
-    if (!(std::isfinite(df) && df > 0.0 && std::isfinite(dk) && dk > 0.0)) {
+    geo.df = 1.0 / (static_cast<double>(geo.ns_pad) * params.dt);
+    geo.dk = 1.0 / (static_cast<double>(geo.ntr_pad) * params.dx);
+    if (!(std::isfinite(geo.df) && geo.df > 0.0 && std::isfinite(geo.dk) && geo.dk > 0.0)) {
         throw std::invalid_argument(
             "fk: dt or dx is out of range; the frequency or wavenumber step is not a positive "
             "finite value");
     }
-    const size_t nthreads = resolve_threads(params.threads);
+    return geo;
+}
 
+void build_weight_table(const FKMuteParams& params, const Geometry& geo, size_t threads,
+                        WeightTable& table) {
+    build_table(params, geo, threads, table);
+}
+
+void filter_gather_impl(const float* in, float* out, size_t ntraces, size_t nsamples,
+                        const FKMuteParams& params, size_t nthreads, const WeightTable* shared) {
+    validate_params(params);
+    validate_dims(ntraces, nsamples);
+    if (in == nullptr || out == nullptr) {
+        throw std::invalid_argument("fk: null input or output pointer");
+    }
+
+    const Geometry geo = check_geometry(params, ntraces, nsamples);
+    const size_t ntr_pad = geo.ntr_pad;
+    const size_t ns_pad = geo.ns_pad;
+    const size_t nfreq = geo.nfreq;
     // Work buffers persist per calling thread, so repeated calls do not allocate. Retention:
     // these buffers and the weight tables (see weight_table) are kept until the calling thread
     // exits, and so is the packed block of transform_mixed_columns. For a 2048 x 2048 gather
@@ -585,16 +613,21 @@ void fk_filter_gather(const float* in, float* out,
         });
     }
 
-    // Step 5: weights and column classes from the per-thread cache.
-    const WeightCacheEntry& entry = weight_table(params, ntr_pad, ns_pad, df, dk, nthreads);
-    const float* weights = entry.table.data();
+    // Step 5: weights and column classes, either the caller's shared table or the per-thread
+    // cache. The shared table is only read, so concurrent calls may use it.
+    const WeightCacheEntry* cached = nullptr;
+    if (shared == nullptr) {
+        cached = &weight_table(params, geo, nthreads);
+    }
+    const WeightTable& table = shared != nullptr ? *shared : cached->table;
+    const float* weights = table.weights.data();
 
     // Runs of consecutive columns that share a class.
     std::vector<ColRun> runs;
     for (size_t j = 0; j < nfreq;) {
-        const uint8_t cls = entry.col_class[j];
+        const uint8_t cls = table.col_class[j];
         size_t e = j + 1;
-        while (e < nfreq && entry.col_class[e] == cls) {
+        while (e < nfreq && table.col_class[e] == cls) {
             ++e;
         }
         runs.push_back(ColRun{j, e, cls});
@@ -643,6 +676,15 @@ void fk_filter_gather(const float* in, float* out,
             std::copy(src, src + nsamples, out + t * nsamples);
         }
     });
+}
+
+} // namespace fk_internal
+
+void fk_filter_gather(const float* in, float* out,
+                      size_t ntraces, size_t nsamples,
+                      const FKMuteParams& params) {
+    fk_internal::filter_gather_impl(in, out, ntraces, nsamples, params,
+                                    resolve_threads(params.threads), nullptr);
 }
 
 std::vector<float> fk_filter_gather(const std::vector<float>& in,

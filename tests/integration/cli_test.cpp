@@ -857,3 +857,56 @@ TEST(CliFilter, SingleTraceUsesDefaultTaperAndWarnsOfOverlap) {
     ASSERT_EQ(result.size(), expected.size());
     EXPECT_LT(relative_rms(result, expected), 1e-6);
 }
+
+TEST(CliFilter, OutputDoesNotDependOnThreadsWithSeveralGathers) {
+    // With --gather-size the file is split into two or more gathers (here 16 traces is two full
+    // blocks, 10 is one full block and a tail, and 41 is five full blocks and a tail). Each gather
+    // is then filtered on one thread, so the output file is byte-identical for every --threads.
+    constexpr size_t kSamples = 180;
+    constexpr size_t kBlock = 8;
+    const std::vector<std::string> flags = {"--vmin", "500", "--vmax", "2000", "--dx", "5",
+                                            "--gather-size", std::to_string(kBlock)};
+    for (const size_t ntraces : {size_t{16}, size_t{10}, size_t{41}}) {
+        const std::string tag = std::to_string(ntraces);
+        const std::string in = test_path("in" + tag + ".segy");
+        write_fixture(in, random_samples(ntraces * kSamples, 29 + static_cast<unsigned>(ntraces)),
+                      ntraces, kSamples, 0.004, SampleFormat::IEEE32);
+
+        const std::string reference_path = test_path("ref" + tag + ".segy");
+        const std::string reference_bytes = [&] {
+            std::vector<std::string> args = {"filter", in, reference_path, "--threads", "1"};
+            args.insert(args.end(), flags.begin(), flags.end());
+            const CliResult r = run_cli(args);
+            EXPECT_EQ(r.exit_code, 0) << r.err;
+            return read_text(reference_path);
+        }();
+
+        for (const std::string threads : {"2", "4", "0"}) {
+            const std::string out = test_path("out" + tag + "_" + threads + ".segy");
+            std::vector<std::string> args = {"filter", in, out, "--threads", threads};
+            args.insert(args.end(), flags.begin(), flags.end());
+            const CliResult r = run_cli(args);
+            ASSERT_EQ(r.exit_code, 0) << r.err;
+            EXPECT_TRUE(read_text(out) == reference_bytes)
+                << ntraces << " traces, --threads " << threads << " differs from --threads 1";
+        }
+
+        // The blocks are the library's per-gather results, bit for bit.
+        const SegyData input = basalt::io::read_segy(in);
+        basalt::FKMuteParams params;
+        params.dt = input.dt;
+        params.dx = 5.0;
+        params.v_min = 500.0;
+        params.v_max = 2000.0;
+        const std::vector<float> expected =
+            library_per_block(input.samples, ntraces, kSamples, kBlock, params);
+        EXPECT_TRUE(basalt::io::read_segy(reference_path).samples == expected) << ntraces;
+    }
+}
+
+TEST(CliUsage, HelpDocumentsThreadIndependence) {
+    const CliResult r = run_cli({"--help"});
+    EXPECT_EQ(r.exit_code, 0);
+    EXPECT_TRUE(contains(r.out, "identical for every N")) << r.out;
+    EXPECT_TRUE(contains(r.out, "--gather-size N")) << r.out;
+}
