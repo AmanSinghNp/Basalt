@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+
+- `basalt.read_trace_headers(path)` returns the per-trace header fields as a dict of 1D NumPy arrays, one entry per trace, with the dtypes listed in `docs/design/FK_PIPELINE.md`.
+  The SEG-Y scalar rule is applied to coordinates and elevations. Only the file and trace headers are read,
+  so the samples are never decoded.
+- `basalt.read_segy` result gains a `headers` key holding the same dict. Existing keys are unchanged.
+- C++ `basalt/io/trace_headers.hpp` with `TraceHeaders`, `decode_trace_headers` and `read_trace_headers`, and
+  `read_segy_headers` in `basalt/io/segy_file.hpp`, which reads the same layout as `read_segy` without samples
+- Tests for the trace header decoding in C++ and Python: every key, positive, negative and zero scalars, and
+  `coord_units` values
+
 ## [0.2.0] - 2026-10-11
 
 ### Added

@@ -133,6 +133,10 @@ float32 array of the same shape. Other dtypes and non-contiguous arrays are conv
 signatures and argument defaults are in `python/src/basalt_py.cpp`, and the contract is in
 [docs/design/FK_PIPELINE.md](docs/design/FK_PIPELINE.md), section 7.
 
+`read_segy` also returns the per-trace header fields under `headers`. `read_trace_headers(path)`
+returns the same dict on its own: one NumPy array per field, one entry per trace, with the
+scalars applied to coordinates and elevations. It reads only the headers, not the samples.
+
 ### C++
 
 Install the library, headers and CMake package:

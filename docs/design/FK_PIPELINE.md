@@ -158,6 +158,9 @@ struct SegyData {
 // Throws std::runtime_error with a clear message on malformed input.
 SegyData read_segy(const std::string& path);
 
+// Same checks as read_segy, but the sample data is neither read nor decoded: `samples` is empty.
+SegyData read_segy_headers(const std::string& path);
+
 // Writes a SEG-Y file. Headers are written back from the raw arrays, except that the
 // binary header format code is updated to `out_format` (samples are encoded in it) and the
 // extended textual header count (bytes 3505-3506) is set to 0, because extended textual
@@ -171,6 +174,11 @@ SegyData make_segy(const std::vector<float>& samples, size_t ntraces, size_t nsa
                    double dt, SampleFormat format = SampleFormat::IEEE32);
 }
 ```
+
+Trace header fields are decoded in `basalt/io/trace_headers.hpp`:
+`decode_trace_headers(raw_trace_headers)` and `read_trace_headers(path)` return a `TraceHeaders`
+with one vector per field. The SEG-Y scalar rule applies to coordinates and elevations: a
+positive scalar multiplies, a negative one divides by its absolute value, and zero means 1.
 
 Use the existing `basalt/utils/ibm_float.hpp`, `basalt/utils/ebcdic.hpp` and
 `basalt/segy_format.hpp` helpers. Do not use memory mapping in the reader (plain
@@ -205,9 +213,33 @@ out = basalt.fk_filter(data, dt, dx, v_min=-1500, v_max=1500, taper=0.1,
                        mode="reject", pad_factor=1.5, edge_taper_traces=4,
                        edge_taper_samples=0, preserve_dc=True, threads=1)
 w = basalt.fk_mute_weight(f_hz, k_cpm, v_min=..., v_max=..., taper=..., mode=...)
-d = basalt.read_segy(path)   # dict: samples (ntraces x nsamples float32 ndarray), dt, format, text_header
+d = basalt.read_segy(path)   # dict: samples (ntraces x nsamples float32 ndarray), dt, format,
+                             # text_header, ntraces, nsamples, headers (dict as below)
+h = basalt.read_trace_headers(path)   # dict of 1D arrays, one entry per trace; no samples decoded
 basalt.write_segy(path, samples, dt, format="ieee")
 ```
 
 `data` is a 2D float32 array of shape `(ntraces, nsamples)` (C-contiguous; other dtypes
 are converted). Returns a new float32 array.
+
+`read_trace_headers(path)` and `read_segy(path)["headers"]` return the same dict. Every value is
+a 1D NumPy array of length `ntraces`, with the keys below:
+
+| Key | dtype | SEG-Y bytes | Notes |
+| :-- | :-- | :-- | :-- |
+| `trace_sequence` | int32 | 5-8 | |
+| `field_record` | int32 | 9-12 | |
+| `channel` | int32 | 13-16 | trace number within field record |
+| `offset` | int32 | 37-40 | |
+| `scalar_elev` | int16 | 69-70 | raw |
+| `scalar_coord` | int16 | 71-72 | raw |
+| `coord_units` | int16 | 89-90 | 1 length, 2 arcseconds, 3 decimal degrees, 4 DMS; raw |
+| `source_x`, `source_y`, `group_x`, `group_y` | float64 | 73-88 | `scalar_coord` applied |
+| `receiver_elevation` | float64 | 41-44 | `scalar_elev` applied |
+| `delay_ms` | int16 | 109-110 | |
+| `year`, `day_of_year`, `hour`, `minute`, `second` | int16 | 157-166 | |
+
+Scalars follow the SEG-Y rule: positive multiplies, negative divides by its absolute value,
+zero means 1. `read_trace_headers` reads the file and trace headers only, so a file whose samples
+`read_segy` would reject (an IBM word beyond the IEEE range, for example) still yields its headers.
+Its layout checks are the same as `read_segy`'s.
