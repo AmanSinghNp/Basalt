@@ -10,8 +10,9 @@ str, count or array arguments raise ValueError. Non-numeric float arguments and 
 raise TypeError.
 """
 
-from ._basalt import fk_filter, fk_mute_weight, read_segy, write_segy
+from ._basalt import fk_filter, fk_mute_weight, read_segy, read_trace_headers, write_segy
 
 __version__ = "0.2.0"
 
-__all__ = ["fk_filter", "fk_mute_weight", "read_segy", "write_segy", "__version__"]
+__all__ = ["fk_filter", "fk_mute_weight", "read_segy", "read_trace_headers", "write_segy",
+           "__version__"]

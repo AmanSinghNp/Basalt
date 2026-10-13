@@ -19,6 +19,7 @@
 
 #include "basalt/fk.hpp"
 #include "basalt/io/segy_file.hpp"
+#include "basalt/io/trace_headers.hpp"
 
 namespace py = pybind11;
 
@@ -201,12 +202,48 @@ double mute_weight(double f_hz, double k_cpm, double v_min, double v_max, double
     return fk_mute_weight(f_hz, k_cpm, params);
 }
 
+// Copies a vector into a 1D array that owns its memory.
+template <typename T>
+py::array_t<T> to_array(const std::vector<T>& values) {
+    py::array_t<T> out(static_cast<py::ssize_t>(values.size()));
+    if (!values.empty()) {
+        std::memcpy(out.mutable_data(), values.data(), values.size() * sizeof(T));
+    }
+    return out;
+}
+
+// Per-trace header dict: one 1D array per field, one entry per trace.
+py::dict trace_header_dict(const io::TraceHeaders& h) {
+    py::dict out;
+    out["trace_sequence"] = to_array(h.trace_sequence);
+    out["field_record"] = to_array(h.field_record);
+    out["channel"] = to_array(h.channel);
+    out["offset"] = to_array(h.offset);
+    out["scalar_elev"] = to_array(h.scalar_elev);
+    out["scalar_coord"] = to_array(h.scalar_coord);
+    out["coord_units"] = to_array(h.coord_units);
+    out["source_x"] = to_array(h.source_x);
+    out["source_y"] = to_array(h.source_y);
+    out["group_x"] = to_array(h.group_x);
+    out["group_y"] = to_array(h.group_y);
+    out["receiver_elevation"] = to_array(h.receiver_elevation);
+    out["delay_ms"] = to_array(h.delay_ms);
+    out["year"] = to_array(h.year);
+    out["day_of_year"] = to_array(h.day_of_year);
+    out["hour"] = to_array(h.hour);
+    out["minute"] = to_array(h.minute);
+    out["second"] = to_array(h.second);
+    return out;
+}
+
 py::dict read_file(const py::object& path) {
     const std::string file = to_path(path);
     io::SegyData data;
+    io::TraceHeaders headers;
     {
         py::gil_scoped_release release;
         data = io::read_segy(file);
+        headers = io::decode_trace_headers(data.raw_trace_headers);
     }
     // Copy into an array that owns its memory, so the result does not depend on the C++ data.
     py::array_t<float> samples(std::vector<py::ssize_t>{
@@ -222,7 +259,19 @@ py::dict read_file(const py::object& path) {
     result["text_header"] = data.text_header;
     result["ntraces"] = data.ntraces;
     result["nsamples"] = data.nsamples;
+    result["headers"] = trace_header_dict(headers);
     return result;
+}
+
+py::dict read_headers_file(const py::object& path) {
+    const std::string file = to_path(path);
+    io::TraceHeaders headers;
+    {
+        // Only the headers are read: the sample bytes are skipped, never decoded.
+        py::gil_scoped_release release;
+        headers = io::read_trace_headers(file);
+    }
+    return trace_header_dict(headers);
 }
 
 void write_file(const py::object& path, const py::object& samples, double dt,
@@ -264,7 +313,13 @@ PYBIND11_MODULE(_basalt, m) {
 
     m.def("read_segy", &basalt::read_file,
           "Read a SEG-Y file (str or os.PathLike). Returns a dict with samples, dt, format, "
-          "text_header, ntraces, nsamples.",
+          "text_header, ntraces, nsamples and headers (the read_trace_headers dict).",
+          py::arg("path"));
+
+    m.def("read_trace_headers", &basalt::read_headers_file,
+          "Read only the trace headers of a SEG-Y file (str or os.PathLike). Sample data is not "
+          "read or decoded. Returns a dict of 1D NumPy arrays, one entry per trace, with the keys "
+          "and dtypes listed in docs/design/FK_PIPELINE.md, section 7.",
           py::arg("path"));
 
     m.def("write_segy", &basalt::write_file,

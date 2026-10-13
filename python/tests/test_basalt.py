@@ -128,6 +128,52 @@ def _dipping_event(nt, ns, dt, dx, velocity, t_center, wavelet_hz=25.0):
 _RAW_SEGY_DTYPES = {3: ">i2", 2: ">i4", 8: ">i1"}   # SEG-Y format codes for int16, int32, int8
 
 
+# Trace header fields: dtype of the returned array, and the 1-based first SEG-Y byte and struct code ("i" int32, "h" int16) used to write the field.
+_HEADER_DTYPES = {
+    "trace_sequence": np.int32, "field_record": np.int32, "channel": np.int32, "offset": np.int32,
+    "scalar_elev": np.int16, "scalar_coord": np.int16, "coord_units": np.int16,
+    "source_x": np.float64, "source_y": np.float64, "group_x": np.float64, "group_y": np.float64,
+    "receiver_elevation": np.float64, "delay_ms": np.int16,
+    "year": np.int16, "day_of_year": np.int16, "hour": np.int16, "minute": np.int16,
+    "second": np.int16,
+}
+_HEADER_BYTES = {
+    "trace_sequence": (5, "i"), "field_record": (9, "i"), "channel": (13, "i"),
+    "offset": (37, "i"), "receiver_elevation": (41, "i"),
+    "scalar_elev": (69, "h"), "scalar_coord": (71, "h"),
+    "source_x": (73, "i"), "source_y": (77, "i"), "group_x": (81, "i"), "group_y": (85, "i"),
+    "coord_units": (89, "h"), "delay_ms": (109, "h"),
+    "year": (157, "h"), "day_of_year": (159, "h"), "hour": (161, "h"), "minute": (163, "h"),
+    "second": (165, "h"),
+}
+_HEADER_SCALARS = ("scalar_elev", "scalar_coord")
+
+
+def _write_segy_headers(path, traces, format_code=5, nsamples=4, sample_bytes=None):
+    """Writes a big-endian SEG-Y file whose trace headers hold `traces`.
+
+    `traces` is a list of dicts from field name to value; fields that are not named are zero.
+    Each trace is followed by `sample_bytes` (zeros in IEEE format by default).
+    """
+    binary = bytearray(400)
+    struct.pack_into(">H", binary, 16, 4000)         # bytes 3217-3218: 4000 us
+    struct.pack_into(">H", binary, 20, nsamples)     # bytes 3221-3222
+    struct.pack_into(">H", binary, 24, format_code)  # bytes 3225-3226
+    if sample_bytes is None:
+        sample_bytes = bytes(4 * nsamples)
+    body = bytearray()
+    for fields in traces:
+        header = bytearray(240)
+        for name, value in fields.items():
+            first, code = _HEADER_BYTES[name]
+            struct.pack_into(">" + code, header, first - 1, value)
+        struct.pack_into(">H", header, 114, nsamples)  # bytes 115-116: trace sample count
+        body += header
+        body += sample_bytes
+    with open(path, "wb") as fh:
+        fh.write(b" " * 3200 + bytes(binary) + bytes(body))
+
+
 def _write_raw_segy(path, values, format_code, dt_us):
     """Writes a big-endian SEG-Y file with integer samples (the writer only does IBM and IEEE).
 
@@ -154,7 +200,7 @@ def _write_raw_segy(path, values, format_code, dt_us):
 
 def test_package_exports():
     assert basalt.__version__ == "0.2.0"
-    for name in ("fk_filter", "fk_mute_weight", "read_segy", "write_segy"):
+    for name in ("fk_filter", "fk_mute_weight", "read_segy", "read_trace_headers", "write_segy"):
         assert callable(getattr(basalt, name)), name
 
 
@@ -589,6 +635,123 @@ def test_step_overflow_and_output_overflow_raise_value_error():
     rng = np.random.default_rng(15)
     big = (rng.standard_normal((37, 53)) * 1e36).astype(np.float32)
     _raises(ValueError, basalt.fk_filter, big, 0.004, 25.0, v_min=-800.0, v_max=1200.0)
+
+
+def test_read_segy_result_has_headers_and_read_trace_headers_has_all_keys():
+    rng = np.random.default_rng(21)
+    samples = rng.standard_normal((3, 4)).astype(np.float32)
+    traces = [{"trace_sequence": 1}, {"trace_sequence": 2}, {"trace_sequence": 3}]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "keys.sgy")
+        _write_segy_headers(path, traces)
+        got = basalt.read_segy(path)
+        assert set(got) == {"samples", "dt", "format", "text_header", "ntraces", "nsamples",
+                            "headers"}
+        headers = basalt.read_trace_headers(path)
+        assert set(headers) == set(_HEADER_DTYPES), sorted(set(headers) ^ set(_HEADER_DTYPES))
+        assert set(got["headers"]) == set(headers)
+        for name, dtype in _HEADER_DTYPES.items():
+            assert headers[name].dtype == dtype, (name, headers[name].dtype)
+            assert headers[name].shape == (3,), name
+            assert got["headers"][name].dtype == dtype, name
+            assert np.array_equal(got["headers"][name], headers[name]), name
+        assert headers["trace_sequence"].tolist() == [1, 2, 3]
+        assert got["samples"].shape == (3, 4)
+
+        path_samples = os.path.join(tmp, "samples.sgy")
+        basalt.write_segy(path_samples, samples, 0.004)
+        assert basalt.read_segy(path_samples)["ntraces"] == 3
+
+
+def test_extreme_values_decode_for_each_header_key():
+    # Scalars are kept at zero (meaning 1) so every field decodes to its raw value. Trace 0 holds
+    # the largest value of each field's type and trace 1 the smallest.
+    hi, lo = {}, {}
+    for name, (_, code) in _HEADER_BYTES.items():
+        if name in _HEADER_SCALARS:
+            continue
+        hi[name] = 2 ** 31 - 1 if code == "i" else 2 ** 15 - 1
+        lo[name] = -2 ** 31 if code == "i" else -2 ** 15
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "extremes.sgy")
+        _write_segy_headers(path, [hi, lo])
+        headers = basalt.read_trace_headers(path)
+        for name, dtype in _HEADER_DTYPES.items():
+            if name in _HEADER_SCALARS:
+                assert headers[name].tolist() == [0, 0], name
+                continue
+            expected = np.array([hi[name], lo[name]], dtype=dtype)
+            assert np.array_equal(headers[name], expected), (name, headers[name])
+
+
+def test_positive_negative_and_zero_scalars():
+    traces = [
+        {"scalar_coord": 10, "source_x": -12, "group_y": 7, "scalar_elev": 2,
+         "receiver_elevation": 500},
+        {"scalar_coord": -100, "group_x": 12345, "source_y": -1, "scalar_elev": -10,
+         "receiver_elevation": -15},
+        {"scalar_coord": 0, "group_x": 987654, "source_x": -5, "scalar_elev": 0,
+         "receiver_elevation": 42},
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "scalars.sgy")
+        _write_segy_headers(path, traces)
+        headers = basalt.read_trace_headers(path)
+    # Positive multiplies, negative divides by its absolute value, zero means 1. The scalars
+    # themselves come back raw.
+    assert headers["scalar_coord"].tolist() == [10, -100, 0]
+    assert headers["scalar_elev"].tolist() == [2, -10, 0]
+    assert np.array_equal(headers["source_x"], [-120.0, 0.0, -5.0])
+    assert np.array_equal(headers["group_x"], [0.0, 123.45, 987654.0])
+    assert np.array_equal(headers["group_y"], [70.0, 0.0, 0.0])
+    assert np.array_equal(headers["source_y"], [0.0, -0.01, 0.0])
+    assert np.array_equal(headers["receiver_elevation"], [1000.0, -1.5, 42.0])
+
+
+def test_coord_units_values_are_reported_as_stored():
+    units = [1, 2, 3, 4, 0, -1]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "units.sgy")
+        _write_segy_headers(path, [{"coord_units": u} for u in units])
+        headers = basalt.read_trace_headers(path)
+    assert headers["coord_units"].dtype == np.int16
+    assert headers["coord_units"].tolist() == units
+
+
+def test_read_trace_headers_does_not_decode_samples():
+    # IBM word 0x7F123456 is far beyond the IEEE range. read_segy refuses the file, but
+    # read_trace_headers reads only the headers and must succeed.
+    sample_bytes = struct.pack(">II", 0x41100000, 0x7F123456)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "ibm_headers.sgy")
+        _write_segy_headers(path, [{"trace_sequence": 77, "group_y": -600, "scalar_coord": -6}],
+                            format_code=1, nsamples=2, sample_bytes=sample_bytes)
+        _raises(RuntimeError, basalt.read_segy, path)
+        headers = basalt.read_trace_headers(path)
+    assert headers["trace_sequence"].tolist() == [77]
+    assert headers["group_y"].tolist() == [-100.0]
+
+
+def test_read_trace_headers_of_file_with_no_traces_and_bad_input():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "empty.sgy")
+        _write_segy_headers(path, [])
+        headers = basalt.read_trace_headers(path)
+        for name, dtype in _HEADER_DTYPES.items():
+            assert headers[name].dtype == dtype, name
+            assert headers[name].shape == (0,), name
+
+        one = os.path.join(tmp, "one.sgy")
+        _write_segy_headers(one, [{"trace_sequence": 5}])
+        assert basalt.read_trace_headers(pathlib.Path(one))["trace_sequence"].tolist() == [5]
+        _raises(TypeError, basalt.read_trace_headers, 42)
+        _raises(RuntimeError, basalt.read_trace_headers, os.path.join(tmp, "missing.sgy"))
+
+        with open(one, "rb") as fh:
+            data = fh.read()
+        with open(one, "wb") as fh:
+            fh.write(data[:-1])  # truncated trace: the layout is still checked
+        _raises(RuntimeError, basalt.read_trace_headers, one)
 
 
 def _run_all():
