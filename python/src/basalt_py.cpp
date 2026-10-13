@@ -177,7 +177,8 @@ bool is_native_float(const py::array& array) {
 }
 
 // Copies a 2D float32 or float64 array to row-major float32 at dst, reading it with its own
-// strides. Only raw pointers are used, so this runs with the GIL released. The array must stay alive.
+// strides. Only raw pointers are used, so this runs with the GIL released. The array must stay
+// alive.
 template <typename T>
 void copy_strided(const py::array& array, float* dst) {
     const size_t nrows = static_cast<size_t>(array.shape(0));

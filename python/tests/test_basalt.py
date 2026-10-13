@@ -9,6 +9,8 @@ import math
 import os
 import pathlib
 import struct
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -441,38 +443,24 @@ def test_gil_released_during_filter():
     # the interpreter's 5 ms switch interval between calls lets it run); if the GIL is released,
     # it stays near the idle rate (about 1.0 on a multi-core machine, about 0.5 on a single core
     # where the filter and the spinner share the CPU).
+    # Every input kind is covered: float32 C-order is used in place, float32 Fortran-order and both
+    # float64 layouts are copied to float32 in C++ with the GIL released, and that copy is the part
+    # that must not hold the GIL.
     rng = np.random.default_rng(7)
-    big = rng.standard_normal((1200, 3000)).astype(np.float32)   # roughly 0.15 s per call
-    counter = [0]
-    stop = threading.Event()
-
-    def spin():
-        while not stop.is_set():
-            counter[0] += 1
-
-    ticker = threading.Thread(target=spin)
-    ticker.start()
-    try:
-        # Idle baseline: the main thread sleeps, so the spinner has the interpreter to itself.
-        time.sleep(0.05)
-        t0, c0 = time.perf_counter(), counter[0]
-        time.sleep(0.3)
-        idle_rate = (counter[0] - c0) / (time.perf_counter() - t0)
-
-        # Back-to-back filter calls for a measurable window, timed against the same spinner.
-        t0, c0 = time.perf_counter(), counter[0]
-        while True:
-            basalt.fk_filter(big, 0.002, 10.0, v_min=-800.0, v_max=1200.0, taper=0.1)
-            if time.perf_counter() - t0 >= 0.3:
-                break
-        busy_elapsed = time.perf_counter() - t0
-        busy_rate = (counter[0] - c0) / busy_elapsed
-    finally:
-        stop.set()
-        ticker.join()
-    assert idle_rate > 0, idle_rate
-    ratio = busy_rate / idle_rate
-    assert ratio > 0.25, f"spinner ran at {ratio:.3f} of its idle rate during fk_filter"
+    base = rng.standard_normal((1200, 3000))   # roughly 0.15 s per call
+    cases = {
+        "float32 C-order": base.astype(np.float32),
+        "float32 Fortran-order": np.asfortranarray(base, dtype=np.float32),
+        "float64 C-order": base,
+        "float64 Fortran-order": np.asfortranarray(base),
+        "float64 column-strided": base[:, ::2],
+    }
+    for name, gather in cases.items():
+        ratio = _best_spinner_ratio(
+            lambda g=gather: basalt.fk_filter(g, 0.002, 10.0, v_min=-800.0, v_max=1200.0,
+                                              taper=0.1))
+        assert ratio > 0.25, (
+            f"spinner ran at {ratio:.3f} of its idle rate during fk_filter ({name})")
 
 
 def test_two_threads_filter_concurrently():
@@ -653,6 +641,61 @@ def test_c_contiguous_float32_input_is_not_copied():
     be_peak = peak_during_filter(be_gather)
     assert c_peak < 1.5 * nbytes, (c_peak, nbytes)
     assert be_peak > 1.8 * nbytes, (be_peak, nbytes)
+
+
+# Child-process probe for _peak_growth_bytes: builds one 2D float32 gather (C or Fortran order),
+# then measures the peak RSS added by a single fk_filter call. The child does nothing else first, so
+# the allocator holds no freed blocks that the call could reuse.
+_PEAK_PROBE = """
+import sys
+import numpy as np
+import basalt
+
+def vm_kb(field):
+    with open("/proc/self/status") as status:
+        for line in status:
+            if line.startswith(field + ":"):
+                return int(line.split()[1])
+    raise RuntimeError(field + " is missing from /proc/self/status")
+
+order, n = sys.argv[1], int(sys.argv[2])
+gather = np.random.default_rng(38).standard_normal((n, n), dtype=np.float32)
+if order == "F":
+    gather = np.asfortranarray(gather)
+with open("/proc/self/clear_refs", "w") as refs:
+    refs.write("5")   # reset the kernel's peak RSS (VmHWM) to the current RSS
+start = vm_kb("VmRSS")
+basalt.fk_filter(gather, 0.004, 25.0, v_min=-800.0, v_max=1200.0, threads=1)
+print((vm_kb("VmHWM") - start) * 1024)
+"""
+
+
+def _peak_growth_bytes(order, n):
+    """Peak resident memory that one fk_filter call adds, measured in a fresh process (Linux only).
+
+    tracemalloc cannot see allocations made by the binding's C++ code, so the peak RSS is used.
+    Each measurement runs in its own child process, because blocks freed earlier in the same
+    process can be reused by the call, which then adds no resident memory.
+    """
+    done = subprocess.run([sys.executable, "-c", _PEAK_PROBE, order, str(n)],
+                          capture_output=True, text=True, check=True)
+    return int(done.stdout.strip())
+
+
+def test_c_contiguous_float32_input_is_not_copied_in_c_plus_plus():
+    # A Fortran-order gather is staged into a float32 buffer in C++ before the transform, and a
+    # C-contiguous one must not be. The two calls do the same work, so the gap between their peaks
+    # is that staging copy, which is one gather in size. Skipped (reported, not run) on platforms
+    # without the /proc peak-RSS counters.
+    refs = "/proc/self/clear_refs"
+    if not (os.path.exists(refs) and os.access(refs, os.W_OK)):
+        print("skipped: no writable /proc/self/clear_refs on this platform")
+        return
+    n = 2048
+    nbytes = n * n * 4
+    c_growth = _peak_growth_bytes("C", n)
+    f_growth = _peak_growth_bytes("F", n)
+    assert f_growth - c_growth > 0.5 * nbytes, (c_growth, f_growth, nbytes)
 
 
 def test_strided_and_float64_inputs_match_contiguous_float32():
