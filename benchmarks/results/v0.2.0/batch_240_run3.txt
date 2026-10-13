@@ -1,0 +1,11 @@
+fk_gather_bench: optimized (NDEBUG), compiler 13.3.0
+hardware threads: 4
+bit-identical to per-gather fk_filter_gather (threads = 1): yes (240x1001, 64 gathers, threads 1)
+bit-identical to per-gather fk_filter_gather (threads = 1): yes (240x1001, 64 gathers, threads 4)
+impl          ntraces   nsamps  ntr_pad   ns_pad  threads  gathers   median_ms    p90_ms    min_ms   mean_ms    gathers/s
+batch-api         240     1001      360     1536        1       64     157.531   161.723   140.563   154.594       406.27
+loop-fk_filter_gather      240     1001      360     1536        1       64     158.525   172.059   150.129   159.302       403.72
+batch-api         240     1001      360     1536        4       64      40.926    41.942    40.080    40.903      1563.79
+loop-fk_filter_gather      240     1001      360     1536        4       64     136.550   154.910   123.096   138.975       468.69
+iterations=7 warmup=2 pad_factor=1.500
+csv: benchmarks/results/v0.3.0/batch_240_run3.csv

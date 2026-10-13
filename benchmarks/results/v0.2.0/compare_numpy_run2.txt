@@ -3,76 +3,76 @@ dtypes: numpy.fft.fft2(float32) -> complex64, numpy.fft.rfft2(float32) -> comple
 cpus 4, runs 15, warmup 3, pad 1.5
 verify 1001x1500 (padded 1512x2250):
   mask vs basalt.fk_mute_weight: max abs diff 5.631e-09 (float32 mask)
-  scipy-r2c (workers=1) vs basalt.fk_filter (threads=1): relRMS 2.385e-07
-  basalt threads=0 vs threads=1: relRMS 1.583e-07
+  scipy-r2c (workers=1) vs basalt.fk_filter (threads=1): relRMS 2.398e-07
+  basalt threads=0 vs threads=1: relRMS 1.205e-07
 timing 240x1001
-  240x1001 numpy-c2c  numpy.fft fft2/ifft2       median    15.195 ms
-  240x1001 numpy-r2c  numpy.fft rfft2/irfft2     median     7.539 ms
-  240x1001 scipy-r2c  scipy.fft workers=1        median     4.727 ms
-  240x1001 scipy-r2c  scipy.fft workers=-1       median     3.242 ms
-  240x1001 basalt-py  basalt.fk_filter threads=1 median     4.511 ms
-  240x1001 basalt-py  basalt.fk_filter threads=0 median     3.490 ms
-  240x1001 scipy-transform-only rfft2+irfft2 workers=1     median     5.929 ms
-  240x1001 scipy-transform-only rfft2+irfft2 workers=-1    median     2.123 ms
+  240x1001 numpy-c2c  numpy.fft fft2/ifft2       median    13.961 ms
+  240x1001 numpy-r2c  numpy.fft rfft2/irfft2     median     8.559 ms
+  240x1001 scipy-r2c  scipy.fft workers=1        median     5.491 ms
+  240x1001 scipy-r2c  scipy.fft workers=-1       median     3.154 ms
+  240x1001 basalt-py  basalt.fk_filter threads=1 median     3.787 ms
+  240x1001 basalt-py  basalt.fk_filter threads=0 median     2.393 ms
+  240x1001 scipy-transform-only rfft2+irfft2 workers=1     median     5.723 ms
+  240x1001 scipy-transform-only rfft2+irfft2 workers=-1    median     1.879 ms
 timing 1001x1500
-  1001x1500 numpy-c2c  numpy.fft fft2/ifft2       median   210.267 ms
-  1001x1500 numpy-r2c  numpy.fft rfft2/irfft2     median    91.586 ms
-  1001x1500 scipy-r2c  scipy.fft workers=1        median    39.786 ms
-  1001x1500 scipy-r2c  scipy.fft workers=-1       median    19.458 ms
-  1001x1500 basalt-py  basalt.fk_filter threads=1 median    34.174 ms
-  1001x1500 basalt-py  basalt.fk_filter threads=0 median    18.089 ms
-  1001x1500 scipy-transform-only rfft2+irfft2 workers=1     median    38.580 ms
-  1001x1500 scipy-transform-only rfft2+irfft2 workers=-1    median    11.391 ms
+  1001x1500 numpy-c2c  numpy.fft fft2/ifft2       median   230.078 ms
+  1001x1500 numpy-r2c  numpy.fft rfft2/irfft2     median   100.063 ms
+  1001x1500 scipy-r2c  scipy.fft workers=1        median    39.129 ms
+  1001x1500 scipy-r2c  scipy.fft workers=-1       median    19.173 ms
+  1001x1500 basalt-py  basalt.fk_filter threads=1 median    15.041 ms
+  1001x1500 basalt-py  basalt.fk_filter threads=0 median     9.866 ms
+  1001x1500 scipy-transform-only rfft2+irfft2 workers=1     median    39.257 ms
+  1001x1500 scipy-transform-only rfft2+irfft2 workers=-1    median     9.428 ms
 timing 1024x1024
-  1024x1024 numpy-c2c  numpy.fft fft2/ifft2       median   150.894 ms
-  1024x1024 numpy-r2c  numpy.fft rfft2/irfft2     median    60.017 ms
-  1024x1024 scipy-r2c  scipy.fft workers=1        median    29.406 ms
-  1024x1024 scipy-r2c  scipy.fft workers=-1       median    15.263 ms
-  1024x1024 basalt-py  basalt.fk_filter threads=1 median    24.947 ms
-  1024x1024 basalt-py  basalt.fk_filter threads=0 median    11.361 ms
-  1024x1024 scipy-transform-only rfft2+irfft2 workers=1     median    21.677 ms
-  1024x1024 scipy-transform-only rfft2+irfft2 workers=-1    median     8.155 ms
+  1024x1024 numpy-c2c  numpy.fft fft2/ifft2       median   133.049 ms
+  1024x1024 numpy-r2c  numpy.fft rfft2/irfft2     median    54.421 ms
+  1024x1024 scipy-r2c  scipy.fft workers=1        median    27.029 ms
+  1024x1024 scipy-r2c  scipy.fft workers=-1       median    12.250 ms
+  1024x1024 basalt-py  basalt.fk_filter threads=1 median    11.158 ms
+  1024x1024 basalt-py  basalt.fk_filter threads=0 median     5.922 ms
+  1024x1024 scipy-transform-only rfft2+irfft2 workers=1     median    23.963 ms
+  1024x1024 scipy-transform-only rfft2+irfft2 workers=-1    median     7.409 ms
 timing 2048x2048
-  2048x2048 numpy-c2c  numpy.fft fft2/ifft2       median   849.496 ms
-  2048x2048 numpy-r2c  numpy.fft rfft2/irfft2     median   343.473 ms
-  2048x2048 scipy-r2c  scipy.fft workers=1        median   191.385 ms
-  2048x2048 scipy-r2c  scipy.fft workers=-1       median    68.533 ms
-  2048x2048 basalt-py  basalt.fk_filter threads=1 median   152.368 ms
-  2048x2048 basalt-py  basalt.fk_filter threads=0 median    51.343 ms
-  2048x2048 scipy-transform-only rfft2+irfft2 workers=1     median   144.110 ms
-  2048x2048 scipy-transform-only rfft2+irfft2 workers=-1    median    54.380 ms
+  2048x2048 numpy-c2c  numpy.fft fft2/ifft2       median   691.364 ms
+  2048x2048 numpy-r2c  numpy.fft rfft2/irfft2     median   333.660 ms
+  2048x2048 scipy-r2c  scipy.fft workers=1        median   162.356 ms
+  2048x2048 scipy-r2c  scipy.fft workers=-1       median    66.124 ms
+  2048x2048 basalt-py  basalt.fk_filter threads=1 median    48.010 ms
+  2048x2048 basalt-py  basalt.fk_filter threads=0 median    17.780 ms
+  2048x2048 scipy-transform-only rfft2+irfft2 workers=1     median   142.345 ms
+  2048x2048 scipy-transform-only rfft2+irfft2 workers=-1    median    54.617 ms
 
        size impl                  setting                     median_ms    p90_ms  gathers/s  relRMS vs basalt t=1
-240x1001   numpy-c2c             numpy.fft fft2/ifft2           15.195    16.257      65.81             2.106e-07
-240x1001   numpy-r2c             numpy.fft rfft2/irfft2          7.539    10.148     132.65             2.181e-07
-240x1001   scipy-r2c             scipy.fft workers=1             4.727     7.216     211.54             1.981e-07
-240x1001   scipy-r2c             scipy.fft workers=-1            3.242     4.799     308.41             1.981e-07
-240x1001   basalt-py             basalt.fk_filter threads=1      4.511     4.922     221.69             0.000e+00
-240x1001   basalt-py             basalt.fk_filter threads=0      3.490     4.314     286.50             1.746e-08
-240x1001   scipy-transform-only  rfft2+irfft2 workers=1          5.929     6.785     168.65         n/a (no mask)
-240x1001   scipy-transform-only  rfft2+irfft2 workers=-1         2.123     3.454     470.96         n/a (no mask)
-1001x1500   numpy-c2c             numpy.fft fft2/ifft2          210.267   234.092       4.76             2.126e-07
-1001x1500   numpy-r2c             numpy.fft rfft2/irfft2         91.586   128.224      10.92             2.238e-07
-1001x1500   scipy-r2c             scipy.fft workers=1            39.786    55.957      25.13             2.385e-07
-1001x1500   scipy-r2c             scipy.fft workers=-1           19.458    20.538      51.39             2.386e-07
-1001x1500   basalt-py             basalt.fk_filter threads=1     34.174    40.574      29.26             0.000e+00
-1001x1500   basalt-py             basalt.fk_filter threads=0     18.089    19.095      55.28             1.583e-07
-1001x1500   scipy-transform-only  rfft2+irfft2 workers=1         38.580    44.846      25.92         n/a (no mask)
-1001x1500   scipy-transform-only  rfft2+irfft2 workers=-1        11.391    14.456      87.79         n/a (no mask)
-1024x1024   numpy-c2c             numpy.fft fft2/ifft2          150.894   163.044       6.63             2.188e-07
-1024x1024   numpy-r2c             numpy.fft rfft2/irfft2         60.017    77.527      16.66             2.282e-07
-1024x1024   scipy-r2c             scipy.fft workers=1            29.406    32.930      34.01             2.066e-07
-1024x1024   scipy-r2c             scipy.fft workers=-1           15.263    19.628      65.52             2.066e-07
-1024x1024   basalt-py             basalt.fk_filter threads=1     24.947    29.414      40.09             0.000e+00
-1024x1024   basalt-py             basalt.fk_filter threads=0     11.361    16.744      88.02             1.813e-08
-1024x1024   scipy-transform-only  rfft2+irfft2 workers=1         21.677    23.443      46.13         n/a (no mask)
-1024x1024   scipy-transform-only  rfft2+irfft2 workers=-1         8.155    12.430     122.63         n/a (no mask)
-2048x2048   numpy-c2c             numpy.fft fft2/ifft2          849.496  1263.758       1.18             2.284e-07
-2048x2048   numpy-r2c             numpy.fft rfft2/irfft2        343.473   612.536       2.91             2.370e-07
-2048x2048   scipy-r2c             scipy.fft workers=1           191.385   273.503       5.23             2.184e-07
-2048x2048   scipy-r2c             scipy.fft workers=-1           68.533    84.101      14.59             2.184e-07
-2048x2048   basalt-py             basalt.fk_filter threads=1    152.368   180.300       6.56             0.000e+00
-2048x2048   basalt-py             basalt.fk_filter threads=0     51.343    71.999      19.48             1.549e-08
-2048x2048   scipy-transform-only  rfft2+irfft2 workers=1        144.110   212.067       6.94         n/a (no mask)
-2048x2048   scipy-transform-only  rfft2+irfft2 workers=-1        54.380    64.504      18.39         n/a (no mask)
-csv: benchmarks/results/v0.2.0/compare_numpy_run2.csv
+240x1001   numpy-c2c             numpy.fft fft2/ifft2           13.961    16.164      71.63             1.737e-07
+240x1001   numpy-r2c             numpy.fft rfft2/irfft2          8.559    10.934     116.83             1.812e-07
+240x1001   scipy-r2c             scipy.fft workers=1             5.491     6.423     182.12             1.962e-07
+240x1001   scipy-r2c             scipy.fft workers=-1            3.154     3.749     317.08             1.962e-07
+240x1001   basalt-py             basalt.fk_filter threads=1      3.787     3.999     264.04             0.000e+00
+240x1001   basalt-py             basalt.fk_filter threads=0      2.393     2.844     417.85             3.151e-08
+240x1001   scipy-transform-only  rfft2+irfft2 workers=1          5.723     6.749     174.72         n/a (no mask)
+240x1001   scipy-transform-only  rfft2+irfft2 workers=-1         1.879     2.217     532.33         n/a (no mask)
+1001x1500   numpy-c2c             numpy.fft fft2/ifft2          230.078   344.655       4.35             1.949e-07
+1001x1500   numpy-r2c             numpy.fft rfft2/irfft2        100.063   111.345       9.99             2.085e-07
+1001x1500   scipy-r2c             scipy.fft workers=1            39.129    46.473      25.56             2.398e-07
+1001x1500   scipy-r2c             scipy.fft workers=-1           19.173    21.151      52.16             2.399e-07
+1001x1500   basalt-py             basalt.fk_filter threads=1     15.041    16.073      66.49             0.000e+00
+1001x1500   basalt-py             basalt.fk_filter threads=0      9.866    11.132     101.36             1.205e-07
+1001x1500   scipy-transform-only  rfft2+irfft2 workers=1         39.257    60.732      25.47         n/a (no mask)
+1001x1500   scipy-transform-only  rfft2+irfft2 workers=-1         9.428    11.192     106.07         n/a (no mask)
+1024x1024   numpy-c2c             numpy.fft fft2/ifft2          133.049   138.850       7.52             1.717e-07
+1024x1024   numpy-r2c             numpy.fft rfft2/irfft2         54.421    80.940      18.38             1.803e-07
+1024x1024   scipy-r2c             scipy.fft workers=1            27.029    32.699      37.00             2.095e-07
+1024x1024   scipy-r2c             scipy.fft workers=-1           12.250    15.950      81.64             2.095e-07
+1024x1024   basalt-py             basalt.fk_filter threads=1     11.158    11.982      89.62             0.000e+00
+1024x1024   basalt-py             basalt.fk_filter threads=0      5.922     6.683     168.87             3.278e-08
+1024x1024   scipy-transform-only  rfft2+irfft2 workers=1         23.963    26.809      41.73         n/a (no mask)
+1024x1024   scipy-transform-only  rfft2+irfft2 workers=-1         7.409     8.834     134.97         n/a (no mask)
+2048x2048   numpy-c2c             numpy.fft fft2/ifft2          691.364   749.405       1.45             1.804e-07
+2048x2048   numpy-r2c             numpy.fft rfft2/irfft2        333.660   426.277       3.00             1.886e-07
+2048x2048   scipy-r2c             scipy.fft workers=1           162.356   188.761       6.16             2.203e-07
+2048x2048   scipy-r2c             scipy.fft workers=-1           66.124   104.528      15.12             2.203e-07
+2048x2048   basalt-py             basalt.fk_filter threads=1     48.010    54.039      20.83             0.000e+00
+2048x2048   basalt-py             basalt.fk_filter threads=0     17.780    28.575      56.24             3.726e-08
+2048x2048   scipy-transform-only  rfft2+irfft2 workers=1        142.345   182.381       7.03         n/a (no mask)
+2048x2048   scipy-transform-only  rfft2+irfft2 workers=-1        54.617    64.517      18.31         n/a (no mask)
+csv: benchmarks/results/v0.3.0/compare_numpy_run2.csv

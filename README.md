@@ -204,7 +204,9 @@ int main() {
 The header `basalt/fk.hpp` declares `basalt::fk_filter_gather` (pointer and vector overloads),
 `basalt::FKMuteParams` and `basalt::FKMode`. The pipeline is specified in
 [docs/design/FK_PIPELINE.md](docs/design/FK_PIPELINE.md), section 4. `basalt::fk_mute_weight`
-returns the weight of any single f-k bin for the same parameters.
+returns the weight of any single f-k bin for the same parameters. `basalt::fk_filter_gathers`
+filters many equal-size gathers in one call, in parallel across `params.threads`. Both functions
+throw `std::invalid_argument` if the input contains NaN or infinite samples.
 
 ## Apparent velocity and the mute modes
 
@@ -219,10 +221,11 @@ The full definition, including the `k = 0` and DC cases, is in
 
 ## Performance
 
-On a 4-vCPU test machine, the f-k pipeline is 1.6x to 3.2x faster than the equivalent
-`numpy.fft.rfft2`/`irfft2` round trip. It is level with or faster than `scipy.fft` single-threaded,
-and faster than `scipy.fft` with 4 threads on large gathers (1.5x to 1.7x at 1024x1024 and
-2048x2048, C++ API). The measurements, hardware and caveats are in [PERFORMANCE.md](PERFORMANCE.md).
+On a 4-vCPU test machine, with a typical ground-roll mute, the f-k pipeline is 2x to 4x faster
+than the same filter written with `scipy.fft`, and 3x to 7.6x faster than `numpy.fft.rfft2` /
+`irfft2`. Most of that comes from skipping FFT work the mute does not need (padded traces, and
+frequency columns the mute leaves untouched), so a mute that touches every frequency gains less.
+The measurements, hardware and caveats are in [PERFORMANCE.md](PERFORMANCE.md).
 
 ## Legacy power-of-two API
 

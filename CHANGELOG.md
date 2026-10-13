@@ -30,11 +30,32 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ### Performance
 
+- Staged f-k transform: the time-axis FFT skips the zero-padded traces and the traces that are
+  cropped away, and frequency columns whose mute weights are all 1 (or all 0) skip the spatial FFT
+  pair. With the default ground-roll mute this is 1.7x to 2.9x faster single-threaded than the
+  first 0.2.0 pipeline; with a band that touches every column it is about 1.35x faster.
+- `fk_filter_gathers` batch API: filters many equal-size gathers in parallel on a pool of workers
+  that sleep when idle and exit after 2 s without work. Higher throughput than a loop of
+  `fk_filter_gather` calls for 64 gathers of 240x1001 at 4 threads (3.1x).
+- `basalt filter` uses the batch API and threads the SEG-Y codec: 1.8x faster at `--threads 1`
+  and 2.7x at `--threads 4` on a 512 MB IBM file.
+- SEG-Y reader and writer: bulk reads, vectorised IBM and IEEE conversion, and an optional
+  `threads` argument on `read_segy` / `write_segy` (results do not depend on it).
+- Python `fk_filter`: the input finiteness pass is gone (the C++ call checks it) and the output
+  overflow check runs without the GIL.
+
 - `fk_filter_gather` caches the per-bin weight table per (padded size, parameters), reuses per-thread
   workspaces, zeroes only the padding, and splits the copy-in, weight multiply and copy-out across
   `threads`. The end-to-end call is now within 3 to 11% of the bare FFT pair single-threaded.
 
 ### Changed
+
+- `fk_filter_gather` and `fk_filter_gathers` throw `std::invalid_argument` when the input contains
+  NaN or infinite samples, before writing any output. Earlier builds let such samples spread
+  through the whole gather. The CLI reports this as a runtime error (exit code 1), and Python as
+  `ValueError`.
+- `basalt filter --gather-size N` output no longer depends on `--threads` when the file splits
+  into two or more gathers (it is bit-identical to `--threads 1`).
 
 - Project version is 0.2.0 (CMake project version, `basalt --version`, Python `basalt.__version__`)
 - README rewritten around the pipeline, the `basalt` CLI, the Python package and the C++ package; the legacy

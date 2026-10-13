@@ -2,24 +2,24 @@ fk_gather_bench: optimized (NDEBUG), compiler 13.3.0
 hardware threads: 4
 note: legacy-c2c skipped for 240x1001 (needs power-of-two sizes)
 note: legacy-c2c skipped for 1001x1500 (needs power-of-two sizes)
-impl          ntraces   nsamps  ntr_pad   ns_pad  threads   median_ms    p90_ms    min_ms   mean_ms    gathers/s
-basalt-c++        240     1001      360     1536        1       4.007     4.475     3.660     4.119       249.55
-pocketfft-transform-only      240     1001      360     1536        1       4.773     5.524     3.726     4.629       209.52
-basalt-c++        240     1001      360     1536        4       3.506     4.670     3.026     3.854       285.25
-pocketfft-transform-only      240     1001      360     1536        4       2.333     3.835     1.367     2.431       428.57
-basalt-c++       1001     1500     1512     2250        1      43.963    45.396    32.802    41.451        22.75
-pocketfft-transform-only     1001     1500     1512     2250        1      31.160    34.834    27.785    31.400        32.09
-basalt-c++       1001     1500     1512     2250        4      15.211    16.281     8.764    13.903        65.74
-pocketfft-transform-only     1001     1500     1512     2250        4      13.599    15.247    13.159    13.839        73.54
-basalt-c++       1024     1024     1536     1536        1      30.480    31.058    21.597    29.902        32.81
-pocketfft-transform-only     1024     1024     1536     1536        1      25.288    26.543    20.415    24.897        39.55
-basalt-c++       1024     1024     1536     1536        4       9.959    13.020     5.930     9.675       100.41
-pocketfft-transform-only     1024     1024     1536     1536        4       6.517     7.021     5.836     6.642       153.44
-legacy-c2c       1024     1024     1024     1024        1      91.559   114.658    70.873    93.857        10.92
-basalt-c++       2048     2048     3072     3072        1     151.385   183.646   138.298   157.321         6.61
-pocketfft-transform-only     2048     2048     3072     3072        1     130.361   136.892   123.138   133.545         7.67
-basalt-c++       2048     2048     3072     3072        4      43.836    53.009    39.307    46.006        22.81
-pocketfft-transform-only     2048     2048     3072     3072        4      41.042    50.826    33.502    42.549        24.37
-legacy-c2c       2048     2048     2048     2048        1     357.489   391.603   344.104   362.338         2.80
+impl          ntraces   nsamps  ntr_pad   ns_pad  threads  gathers   median_ms    p90_ms    min_ms   mean_ms    gathers/s
+basalt-c++        240     1001      360     1536        1        1       2.501     3.222     2.416     2.738       399.81
+pocketfft-transform-only      240     1001      360     1536        1        1       4.237     4.732     3.693     4.276       236.01
+basalt-c++        240     1001      360     1536        4        1       1.440     1.639     1.340     1.494       694.62
+pocketfft-transform-only      240     1001      360     1536        4        1       1.608     1.888     1.354     1.677       621.92
+basalt-c++       1001     1500     1512     2250        1        1      16.164    20.424    14.498    17.179        61.87
+pocketfft-transform-only     1001     1500     1512     2250        1        1      28.112    28.936    27.048    28.273        35.57
+basalt-c++       1001     1500     1512     2250        4        1       9.025     9.705     5.029     8.332       110.80
+pocketfft-transform-only     1001     1500     1512     2250        4        1       9.387    13.228     7.135     9.747       106.53
+basalt-c++       1024     1024     1536     1536        1        1      10.343    10.704     9.779    10.365        96.68
+pocketfft-transform-only     1024     1024     1536     1536        1        1      17.997    20.080    16.679    18.360        55.56
+basalt-c++       1024     1024     1536     1536        4        1       4.909     6.434     4.252     5.255       203.69
+pocketfft-transform-only     1024     1024     1536     1536        4        1       6.725     7.358     6.129     6.923       148.70
+legacy-c2c       1024     1024     1024     1024        1        1      69.699    83.405    62.493    72.639        14.35
+basalt-c++       2048     2048     3072     3072        1        1      52.450    55.294    46.986    51.806        19.07
+pocketfft-transform-only     2048     2048     3072     3072        1        1     136.912   156.235   119.196   140.331         7.30
+basalt-c++       2048     2048     3072     3072        4        1      23.348    25.650    14.922    22.462        42.83
+pocketfft-transform-only     2048     2048     3072     3072        4        1      39.456    45.571    32.414    39.825        25.34
+legacy-c2c       2048     2048     2048     2048        1        1     319.867   346.587   285.044   322.886         3.13
 iterations=21 warmup=3 pad_factor=1.500
-csv: benchmarks/results/v0.2.0/fk_gather_bench_run1.csv
+csv: benchmarks/results/v0.3.0/fk_gather_bench_run1.csv

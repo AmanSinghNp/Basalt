@@ -127,6 +127,14 @@ Steps:
 6. Complex-to-real inverse with scale `1 / (ntr_pad * ns_pad)`.
 7. Copy the top-left `ntraces x nsamples` block to `out`.
 
+Steps 4-6 define the result, not the schedule. The implementation computes the same result
+(to float rounding) with less work: the time-axis r2c runs only on the `ntraces` data rows (the
+padded rows' spectra are zero); each frequency column whose weights are all exactly 1 skips both
+spatial transforms (they would cancel), and each column whose weights are all exactly 0 is
+zeroed without transforming; the time-axis c2r runs only on the `ntraces` rows that are
+cropped into `out`. The scale is split as `1 / ntr_pad` on transformed columns and `1 / ns_pad`
+on the time inverse.
+
 Batch form (`fk_filter_gathers`, declared in `basalt/fk.hpp`): filters `ngathers` consecutive
 gathers of one shape, gather `g` being the block at `in + g * ntraces * nsamples`. For
 `ngathers >= 2` each gather's result equals `fk_filter_gather` with `threads = 1` on that gather,
