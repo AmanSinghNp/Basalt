@@ -12,6 +12,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -88,13 +89,17 @@ std::string to_path(const py::handle path) {
     return file;
 }
 
-bool all_finite(const float* values, size_t count) {
+// True if any of the count floats is NaN or inf. Each value is tested on its exponent bits, and
+// the flags are OR-ed with no early exit, so the loop vectorises. Used on the output buffer while
+// the GIL is released.
+bool any_nonfinite(const float* values, size_t count) {
+    uint32_t bad = 0;
     for (size_t i = 0; i < count; ++i) {
-        if (!std::isfinite(values[i])) {
-            return false;
-        }
+        uint32_t bits;
+        std::memcpy(&bits, values + i, sizeof bits);
+        bad |= static_cast<uint32_t>((bits & 0x7f800000u) == 0x7f800000u);
     }
-    return true;
+    return bad != 0;
 }
 
 // 2D float32 gather from any array-like. Ragged lists, strings and other values that do not
@@ -165,27 +170,28 @@ py::array_t<float> filter_gather(const py::object& data, double dt, double dx, d
     const size_t ntraces = static_cast<size_t>(nrows);
     const size_t nsamples = static_cast<size_t>(ncols);
 
-    // A NaN or inf sample would spread through every bin of the transform and come back as an
-    // all-NaN gather, so it is rejected up front.
-    const float* in_ptr = gather.data();
-    if (!all_finite(in_ptr, ntraces * nsamples)) {
-        throw std::invalid_argument("fk_filter: data must contain only finite values (no NaN or inf)");
-    }
-
-    py::array_t<float> out(std::vector<py::ssize_t>{nrows, ncols});
+    const size_t count = ntraces * nsamples;
+    // The result is allocated without zero-filling, as np.empty does: the transform writes every
+    // element before it is returned.
+    py::array_t<float> result(std::vector<py::ssize_t>{nrows, ncols});
     // `gather` holds a reference to the input buffer for the whole call, so the raw pointers
-    // stay valid while the GIL is released. Nothing below touches Python objects.
-    float* out_ptr = out.mutable_data();
+    // stay valid while the GIL is released. Nothing inside the released section touches Python
+    // objects. The core rejects NaN or inf input in its copy-in pass, before the transform and
+    // before any write to the output, and that surfaces here as ValueError.
+    float* out_ptr = result.mutable_data();
+    bool overflow = false;
     {
         py::gil_scoped_release release;
-        fk_filter_gather(in_ptr, out_ptr, ntraces, nsamples, params);
+        fk_filter_gather(gather.data(), out_ptr, ntraces, nsamples, params);
+        // Finite input can still overflow float32 inside the transform (for example at 1e36
+        // scale). The check runs here, on the output that was just written, not through numpy.
+        overflow = any_nonfinite(out_ptr, count);
     }
-    // Finite input can still overflow float32 inside the transform (for example at 1e36 scale).
-    if (!all_finite(out_ptr, ntraces * nsamples)) {
+    if (overflow) {
         throw std::invalid_argument(
             "fk_filter: output is not finite; the data is too large for the float32 transform");
     }
-    return out;
+    return result;
 }
 
 double mute_weight(double f_hz, double k_cpm, double v_min, double v_max, double taper,

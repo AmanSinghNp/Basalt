@@ -573,6 +573,42 @@ def test_non_finite_gather_raises_value_error():
         corrupted = gather.copy()
         corrupted[2, 3] = bad
         _raises(ValueError, basalt.fk_filter, corrupted, 0.004, 25.0)
+        _raises(ValueError, basalt.fk_filter, corrupted, 0.004, 25.0, threads=0)
+    # The check is done by the C++ core, and its message is passed through unchanged.
+    try:
+        basalt.fk_filter(corrupted, 0.004, 25.0)
+    except ValueError as err:
+        assert "NaN or infinite" in str(err), str(err)
+    else:
+        raise AssertionError("expected ValueError for a non-finite sample")
+
+
+def test_non_finite_sample_is_found_in_large_gather_for_any_thread_count():
+    rng = np.random.default_rng(31)
+    gather = rng.uniform(-1.0, 1.0, (300, 400)).astype(np.float32)
+    for row, col in ((0, 0), (299, 399), (150, 200)):
+        for bad in (np.nan, np.inf):
+            corrupted = gather.copy()
+            corrupted[row, col] = bad
+            for threads in (1, 2, 0):
+                _raises(ValueError, basalt.fk_filter, corrupted, 0.004, 25.0,
+                        threads=threads)
+    # A float64 gather with a NaN is rejected too, after the conversion to float32.
+    as_double = gather.astype(np.float64)
+    as_double[1, 1] = np.nan
+    _raises(ValueError, basalt.fk_filter, as_double, 0.004, 25.0)
+
+
+def test_read_only_float32_gather_is_accepted_and_not_modified():
+    rng = np.random.default_rng(33)
+    gather = rng.uniform(-1.0, 1.0, (45, 77)).astype(np.float32)
+    expected = basalt.fk_filter(gather, 0.004, 25.0, v_min=-800.0, v_max=1200.0)
+    readonly = gather.copy()
+    readonly.flags.writeable = False
+    result = basalt.fk_filter(readonly, 0.004, 25.0, v_min=-800.0, v_max=1200.0)
+    assert np.array_equal(result, expected)
+    assert result.dtype == np.float32 and result.flags.c_contiguous
+    assert not np.shares_memory(result, readonly)
 
 
 def test_non_finite_frequency_or_wavenumber_raises_value_error():
