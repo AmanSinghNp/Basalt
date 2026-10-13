@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
 #include <random>
 #include <sstream>
 #include <string>
@@ -902,6 +903,43 @@ TEST(CliFilter, OutputDoesNotDependOnThreadsWithSeveralGathers) {
             library_per_block(input.samples, ntraces, kSamples, kBlock, params);
         EXPECT_TRUE(basalt::io::read_segy(reference_path).samples == expected) << ntraces;
     }
+}
+
+TEST(CliFilter, NonFiniteSampleInAnyGatherFailsWithoutOutput) {
+    // Ten traces with blocks of eight: the first block is the full block and the last two traces
+    // are the tail. With several threads the tail is filtered on a helper thread, so an error from
+    // either gather must still give exit status 1, and no output file is written.
+    constexpr size_t kTraces = 10;
+    constexpr size_t kSamples = 64;
+    for (const size_t bad_trace : {size_t{1}, size_t{9}}) {
+        for (const std::string threads : {"1", "4"}) {
+            const std::string tag = std::to_string(bad_trace) + "_" + threads;
+            const std::string in = test_path("in" + tag + ".segy");
+            const std::string out = test_path("out" + tag + ".segy");
+            std::vector<float> samples = random_samples(kTraces * kSamples, 41);
+            samples[bad_trace * kSamples + 5] = std::numeric_limits<float>::quiet_NaN();
+            write_fixture(in, samples, kTraces, kSamples, 0.004, SampleFormat::IEEE32);
+            std::remove(out.c_str());
+
+            const CliResult r =
+                run_cli({"filter", in, out, "--gather-size", "8", "--threads", threads});
+            EXPECT_EQ(r.exit_code, 1) << "bad trace " << bad_trace << ", --threads " << threads;
+            EXPECT_TRUE(contains(r.err, "NaN or infinite")) << r.err;
+            EXPECT_FALSE(std::ifstream(out).good())
+                << "bad trace " << bad_trace << ", --threads " << threads << " wrote output";
+        }
+    }
+}
+
+TEST(CliFilter, VerboseReportsReadFilterAndWriteTimes) {
+    const std::string in = test_path("in.segy");
+    const std::string out = test_path("out.segy");
+    write_fixture(in, random_samples(6 * 100, 5), 6, 100, 0.004, SampleFormat::IEEE32);
+    const CliResult r = run_cli({"filter", in, out, "--verbose", "--gather-size", "4"});
+    ASSERT_EQ(r.exit_code, 0) << r.err;
+    EXPECT_TRUE(contains(r.err, "basalt: read ")) << r.err;
+    EXPECT_TRUE(contains(r.err, " ms, filter ")) << r.err;
+    EXPECT_TRUE(contains(r.err, " ms, write ")) << r.err;
 }
 
 TEST(CliUsage, HelpDocumentsThreadIndependence) {

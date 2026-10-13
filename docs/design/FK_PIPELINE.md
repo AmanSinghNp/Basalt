@@ -127,6 +127,13 @@ Steps:
 6. Complex-to-real inverse with scale `1 / (ntr_pad * ns_pad)`.
 7. Copy the top-left `ntraces x nsamples` block to `out`.
 
+Batch form (`fk_filter_gathers`, declared in `basalt/fk.hpp`): filters `ngathers` consecutive
+gathers of one shape, gather `g` being the block at `in + g * ntraces * nsamples`. For
+`ngathers >= 2` each gather's result equals `fk_filter_gather` with `threads = 1` on that gather,
+for every `params.threads`. A non-finite sample in any gather throws before any output is written,
+so `out` is untouched and an aliased `in` is unchanged. The batch's thread and memory rules are in
+the comments of `basalt/fk.hpp`.
+
 Required numerical behaviour:
 - With `mode = Reject` and a band that contains no energy, output equals input to within
   1e-4 relative RMS for traces outside the edge-taper zone. "No energy" means smooth input
@@ -205,7 +212,12 @@ basalt --version | --help | -h
 
 - `dt` defaults to the file's binary header; `--dt` overrides. `dx` defaults to 25 m.
 - `--gather-size N` filters the file in consecutive blocks of N traces (default: whole file
-  as one gather).
+  as one gather). A short last block is filtered as its own gather.
+- `--threads N` (default 1; 0 = all cores) sets the threads that read and write the file and,
+  for a single gather, the threads of that gather's FFTs. With two or more gathers, each gather
+  is filtered on one thread, so the output file is byte-identical for every N, and the gathers
+  run concurrently. A single gather's output can differ with N only by float32 rounding
+  (relative RMS about 1e-7).
 - Output format defaults to the input format when it is IBM32 or IEEE32, else IEEE32.
 - Exit code 0 on success, 2 on usage errors, 1 on runtime errors (message on stderr).
 

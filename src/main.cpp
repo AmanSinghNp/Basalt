@@ -17,6 +17,8 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <vector>
 
 #include "basalt/fk.hpp"
@@ -71,8 +73,7 @@ void print_help(std::ostream& os) {
        << "                   gives two or more gathers, they run in parallel, each on one\n"
        << "                   thread, and the output is identical for every N\n"
        << "  --gather-size N  filter consecutive blocks of N traces (whole file). The blocks\n"
-       << "                   run in parallel as one batch; a short last block is filtered after\n"
-       << "                   them\n"
+       << "                   run in parallel; a short last block runs alongside them\n"
        << "  --format F       output sample format, ibm or ieee (input format if\n"
        << "                   IBM32 or IEEE32, otherwise ieee)\n"
        << "\nother options:\n"
@@ -185,6 +186,15 @@ const char* format_name(basalt::io::SampleFormat format) {
         return "INT8";
     }
     return "unknown";
+}
+
+// The thread count a request of `requested` threads stands for; 0 means hardware concurrency.
+size_t resolve_threads(size_t requested) {
+    if (requested != 0) {
+        return requested;
+    }
+    const unsigned hc = std::thread::hardware_concurrency();
+    return hc == 0 ? 1 : static_cast<size_t>(hc);
 }
 
 // Filter output keeps the input encoding when the writer supports it, otherwise IEEE32.
@@ -367,7 +377,11 @@ int run_filter(const std::vector<std::string>& args) {
         print_diagnostics();
     }
 
+    const auto read_started = std::chrono::steady_clock::now();
     basalt::io::SegyData data = basalt::io::read_segy(in_path, params.threads);
+    const double read_ms = std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - read_started)
+                               .count();
     if (data.ntraces == 0) {
         // The library rejects empty gathers; refuse before writing so no empty output is left.
         throw std::runtime_error("input has no traces to filter: " + in_path);
@@ -398,29 +412,88 @@ int run_filter(const std::vector<std::string>& args) {
         std::cerr << "basalt: warning: --edge-taper " << edge_taper << " overlaps within the last "
                   << tail << "-trace block (the start and end tapers multiply)\n";
     }
-    // The full blocks are one batch call, which runs them in parallel, and the short last block is
-    // filtered on its own afterwards. With two or more gathers each gather is filtered on one
-    // thread, so the output does not depend on --threads. A single gather is filtered with
-    // --threads threads, since there is nothing to run it alongside.
+    // With two or more gathers each gather is filtered on one thread, so the output does not depend
+    // on --threads. A single gather is filtered with --threads threads, since there is nothing to
+    // run it alongside.
     const size_t nfull = ntraces / block;
     const bool several_gathers = nfull + (tail != 0 ? 1 : 0) >= 2;
     basalt::FKMuteParams single = params;
     single.threads = several_gathers ? 1 : params.threads;
+    const size_t workers = resolve_threads(params.threads);
     float* samples = data.samples.data();
+    float* last = samples + nfull * block * nsamples;
     const auto started = std::chrono::steady_clock::now();
-    if (nfull >= 1) {
-        // One full block is a batch of one, which is fk_filter_gather with `single`.
-        const basalt::FKMuteParams& full = nfull >= 2 ? params : single;
-        basalt::fk_filter_gathers(samples, samples, nfull, block, nsamples, full);
-    }
-    if (tail != 0) {
-        float* last = samples + nfull * block * nsamples;
-        basalt::fk_filter_gather(last, last, tail, nsamples, single);
+    if (!several_gathers) {
+        basalt::fk_filter_gather(samples, samples, ntraces, nsamples, single);
+    } else if (workers == 1) {
+        // One thread: the gathers in turn. This gives the batch result (fk_filter_gathers with one
+        // thread is fk_filter_gather per gather), without the batch's up-front non-finite scan.
+        // That scan is not needed here, since a failed run writes no output file.
+        for (size_t g = 0; g < nfull; ++g) {
+            float* block_start = samples + g * block * nsamples;
+            basalt::fk_filter_gather(block_start, block_start, block, nsamples, single);
+        }
+        if (tail != 0) {
+            basalt::fk_filter_gather(last, last, tail, nsamples, single);
+        }
+    } else {
+        // Several threads: the short last block runs on a helper thread while the full blocks run
+        // here, each gather still on one thread. The two regions of `samples` do not overlap.
+        std::thread helper;
+        std::exception_ptr tail_error;
+        bool overlapped = false;
+        if (tail != 0) {
+            try {
+                helper = std::thread([last, tail, nsamples, &single, &tail_error] {
+                    try {
+                        basalt::fk_filter_gather(last, last, tail, nsamples, single);
+                    } catch (...) {
+                        tail_error = std::current_exception();
+                    }
+                });
+                overlapped = true;
+            } catch (const std::system_error&) {
+                // No thread could be started: the tail is filtered below, after the full blocks.
+            }
+        }
+        try {
+            if (nfull == 1) {
+                basalt::fk_filter_gather(samples, samples, block, nsamples, single);
+            } else if (nfull >= 2) {
+                // The helper, when running, takes one of the workers.
+                basalt::FKMuteParams batch = params;
+                batch.threads = overlapped ? workers - 1 : workers;
+                basalt::fk_filter_gathers(samples, samples, nfull, block, nsamples, batch);
+            }
+            if (tail != 0 && !overlapped) {
+                basalt::fk_filter_gather(last, last, tail, nsamples, single);
+            }
+        } catch (...) {
+            if (helper.joinable()) {
+                helper.join();
+            }
+            throw;
+        }
+        if (helper.joinable()) {
+            helper.join();
+        }
+        if (tail_error) {
+            std::rethrow_exception(tail_error);
+        }
     }
     const auto finished = std::chrono::steady_clock::now();
     const double elapsed_ms = std::chrono::duration<double, std::milli>(finished - started).count();
 
+    const auto write_started = std::chrono::steady_clock::now();
     basalt::io::write_segy(out_path, data, out_format, params.threads);
+    const auto write_finished = std::chrono::steady_clock::now();
+    if (verbose) {
+        std::cerr << std::fixed << std::setprecision(3) << "basalt: read " << read_ms
+                  << " ms, filter " << elapsed_ms << " ms, write "
+                  << std::chrono::duration<double, std::milli>(write_finished - write_started)
+                         .count()
+                  << " ms\n";
+    }
 
     std::cout << std::fixed << std::setprecision(3) << "filtered " << ntraces << " traces, "
               << nsamples << " samples in " << elapsed_ms << " ms -> " << out_path << " ("
