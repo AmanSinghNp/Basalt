@@ -16,6 +16,15 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
   `read_segy_headers` in `basalt/io/segy_file.hpp`, which reads the same layout as `read_segy` without samples
 - Tests for the trace header decoding in C++ and Python: every key, positive, negative and zero scalars, and
   `coord_units` values
+- `basalt.write_segy(path, samples, dt, format="ieee", headers=None)` takes an optional dict of per-trace header
+  arrays, with the keys of `read_trace_headers`. Coordinates and elevation are stored as `round(value / scale)`,
+  with scalars chosen per trace (-100 for a value that is not whole, otherwise 1) unless the dict gives them.
+  Unknown keys, wrong lengths, non-whole integer values and values that overflow their field raise `ValueError`,
+  and no file is written.
+- C++ `TraceHeaderValues` and `encode_trace_headers` in `basalt/io/trace_headers.hpp`, the inverse of
+  `decode_trace_headers`
+- Round-trip tests for header writing: every key, arcsecond coordinates for a station near lat 27.7 and lon 85.3,
+  time fields and delay, given and default scalars, the byte positions in the file, and the error cases
 
 ## [0.2.0] - 2026-10-11
 

@@ -137,6 +137,20 @@ signatures and argument defaults are in `python/src/basalt_py.cpp`, and the cont
 returns the same dict on its own: one NumPy array per field, one entry per trace, with the
 scalars applied to coordinates and elevations. It reads only the headers, not the samples.
 
+`write_segy(path, samples, dt, format="ieee", headers=None)` can store trace header fields too. Pass
+a dict of per-trace arrays with any of the keys that `read_trace_headers` returns. Coordinates and elevations are real values,
+and the writer picks their scalars for each trace (-100 when a value is not a whole number, otherwise
+1). Coordinates in arcseconds (`coord_units` 2) are stored as `lon * 3600` and `lat * 3600`:
+
+```python
+header = {"coord_units": [2], "group_x": [85.3 * 3600.0], "group_y": [27.7 * 3600.0]}
+basalt.write_segy("station.segy", np.zeros((1, 4), np.float32), 0.002, headers=header)
+print(basalt.read_trace_headers("station.segy")["group_x"] / 3600.0)  # [85.3]
+```
+
+Bad header input (an unknown key, a wrong length, a value that does not fit its field) raises
+`ValueError` and writes no file.
+
 ### C++
 
 Install the library, headers and CMake package:

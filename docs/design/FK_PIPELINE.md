@@ -179,6 +179,9 @@ Trace header fields are decoded in `basalt/io/trace_headers.hpp`:
 `decode_trace_headers(raw_trace_headers)` and `read_trace_headers(path)` return a `TraceHeaders`
 with one vector per field. The SEG-Y scalar rule applies to coordinates and elevations: a
 positive scalar multiplies, a negative one divides by its absolute value, and zero means 1.
+`encode_trace_headers(raw_trace_headers, values)` is the reverse. It stores a `TraceHeaderValues`
+(one vector per field, empty when the field is not given) into the raw headers, and the scalars are
+chosen as described in section 7. `write_segy` in Python uses it for its `headers` argument.
 
 Use the existing `basalt/utils/ibm_float.hpp`, `basalt/utils/ebcdic.hpp` and
 `basalt/segy_format.hpp` helpers. Do not use memory mapping in the reader (plain
@@ -216,7 +219,7 @@ w = basalt.fk_mute_weight(f_hz, k_cpm, v_min=..., v_max=..., taper=..., mode=...
 d = basalt.read_segy(path)   # dict: samples (ntraces x nsamples float32 ndarray), dt, format,
                              # text_header, ntraces, nsamples, headers (dict as below)
 h = basalt.read_trace_headers(path)   # dict of 1D arrays, one entry per trace; no samples decoded
-basalt.write_segy(path, samples, dt, format="ieee")
+basalt.write_segy(path, samples, dt, format="ieee", headers=None)
 ```
 
 `data` is a 2D float32 array of shape `(ntraces, nsamples)` (C-contiguous; other dtypes
@@ -243,3 +246,28 @@ Scalars follow the SEG-Y rule: positive multiplies, negative divides by its abso
 zero means 1. `read_trace_headers` reads the file and trace headers only, so a file whose samples
 `read_segy` would reject (an IBM word beyond the IEEE range, for example) still yields its headers.
 Its layout checks are the same as `read_segy`'s.
+
+`write_segy(path, samples, dt, format="ieee", headers=None)` writes the samples and, when `headers`
+is given, the trace header fields. `headers` is a dict whose keys are any subset of the keys in the
+table, each mapped to a 1D array with one value per trace. Keys that are not in the table are
+rejected. Integer fields take whole numbers. Coordinates and `receiver_elevation` take real values,
+and the writer stores `round(value / scale)`, where the scale comes from the field's scalar:
+`scalar_coord` for the four coordinates and `scalar_elev` for the elevation. The scalars are chosen
+for each trace:
+
+- A scalar given in `headers` is stored and used as it is.
+- A scalar not given is `-100` when a value of that trace is not a whole number, and `1` when all
+  of them are whole.
+
+Fields that are not in `headers` keep zero bytes, and their scalars are zero too. The stored value
+differs from the real value by at most half a stored unit: `s / 2` for a positive scalar `s`,
+`1 / (2 |s|)` for a negative one, and `1 / 2` for zero. Writing the arrays from `read_segy` or
+`read_trace_headers` back into `headers` reproduces the same decoded values.
+
+Coordinates are in the units given by `coord_units`. For arcseconds (`coord_units` 2), a station
+at longitude `lon` and latitude `lat` has `group_x = lon * 3600` and `group_y = lat * 3600`.
+
+`write_segy` raises `ValueError` for a `headers` value that is not a dict, a key that is not a
+trace header field, a value that is not a 1D array of numbers, an array whose length is not the
+number of traces, a non-finite value, a non-whole value in an integer field, and a stored value
+that does not fit its field. Nothing is written to `path` in that case.
