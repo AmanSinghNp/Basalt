@@ -298,6 +298,18 @@ def test_invalid_parameters_raise_value_error():
     _raises(ValueError, basalt.fk_mute_weight, 1.0, 0.1, taper=1.5)
 
 
+def test_non_finite_band_edge_names_its_argument():
+    # The message names the edge that is not finite, not the other one.
+    gather = np.ones((4, 8), dtype=np.float32)
+    for edge, value in (("v_max", math.inf), ("v_max", math.nan), ("v_min", -math.inf)):
+        try:
+            basalt.fk_filter(gather, 0.004, 25.0, **{edge: value})
+        except ValueError as err:
+            assert str(err) == f"fk_filter: {edge} must be finite", str(err)
+        else:
+            raise AssertionError(f"expected ValueError for {edge}={value}")
+
+
 def test_non_string_mode_and_format_raise_value_error():
     gather = np.zeros((4, 8), dtype=np.float32)
     _raises(ValueError, basalt.fk_filter, gather, 0.004, 25.0, mode=None)
@@ -745,6 +757,21 @@ def _spinner_ratio(busy_call):
     return busy_rate / idle_rate
 
 
+def _best_spinner_ratio(busy_call, attempts=3, threshold=0.25):
+    """Best _spinner_ratio over up to `attempts` runs, stopping early once it clears threshold.
+
+    Another process loading the CPU can slow one run, so a single measurement may dip below the
+    threshold. A GIL held for the whole call gives a ratio near zero on every attempt, so the retry
+    does not hide a real regression.
+    """
+    best = 0.0
+    for _ in range(attempts):
+        best = max(best, _spinner_ratio(busy_call))
+        if best > threshold:
+            break
+    return best
+
+
 def test_gil_released_during_segy_io():
     # write_segy and read_segy release the GIL for their whole call, including the conversion of a
     # float64 Fortran-order gather. This is a coarse guard: it fails only if the GIL is held for
@@ -754,8 +781,8 @@ def test_gil_released_during_segy_io():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "gil.sgy")
         basalt.write_segy(path, gather, 0.004)
-        write_ratio = _spinner_ratio(lambda: basalt.write_segy(path, gather, 0.004))
-        read_ratio = _spinner_ratio(lambda: basalt.read_segy(path))
+        write_ratio = _best_spinner_ratio(lambda: basalt.write_segy(path, gather, 0.004))
+        read_ratio = _best_spinner_ratio(lambda: basalt.read_segy(path))
     assert write_ratio > 0.25, f"spinner ran at {write_ratio:.3f} of its idle rate in write_segy"
     assert read_ratio > 0.25, f"spinner ran at {read_ratio:.3f} of its idle rate in read_segy"
 

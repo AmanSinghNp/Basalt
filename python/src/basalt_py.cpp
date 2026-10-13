@@ -198,7 +198,9 @@ void copy_strided(const py::array& array, float* dst) {
 // A 2D gather as the core reads it: float32, row-major. Native float32 and float64 input keeps its
 // own memory and is read with its strides, so float32 C-contiguous input is used with no copy and
 // other native input is copied with the GIL released. Anything else (ints, float16, complex,
-// byte-swapped data, lists) is converted by numpy here, with the GIL held.
+// byte-swapped data, lists) is converted by numpy on the calling thread. numpy releases the GIL
+// inside its numeric cast loops, so a large numeric conversion does not stall other threads (it
+// was measured at the idle rate). List input is Python objects and needs the GIL throughout.
 class GatherSource {
 public:
     GatherSource(const py::handle value, const char* func, const char* name) {
@@ -259,7 +261,7 @@ private:
     // with a flag instead of testing source_.
     bool is_native_ = false;
     py::array source_;     // native float32 or float64 input, when is_native_
-    FloatArray converted_; // numpy conversion of any other input (GIL held)
+    FloatArray converted_; // numpy conversion of any other input (calling thread)
     size_t nrows_ = 0;
     size_t ncols_ = 0;
     bool in_place_ = false; // source_ is float32 and C-contiguous, so its memory is the gather
@@ -299,6 +301,14 @@ py::array_t<float> filter_gather(const py::object& data, double dt, double dx, d
                                  const py::object& edge_taper_samples, bool preserve_dc,
                                  const py::object& threads) {
     const GatherSource gather(data, "fk_filter", "data");
+    // The core's band check names v_min for every bad band, so a non-finite edge is reported here
+    // with the name of the argument that is wrong.
+    if (!std::isfinite(v_min)) {
+        throw std::invalid_argument("fk_filter: v_min must be finite");
+    }
+    if (!std::isfinite(v_max)) {
+        throw std::invalid_argument("fk_filter: v_max must be finite");
+    }
     FKMuteParams params;
     params.dt = dt;
     params.dx = dx;
