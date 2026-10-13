@@ -33,6 +33,18 @@
 #include <malloc.h>
 #endif
 
+// A sanitizer replaces malloc, so glibc's arena state is not the one malloc_trim expects.
+// Under AddressSanitizer the call crashes a worker at thread exit (a SEGV in the TLS destructors,
+// or a glibc arena assertion), so it is skipped whenever a sanitizer is active.
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define BASALT_FK_SANITIZED 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define BASALT_FK_SANITIZED 1
+#endif
+
 namespace basalt {
 
 namespace {
@@ -64,10 +76,10 @@ private:
 // the work buffers that the worker's tasks construct later (thread_local objects are destroyed in
 // reverse order of construction). It is needed because glibc raises its mmap threshold once large
 // blocks have been freed. A 13 MB workspace buffer is then served from the heap, and when the
-// thread exits the heap keeps its pages until they are trimmed.
+// thread exits the heap keeps its pages until they are trimmed. Skipped under a sanitizer (above).
 struct ArenaRelease {
     ~ArenaRelease() {
-#if defined(__GLIBC__)
+#if defined(__GLIBC__) && !defined(BASALT_FK_SANITIZED)
         malloc_trim(0);
 #endif
     }
@@ -298,11 +310,14 @@ bool any_nonfinite(const float* src, size_t n) {
 
 void fk_filter_gathers(const float* in, float* out, size_t ngathers,
                        size_t ntraces, size_t nsamples, const FKMuteParams& params) {
-    // The same checks as fk_filter_gather, then the batch-only overflow check.
-    const fk_internal::Geometry geo = fk_internal::check_geometry(params, ntraces, nsamples);
+    // The checks run in the order of fk_filter_gather (parameters, dimensions, pointers, padded
+    // geometry), so the same invalid arguments raise the same error. The batch-only overflow checks
+    // follow.
+    fk_internal::validate_arguments(params, ntraces, nsamples);
     if (in == nullptr || out == nullptr) {
         throw std::invalid_argument("fk: null input or output pointer");
     }
+    const fk_internal::Geometry geo = fk_internal::check_geometry(params, ntraces, nsamples);
     const size_t max = std::numeric_limits<size_t>::max();
     if (nsamples > max / ntraces) {
         throw std::invalid_argument("fk: batch size overflows size_t");
@@ -339,15 +354,20 @@ void fk_filter_gathers(const float* in, float* out, size_t ngathers,
     }
 
     // The weight table and column classes depend only on the parameters and the gather shape, so
-    // one table serves every gather. It is built before the workers start and only read after.
+    // one table serves every gather. With several workers it is built once here, before they start,
+    // and only read after. With one worker every gather runs on the calling thread, which reuses
+    // its cached table (the same table fk_filter_gather would use), so no table is built per call.
     fk_internal::WeightTable table;
-    fk_internal::build_weight_table(params, geo, nthreads, table);
+    const bool shared_table = workers > 1;
+    if (shared_table) {
+        fk_internal::build_weight_table(params, geo, nthreads, table);
+    }
 
     // Each gather runs on one thread. The numerics are those of fk_filter_gather with threads = 1,
     // so the result does not depend on the worker count.
     run_indexed(ngathers, workers, [&](size_t g) {
         fk_internal::filter_gather_impl(in + g * gather_len, out + g * gather_len, ntraces,
-                                        nsamples, params, 1, &table);
+                                        nsamples, params, 1, shared_table ? &table : nullptr);
     });
 }
 

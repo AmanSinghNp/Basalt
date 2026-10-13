@@ -510,6 +510,11 @@ double fk_mute_weight(double f_hz, double k_cpm, const FKMuteParams& params) {
 
 namespace fk_internal {
 
+void validate_arguments(const FKMuteParams& params, size_t ntraces, size_t nsamples) {
+    validate_params(params);
+    validate_dims(ntraces, nsamples);
+}
+
 Geometry check_geometry(const FKMuteParams& params, size_t ntraces, size_t nsamples) {
     validate_params(params);
     validate_dims(ntraces, nsamples);

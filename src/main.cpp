@@ -408,10 +408,10 @@ int run_filter(const std::vector<std::string>& args) {
     single.threads = several_gathers ? 1 : params.threads;
     float* samples = data.samples.data();
     const auto started = std::chrono::steady_clock::now();
-    if (nfull >= 2) {
-        basalt::fk_filter_gathers(samples, samples, nfull, block, nsamples, params);
-    } else if (nfull == 1) {
-        basalt::fk_filter_gather(samples, samples, block, nsamples, single);
+    if (nfull >= 1) {
+        // One full block is a batch of one, which is fk_filter_gather with `single`.
+        const basalt::FKMuteParams& full = nfull >= 2 ? params : single;
+        basalt::fk_filter_gathers(samples, samples, nfull, block, nsamples, full);
     }
     if (tail != 0) {
         float* last = samples + nfull * block * nsamples;

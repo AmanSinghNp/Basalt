@@ -21,6 +21,10 @@ struct Geometry {
     double dk;       // wavenumber step, 1 / (ntr_pad * dx)
 };
 
+// Validates `params` and the gather dimensions (the first two checks of fk_filter_gather). Throws
+// std::invalid_argument with the same messages as fk_filter_gather.
+void validate_arguments(const FKMuteParams& params, size_t ntraces, size_t nsamples);
+
 // Validates `params` and the gather dimensions and computes the geometry. Throws
 // std::invalid_argument with the same messages as fk_filter_gather.
 Geometry check_geometry(const FKMuteParams& params, size_t ntraces, size_t nsamples);

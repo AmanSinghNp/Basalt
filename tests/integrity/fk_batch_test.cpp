@@ -309,6 +309,38 @@ TEST(FKBatch, InvalidArgumentsThrowInvalidArgument) {
     EXPECT_THROW(fk_filter_gathers(in.data(), nullptr, 4, ntr, ns, good), std::invalid_argument);
 }
 
+TEST(FKBatch, ErrorPrecedenceMatchesFilterGather) {
+    // When several arguments are wrong, fk_filter_gathers reports the same error as
+    // fk_filter_gather, whatever the gather count.
+    const size_t ntr = 8;
+    const size_t ns = 16;
+    std::vector<float> buf(4 * ntr * ns, 1.0f);
+    FKMuteParams tiny_dt = batch_params();
+    tiny_dt.dt = 1e-310; // the frequency step overflows: rejected by the geometry checks
+
+    const auto message = [](const std::function<void()>& call) {
+        try {
+            call();
+        } catch (const std::invalid_argument& e) {
+            return std::string(e.what());
+        }
+        return std::string("no exception");
+    };
+    // Null pointer and a bad geometry: the pointer is reported first.
+    EXPECT_EQ(message([&] { fk_filter_gather(nullptr, buf.data(), ntr, ns, tiny_dt); }),
+              message([&] { fk_filter_gathers(nullptr, buf.data(), 4, ntr, ns, tiny_dt); }));
+    EXPECT_EQ(message([&] { fk_filter_gather(nullptr, buf.data(), ntr, ns, tiny_dt); }),
+              "fk: null input or output pointer");
+    // Zero traces and a bad geometry: the dimensions are reported first.
+    EXPECT_EQ(message([&] { fk_filter_gather(buf.data(), buf.data(), 0, ns, tiny_dt); }),
+              message([&] { fk_filter_gathers(buf.data(), buf.data(), 4, 0, ns, tiny_dt); }));
+    // Bad geometry with valid pointers: the same geometry message.
+    EXPECT_EQ(message([&] { fk_filter_gather(buf.data(), buf.data(), ntr, ns, tiny_dt); }),
+              message([&] { fk_filter_gathers(buf.data(), buf.data(), 4, ntr, ns, tiny_dt); }));
+    EXPECT_NE(message([&] { fk_filter_gathers(buf.data(), buf.data(), 4, ntr, ns, tiny_dt); }),
+              "no exception");
+}
+
 TEST(FKBatch, OverflowOfTheBatchSizeIsRejected) {
     // ngathers * ntraces * nsamples does not fit in size_t. The check runs before any work, so
     // the buffers can be small.
@@ -373,7 +405,8 @@ TEST(FKBatchPool, IdleWorkersBlockAndExitWithoutSpinning) {
     const double cpu0 = process_cpu_seconds();
     std::this_thread::sleep_for(std::chrono::milliseconds(3000));
     const double idle_cpu = process_cpu_seconds() - cpu0;
-    EXPECT_LT(idle_cpu, 0.15) << "CPU over 3 s of idleness: " << idle_cpu << " s";
+    // The spec bar is under 2 % of one core over the window (0.06 s of 3 s).
+    EXPECT_LT(idle_cpu, 0.06) << "CPU over 3 s of idleness: " << idle_cpu << " s";
 }
 
 TEST(FKBatchPool, IdleWorkersReleaseWorkspaceAndAreRecreatedOnDemand) {
