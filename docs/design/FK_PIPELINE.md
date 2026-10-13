@@ -87,10 +87,12 @@ struct FKMuteParams {
 // Any NaN or infinite input sample is rejected with std::invalid_argument ("fk: input contains
 // NaN or infinite samples"). The check runs in the copy-in pass, before any transform, and
 // writes nothing to `out`, so `in` is unchanged when the call throws, including when it aliases
-// `out`. Zero-weight columns are skipped (an implementation detail that does not change the
-// result for finite input unless a float32 spectrum bin overflows to infinity; there the skip
-// gives 0 where a full product would give NaN), so the check is what keeps a non-finite sample
-// from being dropped.
+// `out`. Columns whose weights are all 0 or all 1 are skipped (an implementation detail). For
+// finite input this matches the full 2D product except where a float32 spectrum bin overflows to
+// infinity. There the full product gives NaN and a skip may give 0 or a finite value. Finite
+// input whose spectrum overflows is not otherwise detected, so the output may be NaN or infinite
+// and the caller must scale the data. The check is what keeps a non-finite sample from being
+// dropped in a skipped zero-weight column.
 // `in` and `out` may alias (in-place is allowed).
 void fk_filter_gather(const float* in, float* out,
                       size_t ntraces, size_t nsamples,

@@ -96,15 +96,21 @@ BandCoeffs make_band(const FKMuteParams& p) {
 }
 
 // Raised-cosine step from 0 to 1 centred on edge `e` with half width `h`.
-// With h == 0 the edge is hard (the v <= e branch wins at v == e).
+// With h == 0 the edge is hard (the d <= -h branch wins at d == 0).
+// The offset d = v - e is formed once and compared with +-h. Forming e - h and e + h instead
+// overflows for |e| near DBL_MAX, which turns the cosine argument into NaN. The subtraction v - e
+// can overflow to +-inf only when |v - e| > DBL_MAX, which is far outside the transition because
+// h <= 0.5 * |e| < DBL_MAX. Inside the transition |d| < h, so d + h stays finite.
 inline double rise(double v, double e, double h) {
-    if (v <= e - h) {
+    const double d = v - e;
+    if (d <= -h) {
         return 0.0;
     }
-    if (v >= e + h) {
+    if (d >= h) {
         return 1.0;
     }
-    return 0.5 - 0.5 * std::cos(kPi * (v - (e - h)) / (2.0 * h));
+    // The ratio is formed before the multiplication by pi, since kPi * (d + h) can overflow.
+    return 0.5 - 0.5 * std::cos(kPi * ((d + h) / (2.0 * h)));
 }
 
 // Membership of apparent velocity v in [v_min, v_max], smoothed at both edges.
@@ -510,9 +516,10 @@ void fk_filter_gather(const float* in, float* out,
 
     // Step 4b (B): zero-weight columns are zeroed in every trace row. Ones-weight columns need no
     // work, since their spatial pair is the identity and the time spectrum is already correct.
-    // For finite input this matches the full 2D product up to float rounding. The one other
-    // difference is an overflow: if a float32 spectrum bin of a zero-weight column reaches inf,
-    // the full product gives NaN (inf * 0) there and this path gives 0.
+    // For finite input both skips match the full 2D product up to float rounding, except where a
+    // float32 spectrum bin overflows to inf. There the full product gives NaN: inf * 0 in a
+    // zero-weight column, and inf in the spatial sums of a ones-weight column, which the inverse
+    // turns into NaN. The skips give 0 or a finite value instead.
     bool any_zero = false;
     for (const ColRun& r : runs) {
         any_zero = any_zero || r.cls == kColZeros;

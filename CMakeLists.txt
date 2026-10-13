@@ -82,7 +82,6 @@ target_include_directories(basalt_core
 target_include_directories(basalt_core SYSTEM PRIVATE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/pocketfft>
 )
-target_compile_definitions(basalt_core PRIVATE POCKETFFT_CACHE_SIZE=16)
 target_compile_options(basalt_core PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
 target_link_libraries(basalt_core PUBLIC Threads::Threads)
 if(BASALT_NUMA_LIBRARY)
@@ -193,9 +192,6 @@ if(CMAKE_PROJECT_NAME STREQUAL "Basalt")
     # pocketfft is vendored header-only; the transform-only floor row in the benchmark uses it directly.
     target_include_directories(fk_gather_bench SYSTEM PRIVATE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/pocketfft>)
-    # Must match basalt_core: pocketfft::detail::get_plan is an inline template whose body depends
-    # on POCKETFFT_CACHE_SIZE, so both translation units need the same value (ODR).
-    target_compile_definitions(fk_gather_bench PRIVATE POCKETFFT_CACHE_SIZE=16)
 
     add_executable(fft_benchmark benchmarks/fft_benchmark.cpp)
     target_link_libraries(fft_benchmark PRIVATE basalt_core)

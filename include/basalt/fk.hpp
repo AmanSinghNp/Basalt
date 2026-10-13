@@ -39,6 +39,9 @@ struct FKMuteParams {
 /// grid whose element count would overflow size_t, or any NaN or infinite input sample
 /// ("fk: input contains NaN or infinite samples"). The non-finite check runs before any
 /// output is written, so `out` and, when aliased, `in` are unchanged when the call throws.
+/// Finite input is not checked for float32 overflow of the spectrum. If a spectrum bin overflows
+/// to infinity, the output may be NaN or infinite, and the skipped-column paths may return a
+/// finite value where a full product would give NaN. Scale the data to avoid this.
 /// `in` and `out` may alias (in-place filtering is allowed).
 void fk_filter_gather(const float* in, float* out,
                       size_t ntraces, size_t nsamples,

@@ -1271,10 +1271,10 @@ TEST(FKPipeline, StagedPathColumnClassCasesMatchDirectReference) {
                                  : kind == 1 ? all_zeros_params()
                                              : event_params();
                 p.pad_factor = pad;
-                if (kind == 2) {
-                    p.edge_taper_traces = edge;
-                    p.edge_taper_samples = edge;
-                }
+                // Edge tapers apply to every kind, so the one-class sets also run with them. The
+                // reference uses the same tapers, so the comparison is still exact.
+                p.edge_taper_traces = edge;
+                p.edge_taper_samples = edge;
                 const size_t ntr = 9;
                 const size_t ns = 33;
                 const auto in = random_gather(ntr, ns, 300 + static_cast<unsigned>(kind));
@@ -1498,4 +1498,67 @@ TEST(FKPipeline, NonFiniteInputIsRejectedWithWorkerThreads) {
     }
     const auto after = fk_filter_gather(clean, ntr, ns, p);
     EXPECT_EQ(after, filter_on_fresh_thread(clean, ntr, ns, p));
+}
+
+TEST(FKPipeline, NonFiniteInputIsRejectedUnderSkippedColumnClasses) {
+    // All-zero weights zero every spectrum column after the time transform, so a non-finite sample
+    // would be discarded silently without the copy-in check. All-one weights take the identity
+    // path. Both must reject the same bad samples, and leave the buffer unchanged in place.
+    const size_t ntr = 9;
+    const size_t ns = 33;
+    const float bad_values[] = {std::numeric_limits<float>::quiet_NaN(),
+                                std::numeric_limits<float>::infinity(),
+                                -std::numeric_limits<float>::infinity()};
+    const size_t positions[] = {0, (ntr / 2) * ns + ns / 2, ntr * ns - 1};
+    const FKMuteParams kinds[] = {all_ones_params(), all_zeros_params()};
+    for (const FKMuteParams& p : kinds) {
+        for (float value : bad_values) {
+            for (size_t pos : positions) {
+                auto in = random_gather(ntr, ns, 113);
+                in[pos] = value;
+                expect_nonfinite_error([&] { fk_filter_gather(in, ntr, ns, p); });
+
+                std::vector<float> buf = in;
+                expect_nonfinite_error([&] { fk_filter_gather(buf.data(), buf.data(), ntr, ns, p); });
+                EXPECT_TRUE(same_values(buf, in)) << "in-place, pos " << pos;
+            }
+        }
+    }
+}
+
+TEST(FKWeight, EdgeArithmeticDoesNotOverflowNearDoubleMax) {
+    // h = 0.5 * 0.99 * 1.5e308 is about 7.4e307, so e - h and e + h overflow to infinity. With
+    // f = 50 and k = 1 / (3e306), v = -f / k = -1.5e308 sits on the v_min edge, where the weight is
+    // one half.
+    FKMuteParams p;
+    p.dt = 0.004;
+    p.dx = 1e306;
+    p.v_min = -1.5e308;
+    p.v_max = 1.5e308;
+    p.taper = 0.99;
+    p.mode = FKMode::Reject;
+    EXPECT_NEAR(fk_mute_weight(50.0, 1.0 / 3e306, p), 0.5, 1e-9);
+    // k = 0 gives v = +inf, outside every finite band, so the Reject weight is exactly 1.
+    EXPECT_DOUBLE_EQ(fk_mute_weight(50.0, 0.0, p), 1.0);
+}
+
+TEST(FKPipeline, ExtremeEdgeGeometryGivesFiniteOutput) {
+    // The same overflow reached through the pipeline. The v_min edge sits at -1.5e308 with a
+    // transition half width of about 7.4e307, so the edge arithmetic overflows. Every output must
+    // be finite.
+    FKMuteParams p;
+    p.dt = 0.004;
+    p.dx = 1e306;
+    p.v_min = -1.5e308;
+    p.v_max = 1.5e308;
+    p.taper = 0.99;
+    p.mode = FKMode::Reject;
+    p.pad_factor = 1.0;
+    p.edge_taper_traces = 0;
+    const size_t ntr = 3;
+    const size_t ns = 1000;
+    const auto in = random_gather(ntr, ns, 7);
+    const auto out = fk_filter_gather(in, ntr, ns, p);
+    ASSERT_EQ(out.size(), ntr * ns);
+    EXPECT_TRUE(std::all_of(out.begin(), out.end(), [](float v) { return std::isfinite(v); }));
 }
