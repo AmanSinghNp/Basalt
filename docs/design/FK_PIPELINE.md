@@ -269,5 +269,6 @@ at longitude `lon` and latitude `lat` has `group_x = lon * 3600` and `group_y = 
 
 `write_segy` raises `ValueError` for a `headers` value that is not a dict, a key that is not a
 trace header field, a value that is not a 1D array of numbers, an array whose length is not the
-number of traces, a non-finite value, a non-whole value in an integer field, and a stored value
+number of traces (an empty array counts, so it raises unless the file has no traces; omit the key
+to leave a field unset), a non-finite value, a non-whole value in an integer field, and a stored value
 that does not fit its field. Nothing is written to `path` in that case.

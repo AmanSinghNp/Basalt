@@ -149,7 +149,8 @@ print(basalt.read_trace_headers("station.segy")["group_x"] / 3600.0)  # [85.3]
 ```
 
 Bad header input (an unknown key, a wrong length, a value that does not fit its field) raises
-`ValueError` and writes no file.
+`ValueError` and writes no file. An empty array is a wrong length unless the file has no traces;
+leave the key out to keep a field unset.
 
 ### C++
 
