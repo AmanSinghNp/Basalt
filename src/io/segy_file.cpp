@@ -577,24 +577,26 @@ SegyData read_segy(const std::string& path, size_t threads) {
     // Traces are read in chunks of whole records and decoded in parallel. Each chunk is one read
     // call instead of two per trace. The next chunk is read on a helper thread while the current one
     // is decoded. Errors are recorded per trace and the first one in file order is reported, which
-    // matches what a sequential read would report.
+    // matches what a sequential read would report. If the file ends inside a chunk (it shrank after
+    // the size check), that chunk's whole traces are still decoded and checked before the end of file
+    // is reported at the first incomplete trace, as a sequential read would do.
     const size_t nthreads = resolve_threads(threads);
     const size_t per_chunk = std::max<size_t>(1, std::min(ntraces, kChunkBytes / trace_bytes));
     const size_t nchunks = (ntraces + per_chunk - 1) / per_chunk;
     const auto chunk_count = [&](size_t k) { return std::min(per_chunk, ntraces - k * per_chunk); };
+    // Whole traces obtained by a read of `count` traces that returned `bytes_read` bytes.
+    const auto whole_traces = [trace_bytes](size_t count, size_t bytes_read) {
+        return std::min(count, bytes_read / trace_bytes);
+    };
     std::vector<uint8_t> raw[2] = {std::vector<uint8_t>(per_chunk * trace_bytes),
                                    std::vector<uint8_t>(per_chunk * trace_bytes)};
     std::vector<std::string> errors(per_chunk);
-    bool next_ok = true;
-    size_t next_got = 0;  // bytes the next-chunk read obtained before it failed (or all of them)
+    size_t next_got = 0;  // bytes the next-chunk read obtained (fewer than requested at end of file)
     BackgroundTask reader;  // declared last among the state its task uses, so it is joined first
+    size_t avail = 0;       // whole traces in the current chunk
     if (nchunks > 0) {
         in.read(reinterpret_cast<char*>(raw[0].data()), static_cast<std::streamsize>(chunk_count(0) * trace_bytes));
-        if (!in) {
-            // The first trace that is not whole is the one a sequential read would have failed on.
-            const auto got = static_cast<size_t>(in.gcount());
-            fail(path, "unexpected end of file while reading trace " + std::to_string(got / trace_bytes));
-        }
+        avail = whole_traces(chunk_count(0), static_cast<size_t>(in.gcount()));
     }
     for (size_t k = 0; k < nchunks; ++k) {
         const size_t first = k * per_chunk;
@@ -603,16 +605,14 @@ SegyData read_segy(const std::string& path, size_t threads) {
         if (k + 1 < nchunks) {
             uint8_t* next_block = raw[(k + 1) % 2].data();
             const size_t next_count = chunk_count(k + 1);
-            next_ok = true;
-            reader.start([&in, &next_ok, &next_got, next_block, next_count, trace_bytes] {
+            reader.start([&in, &next_got, next_block, next_count, trace_bytes] {
                 in.read(reinterpret_cast<char*>(next_block), static_cast<std::streamsize>(next_count * trace_bytes));
                 next_got = static_cast<size_t>(in.gcount());
-                next_ok = static_cast<bool>(in);
             });
         }
-        std::fill(errors.begin(), errors.begin() + static_cast<std::ptrdiff_t>(count), std::string());
+        std::fill(errors.begin(), errors.begin() + static_cast<std::ptrdiff_t>(avail), std::string());
 
-        parallel_ranges(count, nthreads, [&](size_t b, size_t e) {
+        parallel_ranges(avail, nthreads, [&](size_t b, size_t e) {
             for (size_t i = b; i < e; ++i) {
                 const size_t t = first + i;
                 const uint8_t* record = raw_block + i * trace_bytes;
@@ -638,16 +638,17 @@ SegyData read_segy(const std::string& path, size_t threads) {
             }
         });
 
-        for (size_t i = 0; i < count; ++i) {
+        for (size_t i = 0; i < avail; ++i) {
             if (!errors[i].empty()) {
                 fail(path, errors[i]);  // the reader is joined by its destructor
             }
         }
+        if (avail < count) {
+            fail(path, "unexpected end of file while reading trace " + std::to_string(first + avail));
+        }
         reader.wait();
-        if (k + 1 < nchunks && !next_ok) {
-            const size_t next_first = first + per_chunk;
-            fail(path, "unexpected end of file while reading trace " +
-                           std::to_string(next_first + next_got / trace_bytes));
+        if (k + 1 < nchunks) {
+            avail = whole_traces(chunk_count(k + 1), next_got);
         }
     }
 

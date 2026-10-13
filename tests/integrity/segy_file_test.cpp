@@ -1,6 +1,5 @@
 #include "basalt/io/segy_file.hpp"
 #include "basalt/utils/ebcdic.hpp"
-#include "basalt/utils/ibm_float.hpp"
 
 #include <gtest/gtest.h>
 
@@ -890,12 +889,50 @@ std::vector<uint8_t> words_file(SampleFormat format, const std::vector<uint32_t>
                       traces);
 }
 
+// Independent IBM32 reference. It is written in double precision with ldexp, frexp and floor, and
+// does not use the bit manipulation of utils/ibm_float.hpp, which the library's scalar tails use.
+// Decoding computes value = F * 16^(E-64) / 2^24 with F the 24-bit fraction and E the 7-bit exponent.
+// A zero fraction decodes to zero, and results below the IEEE normal range decode to +0, as in the
+// library. The fraction has at most 24 significant bits, so the double and float results are exact.
+float ibm_reference_decode(uint32_t word) {
+    const uint32_t fraction = word & 0x00FFFFFFu;
+    if (fraction == 0) {
+        return 0.0f;
+    }
+    const int exponent = static_cast<int>((word >> 24) & 0x7Fu);
+    const double magnitude = std::ldexp(static_cast<double>(fraction), 4 * (exponent - 64) - 24);
+    if (magnitude < static_cast<double>(std::numeric_limits<float>::min())) {
+        return 0.0f;
+    }
+    const auto value = static_cast<float>(magnitude);
+    return (word >> 31) != 0 ? -value : value;
+}
+
+// Independent IBM32 encoder. With magnitude = m * 2^p and 0.5 <= m < 1 from frexp, the exponent E is
+// the smallest with magnitude < 16^(E-64), which is 64 + ceil(p / 4). The fraction is then
+// magnitude * 2^(24 - 4*(E-64)) truncated toward zero, which lies in [2^20, 2^24) (normalised). Zero
+// and subnormal inputs encode as zero, as the library does. The input must be finite.
+uint32_t ibm_reference_encode(float value) {
+    const double magnitude = std::fabs(static_cast<double>(value));
+    if (magnitude < static_cast<double>(std::numeric_limits<float>::min())) {
+        return 0u;
+    }
+    int binary_exponent = 0;
+    std::frexp(magnitude, &binary_exponent);
+    const int exponent = 64 + static_cast<int>(std::ceil(binary_exponent / 4.0));
+    const double fraction = std::floor(std::ldexp(magnitude, 24 - 4 * (exponent - 64)));
+    const uint32_t sign = std::signbit(value) ? 0x80000000u : 0u;
+    return sign | (static_cast<uint32_t>(exponent) << 24) | static_cast<uint32_t>(fraction);
+}
+
 } // namespace
 
-// The vector kernels must give the scalar reference's bits for every input they accept. The sweep
-// covers 2^24 words per direction through the public API; the scalar utils functions are the
-// reference. About 1.2 s in a Release build; most of that is the three 64 MiB files it writes and the
-// four it reads back, and the page faults for their buffers.
+// The vector kernels must give the reference's bits for every input they accept. The sweep covers
+// 2^24 words per direction through the public API, and the reference is the independent
+// implementation above (not the scalar code in utils/ibm_float.hpp that the tails use). About 1.8 s in
+// a Release build on a shared 4-core VM, up from 1.1 s with the scalar code: the reference is
+// slower per value. Most of the time is the three 64 MiB files it writes and the four it reads back,
+// and the page faults for their buffers.
 TEST(SegyFileCodecTest, CodecMatchesScalarReferenceOnStridedSweep) {
     const size_t nsamples = 4096;
     const size_t total = size_t{1} << 24;
@@ -906,7 +943,7 @@ TEST(SegyFileCodecTest, CodecMatchesScalarReferenceOnStridedSweep) {
     std::vector<uint32_t> words(total);
     for (size_t i = 0; i < total; ++i) {
         uint32_t w = strided_bits(static_cast<uint32_t>(i));
-        if (!std::isfinite(utils::ibm_to_ieee(w))) {
+        if (!std::isfinite(ibm_reference_decode(w))) {
             w = (w & 0x80FFFFFFu) | 0x40000000u;
         }
         words[i] = w;
@@ -920,7 +957,7 @@ TEST(SegyFileCodecTest, CodecMatchesScalarReferenceOnStridedSweep) {
         ASSERT_EQ(back.samples.size(), total);
         size_t mismatches = 0;
         for (size_t i = 0; i < total; ++i) {
-            if (float_bits(back.samples[i]) != float_bits(utils::ibm_to_ieee(words[i]))) {
+            if (float_bits(back.samples[i]) != float_bits(ibm_reference_decode(words[i]))) {
                 ++mismatches;
             }
         }
@@ -949,7 +986,7 @@ TEST(SegyFileCodecTest, CodecMatchesScalarReferenceOnStridedSweep) {
             const size_t s = i % nsamples;
             const size_t off = 3600 + t * trace_bytes + 240 + s * 4;
             const float v = samples[i];
-            const uint32_t expected = std::fpclassify(v) == FP_SUBNORMAL ? 0u : utils::ieee_to_ibm(v);
+            const uint32_t expected = ibm_reference_encode(v);
             if (get_be32(bytes, off) != expected) {
                 ++mismatches;
             }
@@ -989,8 +1026,8 @@ TEST(SegyFileCodecTest, CodecMatchesScalarReferenceOnStridedSweep) {
 }
 
 // Every length from 1 to 17 samples per trace exercises the vector bodies and their scalar tails.
-// The check is end to end against the scalar reference: decode(encode(v)) must equal
-// ibm_to_ieee(ieee_to_ibm(v)), with subnormals flushed as documented for IBM32.
+// The check is end to end against the independent reference above: decode(encode(v)) must equal
+// ibm_reference_decode(ibm_reference_encode(v)), with subnormals flushed as documented for IBM32.
 TEST(SegyFileCodecTest, TailLengthsRoundTripAgainstScalarReference) {
     for (size_t nsamples = 1; nsamples <= 17; ++nsamples) {
         const size_t ntraces = 3;
@@ -1004,15 +1041,28 @@ TEST(SegyFileCodecTest, TailLengthsRoundTripAgainstScalarReference) {
             for (size_t i = 0; i < samples.size(); ++i) {
                 float expected = samples[i];
                 if (fmt == SampleFormat::IBM32) {
-                    const uint32_t word =
-                        std::fpclassify(expected) == FP_SUBNORMAL ? 0u : utils::ieee_to_ibm(expected);
-                    expected = utils::ibm_to_ieee(word);
+                    expected = ibm_reference_decode(ibm_reference_encode(expected));
                 }
                 ASSERT_EQ(float_bits(back.samples[i]), float_bits(expected))
                     << "length " << nsamples << " format " << static_cast<int>(fmt) << " sample " << i;
             }
         }
     }
+}
+
+// The reference oracle is itself checked against hand-computed words, so that agreement with it in
+// the sweeps and the tail test is meaningful.
+TEST(SegyFileCodecTest, ReferenceOracleMatchesKnownIbmWords) {
+    EXPECT_EQ(ibm_reference_encode(1.0f), 0x41100000u);
+    EXPECT_EQ(ibm_reference_encode(-2.5f), 0xC1280000u);
+    EXPECT_EQ(ibm_reference_encode(0.5f), 0x40800000u);
+    EXPECT_EQ(ibm_reference_encode(-100.0f), 0xC2640000u);
+    EXPECT_EQ(ibm_reference_encode(0.0f), 0u);
+    EXPECT_EQ(ibm_reference_encode(1e-40f), 0u);  // subnormal: flushed to zero
+    EXPECT_EQ(ibm_reference_decode(0xC1280000u), -2.5f);
+    EXPECT_EQ(ibm_reference_decode(0xC2640000u), -100.0f);
+    EXPECT_EQ(ibm_reference_decode(0x00000000u), 0.0f);
+    EXPECT_EQ(ibm_reference_decode(0x00FFFFFFu), 0.0f);  // exponent 0 underflows to zero
 }
 
 // Traces are moved in chunks and encoded or decoded in parallel. The thread count must not change
