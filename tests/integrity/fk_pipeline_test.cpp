@@ -1356,6 +1356,102 @@ TEST(FKPipeline, ConsecutiveParamsDoNotReuseColumnClasses) {
     }
 }
 
+namespace {
+
+// Column classes of the padded spectrum: '1' when every weight is exactly 1, '0' when every weight
+// is exactly 0, 'm' otherwise. Weights come from the public fk_mute_weight, so the expectations do
+// not depend on the pipeline's own classification.
+std::string column_classes(size_t ntr, size_t ns, const FKMuteParams& p) {
+    const size_t n0 = fk_padded_traces(ntr, p);
+    const size_t n1 = fk_padded_samples(ns, p);
+    const size_t nf = n1 / 2 + 1;
+    const double df = 1.0 / (static_cast<double>(n1) * p.dt);
+    const double dk = 1.0 / (static_cast<double>(n0) * p.dx);
+    std::string cls(nf, '?');
+    for (size_t j = 0; j < nf; ++j) {
+        bool all_one = true;
+        bool all_zero = true;
+        for (size_t i = 0; i < n0; ++i) {
+            const double k_index = (i <= (n0 - 1) / 2)
+                ? static_cast<double>(i)
+                : static_cast<double>(i) - static_cast<double>(n0);
+            const float w = static_cast<float>(
+                fk_mute_weight(static_cast<double>(j) * df, k_index * dk, p));
+            all_one = all_one && w == 1.0f;
+            all_zero = all_zero && w == 0.0f;
+        }
+        cls[j] = all_one ? '1' : (all_zero ? '0' : 'm');
+    }
+    return cls;
+}
+
+// Number of frequency positions at which the column class changes.
+size_t class_changes(const std::string& cls) {
+    size_t n = 0;
+    for (size_t j = 1; j < cls.size(); ++j) {
+        n += cls[j] != cls[j - 1] ? 1 : 0;
+    }
+    return n;
+}
+
+} // namespace
+
+TEST(FKPipeline, StagedPathAllThreeClassesInOneCall) {
+    // Pass of a band that contains zero velocity, taper 0. Column 0 is all ones (DC kept, v = 0
+    // inside the band). Pass keeps |v| <= 400, that is |k| >= f / 400, and the largest wavenumber
+    // is 0.1 cycles/m here, so above f = 40 Hz every bin is outside the band and those columns are
+    // all zeros. Between them the columns are mixed. All three classes go through one call.
+    FKMuteParams p = event_params();
+    p.mode = FKMode::Pass;
+    p.v_min = -400.0;
+    p.v_max = 400.0;
+    p.taper = 0.0;
+    const size_t ntr = 24;
+    const size_t ns = 80;
+    const std::string cls = column_classes(ntr, ns, p);
+    EXPECT_EQ(cls[0], '1') << cls;
+    EXPECT_NE(cls.find('0'), std::string::npos) << cls;
+    EXPECT_NE(cls.find('m'), std::string::npos) << cls;
+
+    const auto in = random_gather(ntr, ns, 401);
+    const auto ref = direct_fk_reference(in, ntr, ns, p);
+    for (size_t threads : {size_t{1}, size_t{4}}) {
+        FKMuteParams pt = p;
+        pt.threads = threads;
+        const auto out = fk_filter_gather(in, ntr, ns, pt);
+        EXPECT_LE(error_vs_input(out, ref, in), 1e-5) << "threads " << threads << " " << cls;
+    }
+}
+
+TEST(FKPipeline, StagedPathInterleavedColumnClassesMatchDirectReference) {
+    // A narrow band above zero velocity, so whether a frequency column holds a wavenumber in the
+    // band alternates along frequency. Reject interleaves all-ones and mixed columns; Pass
+    // interleaves all-zeros and mixed columns. Both are checked against the direct reference.
+    const size_t ntr = 24;
+    const size_t ns = 80;
+    const auto in = random_gather(ntr, ns, 409);
+    for (FKMode mode : {FKMode::Reject, FKMode::Pass}) {
+        FKMuteParams p = event_params();
+        p.v_min = 1475.0;
+        p.v_max = 1525.0;
+        p.taper = 0.0;
+        p.mode = mode;
+        const std::string cls = column_classes(ntr, ns, p);
+        EXPECT_GE(class_changes(cls), size_t{20}) << cls;
+        EXPECT_NE(cls.find(mode == FKMode::Reject ? '1' : '0'), std::string::npos) << cls;
+        EXPECT_NE(cls.find('m'), std::string::npos) << cls;
+
+        const auto ref = direct_fk_reference(in, ntr, ns, p);
+        for (size_t threads : {size_t{1}, size_t{4}}) {
+            FKMuteParams pt = p;
+            pt.threads = threads;
+            const auto out = fk_filter_gather(in, ntr, ns, pt);
+            EXPECT_LE(error_vs_input(out, ref, in), 1e-5)
+                << "mode " << static_cast<int>(mode) << " threads " << threads << " " << cls;
+        }
+    }
+}
+
 TEST(FKPipeline, NonFiniteInputIsRejectedAtFirstMiddleAndLastSample) {
     // NaN, +Inf and -Inf at the first, middle and last sample. The call throws before writing
     // `out`, and the in-place call leaves the buffer (which is the input) unchanged.

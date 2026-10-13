@@ -88,7 +88,9 @@ struct FKMuteParams {
 // NaN or infinite samples"). The check runs in the copy-in pass, before any transform, and
 // writes nothing to `out`, so `in` is unchanged when the call throws, including when it aliases
 // `out`. Zero-weight columns are skipped (an implementation detail that does not change the
-// result for finite input), so the check is what keeps a non-finite sample from being dropped.
+// result for finite input unless a float32 spectrum bin overflows to infinity; there the skip
+// gives 0 where a full product would give NaN), so the check is what keeps a non-finite sample
+// from being dropped.
 // `in` and `out` may alias (in-place is allowed).
 void fk_filter_gather(const float* in, float* out,
                       size_t ntraces, size_t nsamples,

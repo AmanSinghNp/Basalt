@@ -510,6 +510,9 @@ void fk_filter_gather(const float* in, float* out,
 
     // Step 4b (B): zero-weight columns are zeroed in every trace row. Ones-weight columns need no
     // work, since their spatial pair is the identity and the time spectrum is already correct.
+    // For finite input this matches the full 2D product up to float rounding. The one other
+    // difference is an overflow: if a float32 spectrum bin of a zero-weight column reaches inf,
+    // the full product gives NaN (inf * 0) there and this path gives 0.
     bool any_zero = false;
     for (const ColRun& r : runs) {
         any_zero = any_zero || r.cls == kColZeros;
