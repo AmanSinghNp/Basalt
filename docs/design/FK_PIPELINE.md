@@ -260,7 +260,9 @@ over all traces:
   `scalar_coord`, `receiver_elevation` for `scalar_elev`) is not a whole number in any trace, and
   `1` when they are all whole. The two defaults are chosen separately.
 
-Fields that are not in `headers` keep zero bytes, and their scalars are zero too. The stored value
+Fields that are not in `headers` keep the bytes `make_segy` gives them: zero, except
+`trace_sequence` (bytes 5-8), which is the 1-based trace number. A scalar is zero unless it is in
+`headers` or a value it scales is. The stored value
 differs from the real value by at most half a stored unit: `s / 2` for a positive scalar `s`,
 `1 / (2 |s|)` for a negative one, and `1 / 2` for zero. Writing the arrays from `read_segy` or
 `read_trace_headers` back into `headers` reproduces the same decoded values.
