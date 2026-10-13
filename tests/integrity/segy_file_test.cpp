@@ -1,6 +1,5 @@
 #include "basalt/io/segy_file.hpp"
 #include "basalt/utils/ebcdic.hpp"
-#include "basalt/utils/ibm_float.hpp"
 
 #include <gtest/gtest.h>
 
@@ -152,9 +151,16 @@ void write_all_bytes(const std::string& path, const std::vector<uint8_t>& bytes)
     ASSERT_TRUE(out.good()) << "could not write " << path;
 }
 
+// Reads the whole file with one sized read (a byte iterator is too slow for the 64 MB sweep files).
 std::vector<uint8_t> read_all_bytes(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    const std::streamoff size = in.tellg();
+    std::vector<uint8_t> bytes(size > 0 ? static_cast<size_t>(size) : 0);
+    in.seekg(0, std::ios::beg);
+    if (!bytes.empty()) {
+        in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+    return bytes;
 }
 
 // Expects read_segy to throw std::runtime_error whose message contains `needle`.
@@ -855,4 +861,304 @@ TEST(SegyFileTest, MakeSegyRejectsDtThatIsNotWholeMicroseconds) {
     EXPECT_NO_THROW(make_segy({1.0f, 2.0f}, 1, 2, 0.000001));
     EXPECT_NO_THROW(make_segy({1.0f, 2.0f}, 1, 2, 0.065535));
     EXPECT_NEAR(make_segy({1.0f, 2.0f}, 1, 2, 0.0005).dt, 0.0005, 1e-12);
+}
+
+// --- Vectorised codec and threading ---
+
+namespace {
+
+// Strided walk over the 2^32 bit patterns: 2^24 distinct words, each 256 apart in the upper 24 bits
+// (so every sign, exponent and top-16 fraction combination is visited). The low byte is taken from
+// bits 13-20 of the index so that it varies as well.
+uint32_t strided_bits(uint32_t i) {
+    return (i << 8) | ((i >> 13) & 0xFFu);
+}
+
+// File image whose traces hold `words` (raw 32-bit sample words, `nsamples` per trace).
+std::vector<uint8_t> words_file(SampleFormat format, const std::vector<uint32_t>& words, size_t nsamples) {
+    const size_t ntraces = words.size() / nsamples;
+    std::vector<std::vector<uint8_t>> traces;
+    traces.reserve(ntraces);
+    for (size_t t = 0; t < ntraces; ++t) {
+        const auto first = words.begin() + static_cast<std::ptrdiff_t>(t * nsamples);
+        const std::vector<uint32_t> row(first, first + static_cast<std::ptrdiff_t>(nsamples));
+        traces.push_back(trace(static_cast<uint32_t>(t + 1), static_cast<uint16_t>(nsamples), raw32_bytes(row)));
+    }
+    return file_image(ascii_text("CODEC TEST"),
+                      binary_header(static_cast<uint16_t>(format), 4000, static_cast<uint16_t>(nsamples)), {},
+                      traces);
+}
+
+// Independent IBM32 reference. It is written in double precision with ldexp, frexp and floor, and
+// does not use the bit manipulation of utils/ibm_float.hpp, which the library's scalar tails use.
+// Decoding computes value = F * 16^(E-64) / 2^24 with F the 24-bit fraction and E the 7-bit exponent.
+// A zero fraction decodes to zero, and results below the IEEE normal range decode to +0, as in the
+// library. The fraction has at most 24 significant bits, so the double and float results are exact.
+float ibm_reference_decode(uint32_t word) {
+    const uint32_t fraction = word & 0x00FFFFFFu;
+    if (fraction == 0) {
+        return 0.0f;
+    }
+    const int exponent = static_cast<int>((word >> 24) & 0x7Fu);
+    const double magnitude = std::ldexp(static_cast<double>(fraction), 4 * (exponent - 64) - 24);
+    if (magnitude < static_cast<double>(std::numeric_limits<float>::min())) {
+        return 0.0f;
+    }
+    const auto value = static_cast<float>(magnitude);
+    return (word >> 31) != 0 ? -value : value;
+}
+
+// Independent IBM32 encoder. With magnitude = m * 2^p and 0.5 <= m < 1 from frexp, the exponent E is
+// the smallest with magnitude < 16^(E-64), which is 64 + ceil(p / 4). The fraction is then
+// magnitude * 2^(24 - 4*(E-64)) truncated toward zero, which lies in [2^20, 2^24) (normalised). Zero
+// and subnormal inputs encode as zero, as the library does. The input must be finite.
+uint32_t ibm_reference_encode(float value) {
+    const double magnitude = std::fabs(static_cast<double>(value));
+    if (magnitude < static_cast<double>(std::numeric_limits<float>::min())) {
+        return 0u;
+    }
+    int binary_exponent = 0;
+    std::frexp(magnitude, &binary_exponent);
+    const int exponent = 64 + static_cast<int>(std::ceil(binary_exponent / 4.0));
+    const double fraction = std::floor(std::ldexp(magnitude, 24 - 4 * (exponent - 64)));
+    const uint32_t sign = std::signbit(value) ? 0x80000000u : 0u;
+    return sign | (static_cast<uint32_t>(exponent) << 24) | static_cast<uint32_t>(fraction);
+}
+
+} // namespace
+
+// The vector kernels must give the reference's bits for every input they accept. The sweep covers
+// 2^24 words per direction through the public API, and the reference is the independent
+// implementation above (not the scalar code in utils/ibm_float.hpp that the tails use). About 1.8 s in
+// a Release build on a shared 4-core VM, up from 1.1 s with the scalar code: the reference is
+// slower per value. Most of the time is the three 64 MiB files it writes and the four it reads back,
+// and the page faults for their buffers.
+TEST(SegyFileCodecTest, CodecMatchesScalarReferenceOnStridedSweep) {
+    const size_t nsamples = 4096;
+    const size_t total = size_t{1} << 24;
+    const size_t ntraces = total / nsamples;
+
+    // IBM decode: every word is decoded and compared bit for bit. Words beyond the IEEE range are
+    // rejected by the reader (tested separately), so they are replaced by a word of small exponent.
+    std::vector<uint32_t> words(total);
+    for (size_t i = 0; i < total; ++i) {
+        uint32_t w = strided_bits(static_cast<uint32_t>(i));
+        if (!std::isfinite(ibm_reference_decode(w))) {
+            w = (w & 0x80FFFFFFu) | 0x40000000u;
+        }
+        words[i] = w;
+    }
+    {
+        // One read, single-threaded: a second 64 MiB pass costs more than it adds. Thread-count
+        // independence is checked by ThreadCountDoesNotChangeBytesOrSamples.
+        TempFile file("ibm_codec_decode");
+        write_all_bytes(file.path(), words_file(SampleFormat::IBM32, words, nsamples));
+        const SegyData back = read_segy(file.path(), 1);
+        ASSERT_EQ(back.samples.size(), total);
+        size_t mismatches = 0;
+        for (size_t i = 0; i < total; ++i) {
+            if (float_bits(back.samples[i]) != float_bits(ibm_reference_decode(words[i]))) {
+                ++mismatches;
+            }
+        }
+        EXPECT_EQ(mismatches, 0u) << "IBM decode";
+    }
+
+    // IBM encode: samples are the strided float patterns. Non-finite values cannot be written as
+    // IBM (write_segy rejects them), so they become zero. Subnormals encode as zero.
+    std::vector<float> samples(total);
+    for (size_t i = 0; i < total; ++i) {
+        float v;
+        const uint32_t bits = strided_bits(static_cast<uint32_t>(i));
+        std::memcpy(&v, &bits, sizeof(v));
+        samples[i] = std::isfinite(v) ? v : 0.0f;
+    }
+    {
+        TempFile file("ibm_codec_encode");
+        const SegyData data = make_segy(samples, ntraces, nsamples, 0.004, SampleFormat::IBM32);
+        write_segy(file.path(), data, SampleFormat::IBM32, 4);
+        const auto bytes = read_all_bytes(file.path());
+        const size_t trace_bytes = 240 + nsamples * 4;
+        ASSERT_EQ(bytes.size(), 3600 + ntraces * trace_bytes);
+        size_t mismatches = 0;
+        for (size_t i = 0; i < total; ++i) {
+            const size_t t = i / nsamples;
+            const size_t s = i % nsamples;
+            const size_t off = 3600 + t * trace_bytes + 240 + s * 4;
+            const float v = samples[i];
+            const uint32_t expected = ibm_reference_encode(v);
+            if (get_be32(bytes, off) != expected) {
+                ++mismatches;
+            }
+        }
+        EXPECT_EQ(mismatches, 0u) << "IBM encode";
+    }
+
+    // IEEE: the byte swap must be exact for every bit pattern, including NaN, infinity and
+    // subnormals, so the file holds the big-endian bits and reads back identical.
+    std::vector<float> ieee(total);
+    for (size_t i = 0; i < total; ++i) {
+        const uint32_t bits = strided_bits(static_cast<uint32_t>(i));
+        std::memcpy(&ieee[i], &bits, sizeof(float));
+    }
+    {
+        TempFile file("ieee_codec_sweep");
+        const SegyData data = make_segy(ieee, ntraces, nsamples, 0.004, SampleFormat::IEEE32);
+        write_segy(file.path(), data, SampleFormat::IEEE32, 4);
+        const auto bytes = read_all_bytes(file.path());
+        size_t wrong_bytes = 0;
+        for (size_t i = 0; i < total; ++i) {
+            const size_t off = 3600 + (i / nsamples) * (240 + nsamples * 4) + 240 + (i % nsamples) * 4;
+            if (get_be32(bytes, off) != float_bits(ieee[i])) {
+                ++wrong_bytes;
+            }
+        }
+        EXPECT_EQ(wrong_bytes, 0u) << "IEEE encode";
+        const SegyData back = read_segy(file.path(), 4);
+        size_t mismatches = 0;
+        for (size_t i = 0; i < total; ++i) {
+            if (float_bits(back.samples[i]) != float_bits(ieee[i])) {
+                ++mismatches;
+            }
+        }
+        EXPECT_EQ(mismatches, 0u) << "IEEE decode";
+    }
+}
+
+// Every length from 1 to 17 samples per trace exercises the vector bodies and their scalar tails.
+// The check is end to end against the independent reference above: decode(encode(v)) must equal
+// ibm_reference_decode(ibm_reference_encode(v)), with subnormals flushed as documented for IBM32.
+TEST(SegyFileCodecTest, TailLengthsRoundTripAgainstScalarReference) {
+    for (size_t nsamples = 1; nsamples <= 17; ++nsamples) {
+        const size_t ntraces = 3;
+        const auto samples = random_samples(ntraces * nsamples, 5000.0f, static_cast<uint32_t>(nsamples));
+        for (SampleFormat fmt : {SampleFormat::IBM32, SampleFormat::IEEE32}) {
+            const SegyData data = make_segy(samples, ntraces, nsamples, 0.002, fmt);
+            TempFile file("codec_tail");
+            write_segy(file.path(), data, fmt, 4);
+            const SegyData back = read_segy(file.path(), 4);
+            ASSERT_EQ(back.samples.size(), samples.size());
+            for (size_t i = 0; i < samples.size(); ++i) {
+                float expected = samples[i];
+                if (fmt == SampleFormat::IBM32) {
+                    expected = ibm_reference_decode(ibm_reference_encode(expected));
+                }
+                ASSERT_EQ(float_bits(back.samples[i]), float_bits(expected))
+                    << "length " << nsamples << " format " << static_cast<int>(fmt) << " sample " << i;
+            }
+        }
+    }
+}
+
+// The reference oracle is itself checked against hand-computed words, so that agreement with it in
+// the sweeps and the tail test is meaningful.
+TEST(SegyFileCodecTest, ReferenceOracleMatchesKnownIbmWords) {
+    EXPECT_EQ(ibm_reference_encode(1.0f), 0x41100000u);
+    EXPECT_EQ(ibm_reference_encode(-2.5f), 0xC1280000u);
+    EXPECT_EQ(ibm_reference_encode(0.5f), 0x40800000u);
+    EXPECT_EQ(ibm_reference_encode(-100.0f), 0xC2640000u);
+    EXPECT_EQ(ibm_reference_encode(0.0f), 0u);
+    EXPECT_EQ(ibm_reference_encode(1e-40f), 0u);  // subnormal: flushed to zero
+    EXPECT_EQ(ibm_reference_decode(0xC1280000u), -2.5f);
+    EXPECT_EQ(ibm_reference_decode(0xC2640000u), -100.0f);
+    EXPECT_EQ(ibm_reference_decode(0x00000000u), 0.0f);
+    EXPECT_EQ(ibm_reference_decode(0x00FFFFFFu), 0.0f);  // exponent 0 underflows to zero
+}
+
+// Traces are moved in chunks and encoded or decoded in parallel. The thread count must not change
+// any byte written or any value read. 2500 traces of 1001 samples span two 8 MiB chunks.
+TEST(SegyFileTest, ThreadCountDoesNotChangeBytesOrSamples) {
+    const size_t ntraces = 2500;
+    const size_t nsamples = 1001;
+    const auto samples = random_samples(ntraces * nsamples, 1000.0f, 99);
+    for (SampleFormat fmt : {SampleFormat::IBM32, SampleFormat::IEEE32}) {
+        const SegyData data = make_segy(samples, ntraces, nsamples, 0.002, fmt);
+
+        TempFile one("threads_one");
+        TempFile many("threads_many");
+        TempFile hw("threads_hw");
+        write_segy(one.path(), data, fmt, 1);
+        write_segy(many.path(), data, fmt, 4);
+        write_segy(hw.path(), data, fmt, 0);
+        EXPECT_EQ(read_all_bytes(one.path()), read_all_bytes(many.path()))
+            << "format " << static_cast<int>(fmt);
+        EXPECT_EQ(read_all_bytes(one.path()), read_all_bytes(hw.path()))
+            << "format " << static_cast<int>(fmt);
+
+        const SegyData back1 = read_segy(one.path(), 1);
+        const SegyData back4 = read_segy(one.path(), 4);
+        const SegyData back0 = read_segy(one.path(), 0);
+        EXPECT_EQ(back1.ntraces, ntraces);
+        EXPECT_EQ(back1.samples, back4.samples) << "format " << static_cast<int>(fmt);
+        EXPECT_EQ(back1.samples, back0.samples) << "format " << static_cast<int>(fmt);
+        EXPECT_EQ(back1.raw_trace_headers, back4.raw_trace_headers);
+        EXPECT_EQ(back1.raw_trace_headers, back0.raw_trace_headers);
+        if (fmt == SampleFormat::IEEE32) {
+            EXPECT_EQ(back1.samples, samples);  // exact round trip across the chunk boundary
+        }
+    }
+}
+
+// Fewer traces than threads, one trace, and no traces at all must give the same bytes and samples for
+// every thread count, as the larger files do.
+TEST(SegyFileTest, TinyTraceCountsAreThreadCountIndependent) {
+    const size_t nsamples = 5;
+    for (size_t ntraces : {size_t{0}, size_t{1}, size_t{3}}) {
+        const auto samples = random_samples(ntraces * nsamples, 100.0f, static_cast<uint32_t>(ntraces + 1));
+        for (SampleFormat fmt : {SampleFormat::IBM32, SampleFormat::IEEE32}) {
+            const SegyData data = make_segy(samples, ntraces, nsamples, 0.002, fmt);
+            TempFile one("tiny_one");
+            TempFile many("tiny_many");
+            write_segy(one.path(), data, fmt, 1);
+            write_segy(many.path(), data, fmt, 4);
+            EXPECT_EQ(read_all_bytes(one.path()), read_all_bytes(many.path()))
+                << "ntraces " << ntraces << " format " << static_cast<int>(fmt);
+            const SegyData back1 = read_segy(one.path(), 1);
+            const SegyData back4 = read_segy(one.path(), 4);
+            EXPECT_EQ(back1.ntraces, ntraces);
+            EXPECT_EQ(back1.samples, back4.samples) << "ntraces " << ntraces << " format " << static_cast<int>(fmt);
+            EXPECT_EQ(back1.raw_trace_headers, back4.raw_trace_headers);
+        }
+    }
+}
+
+// Errors are recorded per trace and the first one in file order is reported, whatever the thread
+// count. The bad IBM word is in the second chunk, so it is found after the parallel decode.
+TEST(SegyFileTest, ReadErrorInLaterChunkNamesTheFirstBadTraceForAnyThreadCount) {
+    const size_t ntraces = 2500;
+    const size_t nsamples = 1001;
+    std::vector<uint32_t> words(ntraces * nsamples, 0x41100000u);  // 1.0
+    words[2100 * nsamples + 7] = 0x7FFFFFFFu;  // beyond the IEEE range
+    words[2200 * nsamples + 3] = 0x7F000001u;  // also bad, but later in the file
+    TempFile file("codec_late_error");
+    write_all_bytes(file.path(), words_file(SampleFormat::IBM32, words, nsamples));
+    for (size_t threads : {size_t{1}, size_t{4}, size_t{0}}) {
+        try {
+            (void)read_segy(file.path(), threads);
+            ADD_FAILURE() << "read_segy did not throw with threads " << threads;
+        } catch (const std::runtime_error& e) {
+            const std::string msg = e.what();
+            EXPECT_NE(msg.find("IBM sample 7 of trace 2100 exceeds"), std::string::npos)
+                << "threads " << threads << ": " << msg;
+        }
+    }
+}
+
+// A write that the file system refuses is reported after the background write has finished, with
+// the same message as before. /dev/full accepts open but fails every write with ENOSPC.
+TEST(SegyFileTest, WriteFailureDuringChunkedWriteIsReported) {
+    if (!std::ifstream("/dev/full").good()) {
+        GTEST_SKIP() << "/dev/full is not available";
+    }
+    const auto samples = random_samples(3000 * 1001, 100.0f, 7);
+    for (size_t threads : {size_t{1}, size_t{4}}) {
+        const SegyData data = make_segy(samples, 3000, 1001, 0.002, SampleFormat::IEEE32);
+        try {
+            write_segy("/dev/full", data, SampleFormat::IEEE32, threads);
+            ADD_FAILURE() << "write_segy did not throw with threads " << threads;
+        } catch (const std::runtime_error& e) {
+            EXPECT_NE(std::string(e.what()).find("failed while writing SEG-Y file '/dev/full'"), std::string::npos)
+                << e.what();
+        }
+    }
 }

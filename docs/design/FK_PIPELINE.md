@@ -165,7 +165,7 @@ struct SegyData {
 // Reads a big-endian SEG-Y rev 0/1 file with fixed trace length. Supports formats 1, 2, 3, 5, 8.
 // Honors extended textual headers count (bytes 3505-3506) by skipping them.
 // Throws std::runtime_error with a clear message on malformed input.
-SegyData read_segy(const std::string& path);
+SegyData read_segy(const std::string& path, size_t threads = 1);
 
 // Writes a SEG-Y file. Headers are written back from the raw arrays, except that the
 // binary header format code is updated to `out_format` (samples are encoded in it) and the
@@ -173,7 +173,7 @@ SegyData read_segy(const std::string& path);
 // headers are skipped on read and not written back.
 // Supports writing IBM32 and IEEE32.
 void write_segy(const std::string& path, const SegyData& data,
-                SampleFormat out_format = SampleFormat::IEEE32);
+                SampleFormat out_format = SampleFormat::IEEE32, size_t threads = 1);
 
 // Builds a minimal valid SegyData from samples (used by tests, the CLI and Python).
 SegyData make_segy(const std::vector<float>& samples, size_t ntraces, size_t nsamples,
@@ -184,6 +184,11 @@ SegyData make_segy(const std::vector<float>& samples, size_t ntraces, size_t nsa
 Use the existing `basalt/utils/ibm_float.hpp`, `basalt/utils/ebcdic.hpp` and
 `basalt/segy_format.hpp` helpers. Do not use memory mapping in the reader (plain
 `std::ifstream` is fine); correctness first.
+
+`threads` (default 1) is the number of threads that decode or encode samples in
+`read_segy` and `write_segy`; 0 means hardware concurrency. The result does not depend on it.
+Even at 1 thread, file I/O overlaps the codec on a helper thread, so benchmark rows at 1 thread
+measure that overlap as well as the codec.
 
 ## 6. CLI
 
