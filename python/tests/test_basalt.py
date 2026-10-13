@@ -963,6 +963,30 @@ def test_write_segy_headers_errors_raise_value_error_and_write_no_file():
         assert basalt.read_trace_headers(ok)["group_x"][0] == 3e7
 
 
+def test_write_segy_empty_header_array_is_a_wrong_length_unless_there_are_no_traces():
+    samples = np.zeros((3, 4), np.float32)
+    bad = [
+        {"group_x": []},                                # empty list for 3 traces
+        {"group_y": np.array([])},                      # empty array for 3 traces
+        {"trace_sequence": ()},                         # empty tuple for 3 traces
+        {"scalar_coord": []},                           # empty scalar for 3 traces
+        {"group_x": [], "group_y": [1.0, 2.0, 3.0]},    # one empty array among valid ones
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        for i, headers in enumerate(bad):
+            path = os.path.join(tmp, f"empty_{i}.sgy")
+            _raises(ValueError, basalt.write_segy, path, samples, 0.004, headers=headers)
+            assert not os.path.exists(path), headers
+        # Omitting the key is how a field is left unset; the file then holds zeros there.
+        unset = os.path.join(tmp, "unset.sgy")
+        basalt.write_segy(unset, samples, 0.004, headers={"group_y": [1.0, 2.0, 3.0]})
+        assert basalt.read_trace_headers(unset)["group_x"].tolist() == [0.0, 0.0, 0.0]
+        # A file with no traces has no values to give, so an empty array is accepted there.
+        none = os.path.join(tmp, "none.sgy")
+        basalt.write_segy(none, np.zeros((0, 4), np.float32), 0.004, headers={"group_x": []})
+        assert basalt.read_trace_headers(none)["group_x"].size == 0
+
+
 def test_write_segy_without_headers_or_with_empty_dict_writes_identical_files():
     rng = np.random.default_rng(43)
     samples = rng.standard_normal((2, 6)).astype(np.float32)

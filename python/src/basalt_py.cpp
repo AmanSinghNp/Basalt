@@ -303,9 +303,11 @@ const WritableHeader kWritableHeaders[] = {
 };
 
 // Reads the optional `headers` argument of write_segy. None or an empty dict sets no header
-// values. Keys must name a trace header field, and each value must be a 1D array of numbers. The
-// core checks the lengths, whole-number requirements and field ranges.
-io::TraceHeaderValues header_values_arg(const py::object& headers) {
+// values. Keys must name a trace header field, and each value must be a 1D array of numbers with
+// one value per trace. The core treats an empty vector as "not given", so an empty array is
+// rejected here unless the file has no traces; a field is left unset by omitting its key. The core
+// checks the other lengths, whole-number requirements and field ranges.
+io::TraceHeaderValues header_values_arg(const py::object& headers, size_t ntraces) {
     io::TraceHeaderValues values;
     if (headers.is_none()) {
         return values;
@@ -338,6 +340,11 @@ io::TraceHeaderValues header_values_arg(const py::object& headers) {
             throw std::invalid_argument("write_segy: headers['" + key +
                                         "'] must be 1D, with one value per trace");
         }
+        if (array.size() == 0 && ntraces != 0) {
+            throw std::invalid_argument("write_segy: headers['" + key + "'] has 0 values for " +
+                                        std::to_string(ntraces) +
+                                        " traces; omit the key to leave the field unset");
+        }
         std::vector<double>& target = values.*(field->member);
         target.assign(array.data(), array.data() + array.size());
     }
@@ -349,8 +356,8 @@ void write_file(const py::object& path, const py::object& samples, double dt,
     const std::string file = to_path(path);
     const FloatArray array = as_gather(samples, "write_segy", "samples");
     const io::SampleFormat out_format = parse_write_format(format);
-    const io::TraceHeaderValues header_values = header_values_arg(headers);
     const size_t ntraces = static_cast<size_t>(array.shape(0));
+    const io::TraceHeaderValues header_values = header_values_arg(headers, ntraces);
     const size_t nsamples = static_cast<size_t>(array.shape(1));
     const std::vector<float> values(array.data(), array.data() + array.size());
     py::gil_scoped_release release;
