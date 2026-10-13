@@ -462,3 +462,215 @@ TEST(TraceHeadersTest, ReadTraceHeadersStillValidatesTheLayout) {
 TEST(TraceHeadersTest, ReadTraceHeadersOfMissingFileThrows) {
     expect_headers_error(::testing::TempDir() + "basalt_no_such_trace_headers_file.segy", "cannot open");
 }
+
+// --- Encoding ---
+
+namespace {
+
+// Headers filled with the 0xAB marker, so a test can see which bytes encoding wrote.
+std::vector<RawHeader> blank_headers(size_t ntraces) {
+    return std::vector<RawHeader>(ntraces, filled_header());
+}
+
+} // namespace
+
+TEST(TraceHeadersTest, EncodeThenDecodeRoundTripsEveryField) {
+    TraceHeaderValues v;
+    v.trace_sequence = {7, -9};
+    v.field_record = {1001, 2002};
+    v.channel = {3, 4};
+    v.offset = {-250, 2000000000};
+    v.scalar_elev = {-10, 2};
+    v.receiver_elevation = {-1.5, 1500.0};
+    v.scalar_coord = {-100, 1};
+    v.source_x = {123.45, -12.0};
+    v.source_y = {-0.01, 0.0};
+    v.group_x = {307155.56, 987654.0};
+    v.group_y = {99720.0, -5.0};
+    v.coord_units = {2, 3};
+    v.delay_ms = {-20, 300};
+    v.year = {2026, 1999};
+    v.day_of_year = {286, 366};
+    v.hour = {23, 0};
+    v.minute = {59, 1};
+    v.second = {58, 2};
+
+    auto raw = blank_headers(2);
+    encode_trace_headers(raw, v);
+    const TraceHeaders h = decode_trace_headers(raw);
+
+    EXPECT_EQ(h.trace_sequence, (std::vector<int32_t>{7, -9}));
+    EXPECT_EQ(h.field_record, (std::vector<int32_t>{1001, 2002}));
+    EXPECT_EQ(h.channel, (std::vector<int32_t>{3, 4}));
+    EXPECT_EQ(h.offset, (std::vector<int32_t>{-250, 2000000000}));
+    EXPECT_EQ(h.scalar_elev, (std::vector<int16_t>{-10, 2}));
+    EXPECT_EQ(h.scalar_coord, (std::vector<int16_t>{-100, 1}));
+    EXPECT_EQ(h.coord_units, (std::vector<int16_t>{2, 3}));
+    EXPECT_EQ(h.delay_ms, (std::vector<int16_t>{-20, 300}));
+    EXPECT_EQ(h.year, (std::vector<int16_t>{2026, 1999}));
+    EXPECT_EQ(h.day_of_year, (std::vector<int16_t>{286, 366}));
+    EXPECT_EQ(h.hour, (std::vector<int16_t>{23, 0}));
+    EXPECT_EQ(h.minute, (std::vector<int16_t>{59, 1}));
+    EXPECT_EQ(h.second, (std::vector<int16_t>{58, 2}));
+    // Scaled values come back to within the resolution of their scalar (0.01 for -100, and 0.1
+    // for elevation -10 once rounded to whole stored units).
+    EXPECT_NEAR(h.receiver_elevation[0], -1.5, 1e-9);
+    EXPECT_NEAR(h.receiver_elevation[1], 1500.0, 1e-9);
+    EXPECT_NEAR(h.source_x[0], 123.45, 0.005);
+    EXPECT_NEAR(h.source_x[1], -12.0, 1e-9);
+    EXPECT_NEAR(h.source_y[0], -0.01, 0.005);
+    EXPECT_NEAR(h.group_x[0], 307155.56, 0.005);
+    EXPECT_DOUBLE_EQ(h.group_x[1], 987654.0);
+    EXPECT_DOUBLE_EQ(h.group_y[0], 99720.0);
+    EXPECT_DOUBLE_EQ(h.group_y[1], -5.0);
+}
+
+TEST(TraceHeadersTest, EncodeWritesBigEndianAtContractBytes) {
+    TraceHeaderValues v;
+    v.channel = {0x01020304};     // bytes 13-16
+    v.year = {-2};                // bytes 157-158
+    v.group_x = {0x0A0B0C0D};     // bytes 81-84, scalar 1
+    auto raw = blank_headers(1);
+    encode_trace_headers(raw, v);
+
+    const RawHeader& h = raw[0];
+    EXPECT_EQ(h[12], 0x01);
+    EXPECT_EQ(h[13], 0x02);
+    EXPECT_EQ(h[14], 0x03);
+    EXPECT_EQ(h[15], 0x04);
+    EXPECT_EQ(h[156], 0xFF);
+    EXPECT_EQ(h[157], 0xFE);
+    EXPECT_EQ(h[80], 0x0A);
+    EXPECT_EQ(h[83], 0x0D);
+    EXPECT_EQ(h[16], 0xAB);       // byte 17 is not a written field
+    EXPECT_EQ(h[88], 0xAB);       // byte 89 (coord_units) is not written when it is absent
+}
+
+TEST(TraceHeadersTest, AbsentFieldsAreLeftAsTheyWere) {
+    auto raw = blank_headers(3);
+    const auto before = raw;
+    encode_trace_headers(raw, TraceHeaderValues{});
+    EXPECT_EQ(raw, before);
+    // An empty header list needs no values at all.
+    std::vector<RawHeader> none;
+    encode_trace_headers(none, TraceHeaderValues{});
+    EXPECT_TRUE(none.empty());
+}
+
+TEST(TraceHeadersTest, DefaultCoordinateScalarIsPerTrace) {
+    TraceHeaderValues v;
+    v.group_x = {12.5, 12.0, -0.25};
+    v.group_y = {1.0, 2.0, 3.0};
+    v.receiver_elevation = {100.0, 100.5, 42.0};
+    auto raw = blank_headers(3);
+    encode_trace_headers(raw, v);
+    const TraceHeaders h = decode_trace_headers(raw);
+
+    // Trace 0 and 2 have a fraction in their coordinates, so they get -100. Trace 1 is whole.
+    EXPECT_EQ(h.scalar_coord, (std::vector<int16_t>{-100, 1, -100}));
+    EXPECT_EQ(h.scalar_elev, (std::vector<int16_t>{1, -100, 1}));
+    EXPECT_DOUBLE_EQ(h.group_x[0], 12.5);
+    EXPECT_DOUBLE_EQ(h.group_x[1], 12.0);
+    EXPECT_DOUBLE_EQ(h.group_x[2], -0.25);
+    EXPECT_DOUBLE_EQ(h.receiver_elevation[0], 100.0);
+    EXPECT_DOUBLE_EQ(h.receiver_elevation[1], 100.5);
+}
+
+TEST(TraceHeadersTest, GivenScalarIsStoredAndUsed) {
+    TraceHeaderValues v;
+    v.scalar_coord = {10, -100, 0};
+    v.group_x = {1230.0, 123.45, 987654.0};
+    v.scalar_elev = {-10, 2, 0};
+    v.receiver_elevation = {-1.5, 500.0, 42.0};
+    auto raw = blank_headers(3);
+    encode_trace_headers(raw, v);
+
+    // Stored raw: the scalar, then round(value / scale), so 1230 at scalar 10 stores 123.
+    EXPECT_EQ((raw[0][70] << 8) | raw[0][71], 10);
+    const TraceHeaders h = decode_trace_headers(raw);
+    EXPECT_EQ(h.scalar_coord, (std::vector<int16_t>{10, -100, 0}));
+    EXPECT_DOUBLE_EQ(h.group_x[0], 1230.0);
+    EXPECT_NEAR(h.group_x[1], 123.45, 0.005);
+    EXPECT_DOUBLE_EQ(h.group_x[2], 987654.0);
+    EXPECT_NEAR(h.receiver_elevation[0], -1.5, 1e-9);
+    EXPECT_DOUBLE_EQ(h.receiver_elevation[1], 500.0);
+    EXPECT_DOUBLE_EQ(h.receiver_elevation[2], 42.0);
+}
+
+TEST(TraceHeadersTest, ScalarAllowsValuesBeyondTheInt32Range) {
+    TraceHeaderValues v;
+    v.scalar_coord = {10};
+    v.group_x = {1.0e10};   // stored as 1e9, which fits; at scalar 1 it would overflow
+    auto raw = blank_headers(1);
+    encode_trace_headers(raw, v);
+    EXPECT_DOUBLE_EQ(decode_trace_headers(raw).group_x[0], 1.0e10);
+}
+
+TEST(TraceHeadersTest, WrongLengthThrowsNamingTheField) {
+    TraceHeaderValues v;
+    v.source_x = {1.0};
+    auto raw = blank_headers(2);
+    try {
+        encode_trace_headers(raw, v);
+        ADD_FAILURE() << "no exception";
+    } catch (const std::invalid_argument& e) {
+        const std::string msg = e.what();
+        EXPECT_NE(msg.find("source_x"), std::string::npos) << msg;
+        EXPECT_NE(msg.find("1 values for 2 traces"), std::string::npos) << msg;
+    }
+}
+
+TEST(TraceHeadersTest, IntegerFieldMustBeWholeAndInRange) {
+    auto raw = blank_headers(1);
+    TraceHeaderValues frac;
+    frac.channel = {1.5};
+    EXPECT_THROW(encode_trace_headers(raw, frac), std::invalid_argument);
+
+    TraceHeaderValues big;
+    big.trace_sequence = {2147483648.0};
+    EXPECT_THROW(encode_trace_headers(raw, big), std::invalid_argument);
+
+    TraceHeaderValues low;
+    low.year = {-32769};
+    EXPECT_THROW(encode_trace_headers(raw, low), std::invalid_argument);
+
+    TraceHeaderValues edge;
+    edge.trace_sequence = {-2147483648.0};
+    edge.year = {32767};
+    encode_trace_headers(raw, edge);
+    const TraceHeaders h = decode_trace_headers(raw);
+    EXPECT_EQ(h.trace_sequence[0], -2147483647 - 1);
+    EXPECT_EQ(h.year[0], 32767);
+}
+
+TEST(TraceHeadersTest, ScaledValueMustFitItsField) {
+    auto raw = blank_headers(1);
+    TraceHeaderValues over;
+    over.scalar_coord = {-100};
+    over.group_x = {3.0e7};   // stored 3e9, beyond int32
+    EXPECT_THROW(encode_trace_headers(raw, over), std::invalid_argument);
+
+    TraceHeaderValues fits;
+    fits.scalar_coord = {100};
+    fits.group_x = {3.0e7};   // stored 3e5
+    encode_trace_headers(raw, fits);
+    EXPECT_DOUBLE_EQ(decode_trace_headers(raw).group_x[0], 3.0e7);
+}
+
+TEST(TraceHeadersTest, ScalarOutOfInt16RangeThrows) {
+    auto raw = blank_headers(1);
+    TraceHeaderValues v;
+    v.scalar_elev = {40000};
+    EXPECT_THROW(encode_trace_headers(raw, v), std::invalid_argument);
+}
+
+TEST(TraceHeadersTest, NonFiniteValueThrows) {
+    auto raw = blank_headers(1);
+    TraceHeaderValues v;
+    v.group_y = {std::numeric_limits<double>::quiet_NaN()};
+    EXPECT_THROW(encode_trace_headers(raw, v), std::invalid_argument);
+
+    TraceHeaderValues inf;
+    inf.receiver_elevation = {std::numeric_limits<double>::infinity()};
+    EXPECT_THROW(encode_trace_headers(raw, inf), std::invalid_argument);
+}

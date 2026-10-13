@@ -44,4 +44,39 @@ TraceHeaders decode_trace_headers(const std::vector<std::array<uint8_t, 240>>& r
 // Throws std::runtime_error (naming the file) on the same malformed input as read_segy_headers.
 TraceHeaders read_trace_headers(const std::string& path);
 
+// Values to store in trace headers, one vector per field with the names of TraceHeaders. A vector
+// that is empty leaves its field as it is; otherwise it holds one value per trace. Integer fields
+// take whole numbers. Coordinates and receiver_elevation take real values, which are stored as
+// round(value / scale), where the scale comes from the field's scalar.
+struct TraceHeaderValues {
+    std::vector<double> trace_sequence;
+    std::vector<double> field_record;
+    std::vector<double> channel;
+    std::vector<double> offset;
+    std::vector<double> scalar_elev;
+    std::vector<double> scalar_coord;
+    std::vector<double> coord_units;
+    std::vector<double> source_x;
+    std::vector<double> source_y;
+    std::vector<double> group_x;
+    std::vector<double> group_y;
+    std::vector<double> receiver_elevation;
+    std::vector<double> delay_ms;
+    std::vector<double> year;
+    std::vector<double> day_of_year;
+    std::vector<double> hour;
+    std::vector<double> minute;
+    std::vector<double> second;
+};
+
+// Writes `values` into the raw big-endian trace headers, one entry per trace. A scalar that is not
+// given is chosen for each trace: -100 when a coordinate (or the elevation) of that trace is not a
+// whole number, and 1 otherwise. A scalar is written when it is given or when a value it scales is
+// given. Throws std::invalid_argument, naming the field, when a vector length differs from
+// raw.size(), a value is not finite, an integer field is not a whole number, or a stored value does
+// not fit its field. Lengths and finiteness are checked before any byte is written; if a later
+// value fails, raw may already hold the values written for earlier traces.
+void encode_trace_headers(std::vector<std::array<uint8_t, 240>>& raw,
+                          const TraceHeaderValues& values);
+
 } // namespace basalt::io
