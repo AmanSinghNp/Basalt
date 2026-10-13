@@ -33,7 +33,7 @@ constexpr double kPi = 3.14159265358979323846;
 
 // Frequency column classes, stored per column with the weight table.
 constexpr uint8_t kColTransform = 0;  // mixed weights: spatial forward, weight, inverse
-constexpr uint8_t kColOnes = 1;       // every weight is exactly 1.0f: the spatial pair is the identity
+constexpr uint8_t kColOnes = 1;       // every weight is exactly 1.0f: spatial pair is the identity
 constexpr uint8_t kColZeros = 2;      // every weight is exactly 0.0f: the column is zero
 
 // Passes touching at least this many elements are split across worker threads. Smaller passes
@@ -437,7 +437,8 @@ void fk_filter_gather(const float* in, float* out,
     const double dk = 1.0 / (static_cast<double>(ntr_pad) * params.dx);
     if (!(std::isfinite(df) && df > 0.0 && std::isfinite(dk) && dk > 0.0)) {
         throw std::invalid_argument(
-            "fk: dt or dx is out of range; the frequency or wavenumber step is not a positive finite value");
+            "fk: dt or dx is out of range; the frequency or wavenumber step is not a positive "
+            "finite value");
     }
     const size_t nthreads = resolve_threads(params.threads);
 

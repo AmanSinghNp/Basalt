@@ -1074,7 +1074,8 @@ TEST(FKPipeline, ParallelWeightTableAndMultiplyMatchSerial) {
     ASSERT_EQ(a.size(), b.size());
     double max_diff = 0.0;
     for (size_t i = 0; i < a.size(); ++i) {
-        max_diff = std::max(max_diff, std::fabs(static_cast<double>(a[i]) - static_cast<double>(b[i])));
+        const double diff = std::fabs(static_cast<double>(a[i]) - static_cast<double>(b[i]));
+        max_diff = std::max(max_diff, diff);
     }
     EXPECT_LE(max_diff, 1e-6);
 }
@@ -1519,7 +1520,8 @@ TEST(FKPipeline, NonFiniteInputIsRejectedUnderSkippedColumnClasses) {
                 expect_nonfinite_error([&] { fk_filter_gather(in, ntr, ns, p); });
 
                 std::vector<float> buf = in;
-                expect_nonfinite_error([&] { fk_filter_gather(buf.data(), buf.data(), ntr, ns, p); });
+                expect_nonfinite_error(
+                    [&] { fk_filter_gather(buf.data(), buf.data(), ntr, ns, p); });
                 EXPECT_TRUE(same_values(buf, in)) << "in-place, pos " << pos;
             }
         }
