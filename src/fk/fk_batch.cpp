@@ -364,10 +364,13 @@ void fk_filter_gathers(const float* in, float* out, size_t ngathers,
     }
 
     // Each gather runs on one thread. The numerics are those of fk_filter_gather with threads = 1,
-    // so the result does not depend on the worker count.
+    // so the result does not depend on the worker count. The scan above has checked every sample,
+    // so each gather skips the test in its own copy-in pass. That test costs about as much as the
+    // scan, so the scan adds little to the call (see the cost note in basalt/fk.hpp).
     run_indexed(ngathers, workers, [&](size_t g) {
         fk_internal::filter_gather_impl(in + g * gather_len, out + g * gather_len, ntraces,
-                                        nsamples, params, 1, shared_table ? &table : nullptr);
+                                        nsamples, params, 1, shared_table ? &table : nullptr,
+                                        true);
     });
 }
 

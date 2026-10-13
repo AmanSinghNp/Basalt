@@ -208,7 +208,8 @@ basalt filter <in.segy> <out.segy> [--vmin V] [--vmax V] [--taper T] [--mode rej
 basalt --version | --help | -h
 ```
 
-`--verbose` prints SIMD and FTZ/DAZ diagnostics to stderr. `-h` is a short form of `--help`.
+`--verbose` prints SIMD and FTZ/DAZ diagnostics to stderr, then the read, filter and write times
+in milliseconds. `-h` is a short form of `--help`.
 
 - `dt` defaults to the file's binary header; `--dt` overrides. `dx` defaults to 25 m.
 - `--gather-size N` filters the file in consecutive blocks of N traces (default: whole file
@@ -216,7 +217,7 @@ basalt --version | --help | -h
 - `--threads N` (default 1; 0 = all cores) sets the threads that read and write the file and,
   for a single gather, the threads of that gather's FFTs. With two or more gathers, each gather
   is filtered on one thread, so the output file is byte-identical for every N, and the gathers
-  run concurrently. A single gather's output can differ with N only by float32 rounding
+  run concurrently when N > 1. A single gather's output can differ with N only by float32 rounding
   (relative RMS about 1e-7).
 - Output format defaults to the input format when it is IBM32 or IEEE32, else IEEE32.
 - Exit code 0 on success, 2 on usage errors, 1 on runtime errors (message on stderr).

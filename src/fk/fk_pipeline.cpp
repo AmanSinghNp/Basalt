@@ -548,7 +548,8 @@ void build_weight_table(const FKMuteParams& params, const Geometry& geo, size_t 
 }
 
 void filter_gather_impl(const float* in, float* out, size_t ntraces, size_t nsamples,
-                        const FKMuteParams& params, size_t nthreads, const WeightTable* shared) {
+                        const FKMuteParams& params, size_t nthreads, const WeightTable* shared,
+                        bool input_checked) {
     validate_params(params);
     validate_dims(ntraces, nsamples);
     if (in == nullptr || out == nullptr) {
@@ -582,10 +583,12 @@ void filter_gather_impl(const float* in, float* out, size_t ntraces, size_t nsam
 
     // Step 3: copy the data rows into the top-left of the padded grid, with edge tapers. Columns
     // nsamples .. ns_pad - 1 are zeroed. Padded trace rows are never materialised. A non-finite
-    // input sample is detected here, before any transform. The copy writes only `real`, so `in`
-    // and `out` are untouched when the call throws.
+    // input sample is detected here, before any transform, unless the caller has checked the input
+    // (input_checked). The copy writes only `real`, so `in` and `out` are untouched when the call
+    // throws.
     const std::vector<double> wt = make_edge_taper(ntraces, params.edge_taper_traces);
     const std::vector<double> ws = make_edge_taper(nsamples, params.edge_taper_samples);
+    const bool check_input = !input_checked;
     std::atomic<bool> nonfinite{false};
     for_each_row_range(ntraces, nthreads, ntraces * nsamples, [&](size_t t0, size_t t1) {
         bool bad = false;
@@ -593,7 +596,9 @@ void filter_gather_impl(const float* in, float* out, size_t ntraces, size_t nsam
             const float* src = in + t * nsamples;
             float* dst = real_ptr + t * ns_pad;
             for (size_t s = 0; s < nsamples; ++s) {
-                bad |= !std::isfinite(src[s]);
+                if (check_input) {
+                    bad |= !std::isfinite(src[s]);
+                }
                 dst[s] = static_cast<float>(static_cast<double>(src[s]) * wt[t] * ws[s]);
             }
             std::fill(dst + nsamples, dst + ns_pad, 0.0f);
@@ -689,7 +694,7 @@ void fk_filter_gather(const float* in, float* out,
                       size_t ntraces, size_t nsamples,
                       const FKMuteParams& params) {
     fk_internal::filter_gather_impl(in, out, ntraces, nsamples, params,
-                                    resolve_threads(params.threads), nullptr);
+                                    resolve_threads(params.threads), nullptr, false);
 }
 
 std::vector<float> fk_filter_gather(const std::vector<float>& in,

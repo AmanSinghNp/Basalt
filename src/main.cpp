@@ -70,10 +70,11 @@ void print_help(std::ostream& os) {
        << "                   their weights multiply; a warning is printed\n"
        << "  --threads N      worker threads, 0 = all cores (1): used to read and write the\n"
        << "                   file and for the FFTs of a single gather. When --gather-size\n"
-       << "                   gives two or more gathers, they run in parallel, each on one\n"
-       << "                   thread, and the output is identical for every N\n"
-       << "  --gather-size N  filter consecutive blocks of N traces (whole file). The blocks\n"
-       << "                   run in parallel; a short last block runs alongside them\n"
+       << "                   gives two or more gathers, each is filtered on one thread and\n"
+       << "                   the output is identical for every N\n"
+       << "  --gather-size N  filter consecutive blocks of N traces (whole file). With\n"
+       << "                   --threads above 1 the blocks run in parallel, with 1 thread one\n"
+       << "                   after another; a short last block is filtered as its own gather\n"
        << "  --format F       output sample format, ibm or ieee (input format if\n"
        << "                   IBM32 or IEEE32, otherwise ieee)\n"
        << "\nother options:\n"
@@ -426,13 +427,10 @@ int run_filter(const std::vector<std::string>& args) {
     if (!several_gathers) {
         basalt::fk_filter_gather(samples, samples, ntraces, nsamples, single);
     } else if (workers == 1) {
-        // One thread: the gathers in turn. This gives the batch result (fk_filter_gathers with one
-        // thread is fk_filter_gather per gather), without the batch's up-front non-finite scan.
-        // That scan is not needed here, since a failed run writes no output file.
-        for (size_t g = 0; g < nfull; ++g) {
-            float* block_start = samples + g * block * nsamples;
-            basalt::fk_filter_gather(block_start, block_start, block, nsamples, single);
-        }
+        // One thread: the full blocks in one fk_filter_gathers call, which runs them in turn on
+        // this thread, then the short tail as its own gather. The call's up-front non-finite scan
+        // costs about what the per-gather check it replaces costs, so it adds no time here.
+        basalt::fk_filter_gathers(samples, samples, nfull, block, nsamples, single);
         if (tail != 0) {
             basalt::fk_filter_gather(last, last, tail, nsamples, single);
         }

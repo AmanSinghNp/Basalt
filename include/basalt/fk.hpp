@@ -35,8 +35,9 @@ struct FKMuteParams {
                                     // keeps its work buffers and weight tables until it exits
                                     // (about 101 MB for a 2048 x 2048 gather, plus up to 38 MB when
                                     // the mixed columns form several runs). Batch worker threads
-                                    // release theirs when idle (see fk_filter_gathers). Peak
-                                    // memory of a batch call is in fk_filter_gathers
+                                    // release theirs after 2 s without work (see
+                                    // fk_filter_gathers). Peak memory of a batch call is in
+                                    // fk_filter_gathers
 };
 
 /// Filters a trace-major gather (`data[t * nsamples + s]`) in f-k space.
@@ -70,18 +71,20 @@ std::vector<float> fk_filter_gather(const std::vector<float>& in,
 /// no table is built per call. With ngathers == 1 the call is exactly fk_filter_gather(in, out,
 /// ntraces, nsamples, params), so params.threads also parallelises that one gather.
 ///
-/// Cost: every call reads the whole input once more before filtering, for the non-finite scan
-/// (about 18 ms for 96 MB on the machine it was measured on, a memory-bound pass). A call with
-/// several threads also builds the weight table once (about 35 ms at 1001 x 1500). A
-/// single-threaded call reuses the cached table, so it pays only the scan: at 1001 x 1500 that
-/// is within a few percent of the fk_filter_gather loop.
+/// Cost: before filtering, the whole input is scanned for non-finite samples (a memory-bound pass,
+/// about 12 ms for 96 MB on one thread on the machine it was measured on). Each gather then skips
+/// its own finiteness test, which costs about as much as the scan, so a call is not slower than
+/// the fk_filter_gather loop it replaces. Measured on that machine, at threads = 1, batch and loop
+/// times agree to within the run-to-run noise (about 3 %) at 1001 x 1500 x 16 and 240 x 1001 x 64.
+/// A call with several threads also builds the weight table once, on those threads, so it is not
+/// rebuilt per gather. A single-threaded call reuses the calling thread's cached table.
 ///
 /// Memory: each thread that filters gathers holds its own work buffers while the call runs, as
 /// fk_filter_gather does for its calling thread (about 27 MB per thread at 1001 x 1500, and about
 /// 100 MB at 2048 x 2048 counting one weight table). With two or more threads the shared weight
 /// table (ntr_pad x nfreq floats, about 7 MB at 1001 x 1500) is also held. Peak use therefore grows
-/// with params.threads, and threads = 0 on a many-core host multiplies it. Worker buffers are
-/// released when the workers go idle.
+/// with params.threads, and threads = 0 on a many-core host multiplies it. A worker that has been
+/// idle for 2 s exits, and its buffers are freed with it.
 ///
 /// ngathers == 0 is a no-op. The parameters, dimensions, pointers and padded geometry are still
 /// validated, so the same invalid arguments throw whatever the gather count.

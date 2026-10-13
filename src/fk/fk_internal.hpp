@@ -43,8 +43,12 @@ void build_weight_table(const FKMuteParams& params, const Geometry& geo, size_t 
 // Filters one gather on `threads` threads (at least 1), as fk_filter_gather does. When `shared`
 // is null the weight table comes from the calling thread's cache. Otherwise `shared` must have
 // been built by build_weight_table for the same params and gather shape, and it is only read.
-// Same validation, aliasing and finiteness rules as fk_filter_gather.
+// Same validation, aliasing and finiteness rules as fk_filter_gather, except that when
+// `input_checked` is true the caller has already verified that every sample of `in` is finite
+// (fk_filter_gathers scans the whole batch first), so the copy-in pass does not test them again.
+// Passing true for input that was not scanned would let a non-finite sample through.
 void filter_gather_impl(const float* in, float* out, size_t ntraces, size_t nsamples,
-                        const FKMuteParams& params, size_t threads, const WeightTable* shared);
+                        const FKMuteParams& params, size_t threads, const WeightTable* shared,
+                        bool input_checked);
 
 } // namespace basalt::fk_internal

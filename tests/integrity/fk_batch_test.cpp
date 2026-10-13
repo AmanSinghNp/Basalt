@@ -267,6 +267,29 @@ TEST(FKBatch, NonFiniteInFirstGatherLeavesOutputUntouched) {
     EXPECT_TRUE(bit_equal(out, std::vector<float>(ngathers * len, kSentinel)));
 }
 
+// At one thread the batch skips the per-gather finiteness test, so the scan alone must catch a
+// non-finite sample. Checks a middle gather, out of place and in place.
+TEST(FKBatch, NonFiniteInMiddleGatherIsCaughtAtOneThread) {
+    const size_t ngathers = 4;
+    const size_t ntr = 18;
+    const size_t ns = 52;
+    const size_t len = ntr * ns;
+    FKMuteParams params = batch_params();
+    params.threads = 1;
+    std::vector<float> in = random_values(ngathers * len, 91);
+    in[2 * len + 7] = std::numeric_limits<float>::quiet_NaN();
+
+    std::vector<float> out(ngathers * len, kSentinel);
+    EXPECT_THROW(fk_filter_gathers(in.data(), out.data(), ngathers, ntr, ns, params),
+                 std::invalid_argument);
+    EXPECT_TRUE(bit_equal(out, std::vector<float>(ngathers * len, kSentinel)));
+
+    const std::vector<float> before = in;
+    EXPECT_THROW(fk_filter_gathers(in.data(), in.data(), ngathers, ntr, ns, params),
+                 std::invalid_argument);
+    EXPECT_TRUE(bit_equal(in, before));
+}
+
 // --- Argument handling -----------------------------------------------------------------------
 
 TEST(FKBatch, ZeroGathersIsANoOpAfterValidation) {
