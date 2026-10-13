@@ -90,12 +90,16 @@ std::vector<float> fk_filter_gather(const std::vector<float>& in,
 /// validated, so the same invalid arguments throw whatever the gather count.
 ///
 /// Throws std::invalid_argument on everything fk_filter_gather rejects, with the same message for
-/// the same invalid arguments, and also when ngathers * ntraces * nsamples overflows size_t. Any
+/// the same invalid arguments, and also when ngathers * ntraces * nsamples overflows size_t or, with
+/// ngathers >= 2, when in and out partially overlap. Any
 /// NaN or infinite sample in any gather throws ("fk: input contains NaN or infinite samples"). The
 /// whole input is scanned, in parallel, before any gather is filtered, so no output is written and
 /// an aliased `in` is unchanged. Calls may run concurrently from different threads.
 ///
-/// `in` and `out` must either be the same pointer (in-place filtering) or not overlap.
+/// `in` and `out` must either be the same pointer (in-place filtering) or not overlap. With
+/// ngathers >= 2 a partial overlap throws std::invalid_argument ("fk: in and out partially
+/// overlap") before any output is written. With ngathers == 1 the call is fk_filter_gather, which
+/// accepts any overlap.
 void fk_filter_gathers(const float* in, float* out, size_t ngathers,
                        size_t ntraces, size_t nsamples, const FKMuteParams& params);
 

@@ -34,6 +34,18 @@ using basalt::FKMuteParams;
 using basalt::fk_filter_gather;
 using basalt::fk_filter_gathers;
 
+// The pool gives back a worker's heap with malloc_trim (fk_batch.cpp), and skips that call under a
+// sanitizer, which replaces malloc. The same condition is repeated here, so the RSS test below can
+// skip when the release it measures is not done.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define BASALT_FK_TEST_SANITIZED 1
+#endif
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define BASALT_FK_TEST_SANITIZED 1
+#endif
+#endif
+
 namespace {
 
 constexpr float kSentinel = -12345.0f;
@@ -336,6 +348,45 @@ TEST(FKBatch, ZeroGathersIsANoOpAfterValidation) {
     EXPECT_THROW(fk_filter_gathers(nullptr, out.data(), 0, ntr, ns, params), std::invalid_argument);
 }
 
+// Filtering gather g writes out[g], which can be input that a later gather still reads. So with two
+// or more gathers a partial overlap of in and out must be refused before anything is written. The
+// same goes for every thread count. Disjoint buffers, and buffers that only touch, are allowed.
+TEST(FKBatch, PartialOverlapIsRejectedBeforeAnyWrite) {
+    const size_t ngathers = 8;
+    const size_t ntr = 40;
+    const size_t ns = 100;
+    const size_t len = ntr * ns;
+    const size_t total = ngathers * len;
+    for (const size_t threads : {size_t{1}, size_t{4}}) {
+        FKMuteParams params = batch_params();
+        params.threads = threads;
+        std::vector<float> buf = random_values(2 * total, 151);
+        const std::vector<float> before = buf;
+        // out starts a few floats after in, or in starts a few floats after out. Both overlap.
+        for (const size_t offset : {size_t{1}, size_t{3}, len, total - 1}) {
+            EXPECT_THROW(fk_filter_gathers(buf.data(), buf.data() + offset, ngathers, ntr, ns,
+                                           params),
+                         std::invalid_argument)
+                << "out = in + " << offset << " floats, threads " << threads;
+            EXPECT_THROW(fk_filter_gathers(buf.data() + offset, buf.data(), ngathers, ntr, ns,
+                                           params),
+                         std::invalid_argument)
+                << "in = out + " << offset << " floats, threads " << threads;
+        }
+        EXPECT_TRUE(bit_equal(buf, before)) << "a rejected call wrote to its buffers";
+    }
+
+    // Touching buffers do not overlap, so the call is allowed and gives the reference result.
+    FKMuteParams params = batch_params();
+    params.threads = 4;
+    const std::vector<float> in = random_values(total, 152);
+    const std::vector<float> expected = per_gather_reference(in, ngathers, ntr, ns, params);
+    std::vector<float> both(2 * total, kSentinel);
+    std::copy(in.begin(), in.end(), both.begin());
+    fk_filter_gathers(both.data(), both.data() + total, ngathers, ntr, ns, params);
+    EXPECT_TRUE(bit_equal(std::vector<float>(both.begin() + total, both.end()), expected));
+}
+
 TEST(FKBatch, InvalidArgumentsThrowInvalidArgument) {
     const size_t ntr = 8;
     const size_t ns = 16;
@@ -459,6 +510,9 @@ TEST(FKBatchPool, IdleWorkersBlockAndExitWithoutSpinning) {
 }
 
 TEST(FKBatchPool, IdleWorkersReleaseWorkspaceAndAreRecreatedOnDemand) {
+#if defined(BASALT_FK_TEST_SANITIZED)
+    GTEST_SKIP() << "sanitizers replace malloc, so the pool does not trim the heap after idling";
+#endif
     const size_t ngathers = 12;
     const size_t ntr = 1001;
     const size_t ns = 1500;

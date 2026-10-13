@@ -341,6 +341,15 @@ size_t resolve_threads(size_t requested) {
     return hc == 0 ? 1 : static_cast<size_t>(hc);
 }
 
+// True when the n floats at `a` and the n floats at `b` share at least one byte. Pointers are
+// compared as integers, since relational comparison of unrelated pointers is unspecified.
+bool ranges_overlap(const float* a, const float* b, size_t n) {
+    const auto first_a = reinterpret_cast<uintptr_t>(a);
+    const auto first_b = reinterpret_cast<uintptr_t>(b);
+    const uintptr_t bytes = static_cast<uintptr_t>(n * sizeof(float));
+    return first_a < first_b + bytes && first_b < first_a + bytes;
+}
+
 // True when some of the n samples at `src` is NaN or infinite. A float is non-finite exactly when
 // its exponent field is all ones, so the test is on the bit pattern. It is branch-free, which lets
 // the compiler vectorise the scan. The result is the same as std::isfinite on every sample.
@@ -381,6 +390,13 @@ void fk_filter_gathers(const float* in, float* out, size_t ngathers,
         // Exactly fk_filter_gather, including its intra-gather threads.
         fk_filter_gather(in, out, ntraces, nsamples, params);
         return;
+    }
+
+    // Filtering gather g writes out[g], which can be input that a later gather still reads. A
+    // partial overlap therefore corrupts the output, so it is refused before anything is written.
+    // (One gather reads all of its input before it writes, which is why ngathers == 1 is allowed.)
+    if (in != out && ranges_overlap(in, out, ngathers * gather_len)) {
+        throw std::invalid_argument("fk: in and out partially overlap");
     }
 
     const size_t nthreads = resolve_threads(params.threads);
