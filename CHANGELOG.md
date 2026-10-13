@@ -18,7 +18,7 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
   `coord_units` values
 - `basalt.write_segy(path, samples, dt, format="ieee", headers=None)` takes an optional dict of per-trace header
   arrays, with the keys of `read_trace_headers`. Coordinates and elevation are stored as `round(value / scale)`,
-  with scalars chosen per trace (-100 for a value that is not whole, otherwise 1) unless the dict gives them.
+  with scalars chosen over all traces (-100 when a coordinate or elevation is not whole in any trace, otherwise 1) unless the dict gives them.
   Unknown keys, wrong lengths, non-whole integer values and values that overflow their field raise `ValueError`,
   and no file is written.
 - C++ `TraceHeaderValues` and `encode_trace_headers` in `basalt/io/trace_headers.hpp`, the inverse of

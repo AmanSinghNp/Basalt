@@ -408,7 +408,8 @@ PYBIND11_MODULE(_basalt, m) {
           "headers is an optional dict of 1D arrays, one value per trace, for any subset of the "
           "trace header keys in docs/design/FK_PIPELINE.md, section 7. Coordinates and receiver "
           "elevation are real values, stored as round(value / scale). A scalar not given is chosen "
-          "per trace: -100 when a value of that trace is not a whole number, otherwise 1. Raises "
+          "over all traces: -100 when a value of that kind is not a whole number in any trace, "
+          "otherwise 1. Raises "
           "ValueError for unknown keys, wrong lengths, non-whole integer values and values that "
           "overflow their field; no file is written then.",
           py::arg("path"), py::arg("samples"), py::arg("dt"), py::arg("format") = "ieee",

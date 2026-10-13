@@ -253,11 +253,12 @@ table, each mapped to a 1D array with one value per trace. Keys that are not in 
 rejected. Integer fields take whole numbers. Coordinates and `receiver_elevation` take real values,
 and the writer stores `round(value / scale)`, where the scale comes from the field's scalar:
 `scalar_coord` for the four coordinates and `scalar_elev` for the elevation. The scalars are chosen
-for each trace:
+over all traces:
 
 - A scalar given in `headers` is stored and used as it is.
-- A scalar not given is `-100` when a value of that trace is not a whole number, and `1` when all
-  of them are whole.
+- A scalar not given is `-100` when a value of its kind (any of the four coordinates for
+  `scalar_coord`, `receiver_elevation` for `scalar_elev`) is not a whole number in any trace, and
+  `1` when they are all whole. The two defaults are chosen separately.
 
 Fields that are not in `headers` keep zero bytes, and their scalars are zero too. The stored value
 differs from the real value by at most half a stored unit: `s / 2` for a positive scalar `s`,
