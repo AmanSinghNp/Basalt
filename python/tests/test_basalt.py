@@ -754,6 +754,271 @@ def test_read_trace_headers_of_file_with_no_traces_and_bad_input():
         _raises(RuntimeError, basalt.read_trace_headers, one)
 
 
+def _trace_header_bytes(path, trace, nsamples, sample_bytes=4):
+    """The raw 240 header bytes of one trace in an IEEE or IBM file written by write_segy."""
+    with open(path, "rb") as fh:
+        data = fh.read()
+    start = 3600 + trace * (240 + nsamples * sample_bytes)
+    return data[start:start + 240]
+
+
+def test_write_segy_headers_round_trip_through_read_trace_headers_and_read_segy():
+    rng = np.random.default_rng(41)
+    samples = rng.standard_normal((4, 5)).astype(np.float32)
+    headers = {
+        "trace_sequence": [101, 102, 103, 104],
+        "field_record": [7001, 7001, 7002, 7002],
+        "channel": [1, 2, 1, 2],
+        "offset": [-250, 0, 1200, 2_000_000_000],
+        "receiver_elevation": [1234.5, -15.25, 0.0, 2000.0],
+        "source_x": [-12.5, 0.0, 100.0, 999.75],
+        "source_y": [5.0, -0.01, 0.0, 7.0],
+        "group_x": [123.4, 4500.0, -987.0, 0.0],
+        "group_y": [-3.2, 27.0, 1.0, 12345.0],
+        "coord_units": [1, 1, 1, 1],
+        "delay_ms": [-20, 0, 15, 300],
+        "year": [2026, 2026, 2026, 2026],
+        "day_of_year": [286, 286, 287, 287],
+        "hour": [23, 0, 12, 6],
+        "minute": [59, 1, 30, 45],
+        "second": [58, 2, 1, 59],
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "written.sgy")
+        basalt.write_segy(path, samples, 0.004, headers=headers)
+        got = basalt.read_trace_headers(path)
+        full = basalt.read_segy(path)
+    assert set(got) == set(_HEADER_DTYPES)
+    for name, dtype in _HEADER_DTYPES.items():
+        assert got[name].dtype == dtype, name
+        assert got[name].shape == (4,), name
+        assert np.array_equal(full["headers"][name], got[name]), name
+    for name in ("trace_sequence", "field_record", "channel", "offset", "coord_units",
+                 "delay_ms", "year", "day_of_year", "hour", "minute", "second"):
+        assert got[name].tolist() == headers[name], name
+    # A trace with a fraction in a coordinate gets -100; a trace whose coordinates are all whole
+    # gets 1, so its values are exact.
+    assert got["scalar_coord"].tolist() == [-100, -100, 1, -100]
+    assert got["scalar_elev"].tolist() == [-100, -100, 1, 1]
+    for name in ("source_x", "source_y", "group_x", "group_y", "receiver_elevation"):
+        expected = np.array(headers[name], dtype=np.float64)
+        assert np.max(np.abs(got[name] - expected)) <= 0.005 + 1e-9, name
+    assert np.array_equal(full["samples"], samples)
+
+
+def test_arcsecond_coordinates_for_station_near_lat_27_7_lon_85_3():
+    # coord_units 2 means arcseconds: lon = group_x / 3600 and lat = group_y / 3600.
+    # 27.7 and 85.3 are whole numbers of arcseconds. The second station has fractions.
+    lat = np.array([27.7, 27.701234])
+    lon = np.array([85.3, 85.309876])
+    group_x = lon * 3600.0
+    group_y = lat * 3600.0
+    samples = np.zeros((2, 3), np.float32)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "arcsec.sgy")
+        basalt.write_segy(path, samples, 0.004, headers={
+            "coord_units": [2, 2],
+            "source_x": group_x, "source_y": group_y,
+            "group_x": group_x, "group_y": group_y,
+        })
+        got = basalt.read_trace_headers(path)
+    assert got["coord_units"].tolist() == [2, 2]
+    assert got["scalar_coord"].tolist() == [1, -100]
+    assert got["group_x"][0] == 307080.0
+    assert got["group_y"][0] == 99720.0
+    assert np.max(np.abs(got["group_x"] - group_x)) <= 0.005 + 1e-9
+    assert np.max(np.abs(got["group_y"] - group_y)) <= 0.005 + 1e-9
+    # Converted back to degrees, the stored arcseconds give the station position.
+    assert np.max(np.abs(got["group_x"] / 3600.0 - lon)) <= 0.005 / 3600.0 + 1e-12
+    assert np.max(np.abs(got["group_y"] / 3600.0 - lat)) <= 0.005 / 3600.0 + 1e-12
+
+
+def test_write_segy_time_fields_and_delay_round_trip():
+    headers = {
+        "year": [2026, 1999, -1, 32767],
+        "day_of_year": [286, 366, 1, 0],
+        "hour": [23, 0, 12, 6],
+        "minute": [59, 1, 30, 45],
+        "second": [59, 0, 1, 58],
+        "delay_ms": [-1000, 0, 32767, -32768],
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "time.sgy")
+        basalt.write_segy(path, np.zeros((4, 2), np.float32), 0.004, headers=headers)
+        got = basalt.read_trace_headers(path)
+        for name, values in headers.items():
+            assert got[name].dtype == np.int16, name
+            assert got[name].tolist() == values, name
+        # The time fields sit at bytes 157-166, and the delay at bytes 109-110.
+        raw = _trace_header_bytes(path, 0, 2)
+        assert struct.unpack_from(">h", raw, 156)[0] == 2026
+        assert struct.unpack_from(">h", raw, 158)[0] == 286
+        assert struct.unpack_from(">h", raw, 160)[0] == 23
+        assert struct.unpack_from(">h", raw, 162)[0] == 59
+        assert struct.unpack_from(">h", raw, 164)[0] == 59
+        assert struct.unpack_from(">h", raw, 108)[0] == -1000
+
+
+def test_write_segy_given_scalars_are_stored_and_applied():
+    headers = {
+        "scalar_coord": [10, -100, 0],
+        "group_x": [1230.0, 123.45, 987654.0],
+        "scalar_elev": [-10, 2, 0],
+        "receiver_elevation": [-1.5, 500.0, 42.0],
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "scalars.sgy")
+        basalt.write_segy(path, np.zeros((3, 2), np.float32), 0.004, headers=headers)
+        got = basalt.read_trace_headers(path)
+    assert got["scalar_coord"].tolist() == [10, -100, 0]
+    assert got["scalar_elev"].tolist() == [-10, 2, 0]
+    # With scalar 10 the stored value is 1230 / 10 = 123, and it reads back as 1230.
+    assert got["group_x"][0] == 1230.0
+    assert abs(got["group_x"][1] - 123.45) <= 0.005
+    assert got["group_x"][2] == 987654.0
+    assert got["receiver_elevation"].tolist() == [-1.5, 500.0, 42.0]
+
+    # A scalar of 10 lets a value larger than the int32 range be stored.
+    with tempfile.TemporaryDirectory() as tmp:
+        big = os.path.join(tmp, "big.sgy")
+        basalt.write_segy(big, np.zeros((1, 2), np.float32), 0.004,
+                          headers={"scalar_coord": [10], "group_x": [1.0e10]})
+        assert basalt.read_trace_headers(big)["group_x"][0] == 1.0e10
+
+
+def test_write_segy_default_scalars_are_chosen_per_trace_and_absent_fields_stay_zero():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "defaults.sgy")
+        basalt.write_segy(path, np.zeros((3, 2), np.float32), 0.004, headers={
+            "group_x": [1.0, 2.5, -7.0],
+            "receiver_elevation": [0.0, 0.0, 0.5],
+        })
+        got = basalt.read_trace_headers(path)
+    assert got["scalar_coord"].tolist() == [1, -100, 1]
+    assert got["scalar_elev"].tolist() == [1, 1, -100]
+    assert got["group_x"].tolist() == [1.0, 2.5, -7.0]
+    assert got["receiver_elevation"].tolist() == [0.0, 0.0, 0.5]
+    # Fields that were not given keep their zero bytes.
+    assert got["source_x"].tolist() == [0.0, 0.0, 0.0]
+    assert got["source_y"].tolist() == [0.0, 0.0, 0.0]
+    assert got["group_y"].tolist() == [0.0, 0.0, 0.0]
+
+
+def test_write_segy_header_bytes_are_big_endian_at_contract_positions():
+    headers = {
+        "offset": [-1, 258],
+        "group_y": [70000.0, -1.5],
+        "hour": [5, 6],
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "bytes.sgy")
+        basalt.write_segy(path, np.zeros((2, 3), np.float32), 0.004, headers=headers)
+        first = _trace_header_bytes(path, 0, 3)
+        second = _trace_header_bytes(path, 1, 3)
+    # Bytes 37-40 hold offset, 85-88 group_y, 71-72 scalar_coord and 161-162 hour (1-based).
+    assert struct.unpack_from(">i", first, 36)[0] == -1
+    assert struct.unpack_from(">i", second, 36)[0] == 258
+    assert struct.unpack_from(">i", first, 84)[0] == 70000
+    assert struct.unpack_from(">i", second, 84)[0] == -150    # -1.5 at scalar -100
+    assert struct.unpack_from(">h", first, 70)[0] == 1
+    assert struct.unpack_from(">h", second, 70)[0] == -100
+    assert struct.unpack_from(">h", first, 160)[0] == 5
+    assert struct.unpack_from(">h", second, 160)[0] == 6
+    # The trace sample count is still in bytes 115-116 and the sequence number in bytes 5-8.
+    assert struct.unpack_from(">H", first, 114)[0] == 3
+    assert struct.unpack_from(">i", second, 4)[0] == 2
+
+
+def test_write_segy_headers_errors_raise_value_error_and_write_no_file():
+    samples = np.zeros((3, 4), np.float32)
+    bad = [
+        {"source_x": [1.0, 2.0]},                       # wrong length
+        {"source_x": [[1.0, 2.0, 3.0]]},                # not 1D
+        {"source_x": 5.0},                              # scalar, not an array
+        {"source_x": ["a", "b", "c"]},                  # not numbers
+        {"sourcex": [1, 2, 3]},                         # unknown key
+        {1: [1, 2, 3]},                                 # key that is not a str
+        {"trace_sequence": [2 ** 31, 0, 0]},            # int32 overflow
+        {"channel": [1.5, 2, 3]},                       # integer field, not whole
+        {"year": [40000, 0, 0]},                        # int16 overflow
+        {"coord_units": [-32769, 0, 0]},                # int16 underflow
+        {"scalar_coord": [40000, 1, 1]},                # scalar beyond int16
+        {"group_x": [3e9, 0, 0]},                       # int32 overflow at scalar 1
+        {"scalar_coord": [-100, 1, 1], "group_x": [3e7, 0, 0]},  # overflow at scalar -100
+        {"group_y": [float("nan"), 0, 0]},              # not finite
+        {"receiver_elevation": [float("inf"), 0, 0]},   # not finite
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        for i, headers in enumerate(bad):
+            path = os.path.join(tmp, f"bad_{i}.sgy")
+            _raises(ValueError, basalt.write_segy, path, samples, 0.004, headers=headers)
+            assert not os.path.exists(path), headers
+        path = os.path.join(tmp, "not_dict.sgy")
+        _raises(ValueError, basalt.write_segy, path, samples, 0.004, headers=[1, 2, 3])
+        assert not os.path.exists(path)
+        # The same arrays are accepted once they fit.
+        ok = os.path.join(tmp, "ok.sgy")
+        basalt.write_segy(ok, samples, 0.004, headers={"scalar_coord": [100, 1, 1],
+                                                       "group_x": [3e7, 0, 0]})
+        assert basalt.read_trace_headers(ok)["group_x"][0] == 3e7
+
+
+def test_write_segy_without_headers_or_with_empty_dict_writes_identical_files():
+    rng = np.random.default_rng(43)
+    samples = rng.standard_normal((2, 6)).astype(np.float32)
+    with tempfile.TemporaryDirectory() as tmp:
+        none_path = os.path.join(tmp, "none.sgy")
+        empty_path = os.path.join(tmp, "empty.sgy")
+        basalt.write_segy(none_path, samples, 0.002)
+        basalt.write_segy(empty_path, samples, 0.002, headers={})
+        with open(none_path, "rb") as a, open(empty_path, "rb") as b:
+            assert a.read() == b.read()
+        got = basalt.read_trace_headers(none_path)
+    assert got["scalar_coord"].tolist() == [0, 0]
+    assert got["scalar_elev"].tolist() == [0, 0]
+    assert got["group_x"].tolist() == [0.0, 0.0]
+
+
+def test_read_headers_dict_can_be_written_back_unchanged():
+    headers = {
+        "trace_sequence": [5, 6], "field_record": [9, 9], "channel": [1, 2],
+        "offset": [-400, 400], "receiver_elevation": [1200.5, -3.0],
+        "source_x": [-0.25, 10.0], "source_y": [3.5, -2.0],
+        "group_x": [307080.0, 307155.56], "group_y": [99720.0, 99724.44],
+        "coord_units": [2, 2], "delay_ms": [0, 12],
+        "year": [2026, 2026], "day_of_year": [286, 287], "hour": [1, 2], "minute": [3, 4],
+        "second": [5, 6],
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "src.sgy")
+        dst = os.path.join(tmp, "dst.sgy")
+        basalt.write_segy(src, np.ones((2, 4), np.float32), 0.004, headers=headers)
+        read = basalt.read_segy(src)
+        basalt.write_segy(dst, read["samples"], read["dt"], read["format"], read["headers"])
+        again = basalt.read_trace_headers(dst)
+        redone = basalt.read_segy(dst)
+    for name, dtype in _HEADER_DTYPES.items():
+        assert again[name].dtype == dtype, name
+        assert np.array_equal(again[name], read["headers"][name]), name
+        assert np.array_equal(redone["headers"][name], read["headers"][name]), name
+    assert np.array_equal(redone["samples"], read["samples"])
+
+
+def test_write_segy_ibm_format_accepts_headers():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "ibm.sgy")
+        samples = np.array([[1.0, -2.5, 0.0], [3.0, 4.0, 5.0]], dtype=np.float32)
+        basalt.write_segy(path, samples, 0.004, format="ibm",
+                          headers={"group_x": [307080.0, 12.25], "year": [2026, 2027]})
+        got = basalt.read_trace_headers(path)
+        full = basalt.read_segy(path)
+    assert full["format"] == "ibm"
+    assert got["year"].tolist() == [2026, 2027]
+    assert got["scalar_coord"].tolist() == [1, -100]
+    assert got["group_x"].tolist() == [307080.0, 12.25]
+    assert np.allclose(full["samples"], samples)
+
+
 def _run_all():
     tests = [(name, obj) for name, obj in sorted(globals().items())
              if name.startswith("test_") and callable(obj)]

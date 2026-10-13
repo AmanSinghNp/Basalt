@@ -274,16 +274,89 @@ py::dict read_headers_file(const py::object& path) {
     return trace_header_dict(headers);
 }
 
+// Trace header keys that write_segy accepts, each with the TraceHeaderValues vector it fills.
+using HeaderValuesMember = std::vector<double> io::TraceHeaderValues::*;
+struct WritableHeader {
+    const char* key;
+    HeaderValuesMember member;
+};
+
+const WritableHeader kWritableHeaders[] = {
+    {"trace_sequence", &io::TraceHeaderValues::trace_sequence},
+    {"field_record", &io::TraceHeaderValues::field_record},
+    {"channel", &io::TraceHeaderValues::channel},
+    {"offset", &io::TraceHeaderValues::offset},
+    {"scalar_elev", &io::TraceHeaderValues::scalar_elev},
+    {"scalar_coord", &io::TraceHeaderValues::scalar_coord},
+    {"coord_units", &io::TraceHeaderValues::coord_units},
+    {"source_x", &io::TraceHeaderValues::source_x},
+    {"source_y", &io::TraceHeaderValues::source_y},
+    {"group_x", &io::TraceHeaderValues::group_x},
+    {"group_y", &io::TraceHeaderValues::group_y},
+    {"receiver_elevation", &io::TraceHeaderValues::receiver_elevation},
+    {"delay_ms", &io::TraceHeaderValues::delay_ms},
+    {"year", &io::TraceHeaderValues::year},
+    {"day_of_year", &io::TraceHeaderValues::day_of_year},
+    {"hour", &io::TraceHeaderValues::hour},
+    {"minute", &io::TraceHeaderValues::minute},
+    {"second", &io::TraceHeaderValues::second},
+};
+
+// Reads the optional `headers` argument of write_segy. None or an empty dict sets no header
+// values. Keys must name a trace header field, and each value must be a 1D array of numbers. The
+// core checks the lengths, whole-number requirements and field ranges.
+io::TraceHeaderValues header_values_arg(const py::object& headers) {
+    io::TraceHeaderValues values;
+    if (headers.is_none()) {
+        return values;
+    }
+    if (!py::isinstance<py::dict>(headers)) {
+        throw std::invalid_argument("write_segy: headers must be a dict of arrays, or None");
+    }
+    using DoubleArray = py::array_t<double, py::array::c_style | py::array::forcecast>;
+    for (auto item : py::reinterpret_borrow<py::dict>(headers)) {
+        if (!py::isinstance<py::str>(item.first)) {
+            throw std::invalid_argument("write_segy: headers keys must be str");
+        }
+        const std::string key = py::cast<std::string>(item.first);
+        const WritableHeader* field = nullptr;
+        for (const WritableHeader& candidate : kWritableHeaders) {
+            if (key == candidate.key) {
+                field = &candidate;
+                break;
+            }
+        }
+        if (field == nullptr) {
+            throw std::invalid_argument("write_segy: unknown trace header key '" + key + "'");
+        }
+        const DoubleArray array = DoubleArray::ensure(item.second);
+        if (!array) {
+            throw std::invalid_argument("write_segy: headers['" + key +
+                                        "'] must be an array of numbers");
+        }
+        if (array.ndim() != 1) {
+            throw std::invalid_argument("write_segy: headers['" + key +
+                                        "'] must be 1D, with one value per trace");
+        }
+        std::vector<double>& target = values.*(field->member);
+        target.assign(array.data(), array.data() + array.size());
+    }
+    return values;
+}
+
 void write_file(const py::object& path, const py::object& samples, double dt,
-                const py::object& format) {
+                const py::object& format, const py::object& headers) {
     const std::string file = to_path(path);
     const FloatArray array = as_gather(samples, "write_segy", "samples");
     const io::SampleFormat out_format = parse_write_format(format);
+    const io::TraceHeaderValues header_values = header_values_arg(headers);
     const size_t ntraces = static_cast<size_t>(array.shape(0));
     const size_t nsamples = static_cast<size_t>(array.shape(1));
     const std::vector<float> values(array.data(), array.data() + array.size());
     py::gil_scoped_release release;
-    const io::SegyData data = io::make_segy(values, ntraces, nsamples, dt, out_format);
+    io::SegyData data = io::make_segy(values, ntraces, nsamples, dt, out_format);
+    // Header values are checked before the file is created, so a rejected call leaves no file.
+    io::encode_trace_headers(data.raw_trace_headers, header_values);
     io::write_segy(file, data, out_format);
 }
 
@@ -324,6 +397,13 @@ PYBIND11_MODULE(_basalt, m) {
 
     m.def("write_segy", &basalt::write_file,
           "Write a 2D array (ntraces, nsamples) as a SEG-Y file (str or os.PathLike) in 'ieee' or "
-          "'ibm' format.",
-          py::arg("path"), py::arg("samples"), py::arg("dt"), py::arg("format") = "ieee");
+          "'ibm' format.\n\n"
+          "headers is an optional dict of 1D arrays, one value per trace, for any subset of the "
+          "trace header keys in docs/design/FK_PIPELINE.md, section 7. Coordinates and receiver "
+          "elevation are real values, stored as round(value / scale). A scalar not given is chosen "
+          "per trace: -100 when a value of that trace is not a whole number, otherwise 1. Raises "
+          "ValueError for unknown keys, wrong lengths, non-whole integer values and values that "
+          "overflow their field; no file is written then.",
+          py::arg("path"), py::arg("samples"), py::arg("dt"), py::arg("format") = "ieee",
+          py::arg("headers") = py::none());
 }
