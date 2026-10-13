@@ -193,6 +193,10 @@ if(CMAKE_PROJECT_NAME STREQUAL "Basalt")
     target_include_directories(fk_gather_bench SYSTEM PRIVATE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/pocketfft>)
 
+    add_executable(segy_io_bench benchmarks/segy_io_bench.cpp)
+    target_link_libraries(segy_io_bench PRIVATE basalt_core)
+    target_compile_options(segy_io_bench PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
+
     add_executable(fft_benchmark benchmarks/fft_benchmark.cpp)
     target_link_libraries(fft_benchmark PRIVATE basalt_core)
     target_compile_options(fft_benchmark PRIVATE ${BASALT_COMMON_FLAGS} ${BASALT_WARNING_FLAGS})
