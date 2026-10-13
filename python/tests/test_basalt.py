@@ -21,6 +21,9 @@ import basalt
 
 # --- helpers -----------------------------------------------------------------
 
+# Message of the binding for NaN or inf input (python/src/basalt_py.cpp).
+NON_FINITE_MESSAGE = "fk_filter: data must contain only finite values (no NaN or inf)"
+
 def _relrms(actual, expected):
     expected = np.asarray(expected, dtype=np.float64)
     return float(np.sqrt(np.mean((np.asarray(actual, dtype=np.float64) - expected) ** 2))
@@ -575,11 +578,11 @@ def test_non_finite_gather_raises_value_error():
         corrupted[2, 3] = bad
         _raises(ValueError, basalt.fk_filter, corrupted, 0.004, 25.0)
         _raises(ValueError, basalt.fk_filter, corrupted, 0.004, 25.0, threads=0)
-    # The check is done by the C++ core, and its message is passed through unchanged.
+    # The binding reports non-finite input with its own message, which names the argument.
     try:
         basalt.fk_filter(corrupted, 0.004, 25.0)
     except ValueError as err:
-        assert "NaN or infinite" in str(err), str(err)
+        assert str(err) == NON_FINITE_MESSAGE, str(err)
     else:
         raise AssertionError("expected ValueError for a non-finite sample")
 
@@ -617,11 +620,13 @@ def test_read_only_float32_gather_is_accepted_and_not_modified():
 
 def test_c_contiguous_float32_input_is_not_copied():
     # numpy reports its buffers to tracemalloc, so the peak traced during a call is the output plus
-    # any Python-side copy of the input. The C++ core's own work buffers are not traced. Fortran
-    # order is the control: it must show the extra input-sized copy, or the measurement is void.
+    # any numpy-side copy of the input. The C++ core's own work buffers, and the copies the binding
+    # makes in C++ (Fortran-order or strided input), are not traced. Big-endian float32 is the
+    # control: numpy converts it to native float32 before the call, and that copy must show in the
+    # trace, or the measurement is void.
     rng = np.random.default_rng(34)
     c_gather = rng.standard_normal((1024, 1024)).astype(np.float32)
-    f_gather = np.asfortranarray(c_gather)
+    be_gather = c_gather.astype(">f4")
     nbytes = c_gather.nbytes
 
     def peak_during_filter(gather):
@@ -633,9 +638,126 @@ def test_c_contiguous_float32_input_is_not_copied():
             tracemalloc.stop()
 
     c_peak = peak_during_filter(c_gather)
-    f_peak = peak_during_filter(f_gather)
+    be_peak = peak_during_filter(be_gather)
     assert c_peak < 1.5 * nbytes, (c_peak, nbytes)
-    assert f_peak > 1.8 * nbytes, (f_peak, nbytes)
+    assert be_peak > 1.8 * nbytes, (be_peak, nbytes)
+
+
+def test_strided_and_float64_inputs_match_contiguous_float32():
+    rng = np.random.default_rng(36)
+    wide = rng.uniform(-1.0, 1.0, (90, 160))
+    params = dict(v_min=-800.0, v_max=1200.0, taper=0.1, edge_taper_traces=4)
+    cases = {
+        "float32 column slice": wide.astype(np.float32)[:, ::2],
+        "float32 both strided": wide.astype(np.float32)[::3, 1::2],
+        "float64 row slice": wide[::2, :],
+        "float64 Fortran": np.asfortranarray(wide),
+        "float64 transposed view": wide.T,
+    }
+    for name, view in cases.items():
+        expected = basalt.fk_filter(np.ascontiguousarray(view, dtype=np.float32), 0.004, 25.0,
+                                    **params)
+        got = basalt.fk_filter(view, 0.004, 25.0, **params)
+        assert got.dtype == np.float32 and got.flags.c_contiguous, name
+        assert np.array_equal(got, expected), name
+
+
+def test_big_endian_input_matches_native_input():
+    rng = np.random.default_rng(37)
+    native = rng.uniform(-1.0, 1.0, (33, 70)).astype(np.float32)
+    params = dict(v_min=-800.0, v_max=1200.0)
+    expected = basalt.fk_filter(native, 0.004, 25.0, **params)
+    for big in (native.astype(">f4"), native.astype(">f8")):
+        got = basalt.fk_filter(big, 0.004, 25.0, **params)
+        assert np.array_equal(got, expected), big.dtype
+
+
+def test_float64_rounding_to_float32_matches_numpy():
+    # Values at and just beyond the float32 rounding boundary, plus non-finite and out-of-range
+    # values, stored in strided float64 memory so the GIL-free conversion is the one under test.
+    flt_max = float(np.finfo(np.float32).max)
+    boundary = math.ldexp(1.0, 128) - math.ldexp(1.0, 103)   # rounds to infinity in float32
+    below = math.nextafter(boundary, 0.0)
+    row = [flt_max, below, boundary, math.nextafter(boundary, math.inf), -boundary, -below,
+           1e300, -1e300, math.inf, -math.inf, math.nan, 1.5, 0.1, -0.0]
+    values = np.array([row, row[::-1]], dtype=np.float64)
+    wide = np.zeros((2, 2 * values.shape[1]))
+    wide[:, ::2] = values
+    strided = wide[:, ::2]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "round.sgy")
+        basalt.write_segy(path, strided, 0.004, format="ieee")
+        got = basalt.read_segy(path)["samples"]
+    with np.errstate(over="ignore", invalid="ignore"):
+        expected = strided.astype(np.float32)
+    np.testing.assert_array_equal(got, expected)
+    assert got[0, 1] == flt_max and np.isinf(got[0, 2]), got[0, :3]
+
+
+def test_strided_float64_out_of_range_and_non_finite_are_reported():
+    wide = np.zeros((4, 32))
+    view = wide[:, ::2]
+    view[:] = 1.0
+    view[1, 1] = 1e300
+    with np.errstate(over="ignore"):
+        try:
+            basalt.fk_filter(view, 0.004, 25.0)
+        except ValueError as err:
+            message = str(err)
+        else:
+            raise AssertionError("expected ValueError for values beyond the float32 range")
+    assert "float32" in message and "NaN" not in message, message
+    view[1, 1] = np.nan
+    try:
+        basalt.fk_filter(view, 0.004, 25.0)
+    except ValueError as err:
+        assert str(err) == NON_FINITE_MESSAGE, str(err)
+    else:
+        raise AssertionError("expected ValueError for a NaN sample")
+
+
+def _spinner_ratio(busy_call):
+    """Throughput of a spinning thread while busy_call runs, relative to its idle rate."""
+    counter = [0]
+    stop = threading.Event()
+
+    def spin():
+        while not stop.is_set():
+            counter[0] += 1
+
+    ticker = threading.Thread(target=spin)
+    ticker.start()
+    try:
+        time.sleep(0.05)
+        t0, c0 = time.perf_counter(), counter[0]
+        time.sleep(0.3)
+        idle_rate = (counter[0] - c0) / (time.perf_counter() - t0)
+        t0, c0 = time.perf_counter(), counter[0]
+        while True:
+            busy_call()
+            if time.perf_counter() - t0 >= 0.3:
+                break
+        busy_rate = (counter[0] - c0) / (time.perf_counter() - t0)
+    finally:
+        stop.set()
+        ticker.join()
+    assert idle_rate > 0, idle_rate
+    return busy_rate / idle_rate
+
+
+def test_gil_released_during_segy_io():
+    # write_segy and read_segy release the GIL for their whole call, including the conversion of a
+    # float64 Fortran-order gather. This is a coarse guard: it fails only if the GIL is held for
+    # most of a call, which the conversion alone would not cause.
+    rng = np.random.default_rng(35)
+    gather = np.asfortranarray(rng.standard_normal((2000, 2000)))   # float64, Fortran order
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "gil.sgy")
+        basalt.write_segy(path, gather, 0.004)
+        write_ratio = _spinner_ratio(lambda: basalt.write_segy(path, gather, 0.004))
+        read_ratio = _spinner_ratio(lambda: basalt.read_segy(path))
+    assert write_ratio > 0.25, f"spinner ran at {write_ratio:.3f} of its idle rate in write_segy"
+    assert read_ratio > 0.25, f"spinner ran at {read_ratio:.3f} of its idle rate in read_segy"
 
 
 def test_non_finite_frequency_or_wavenumber_raises_value_error():
@@ -682,7 +804,7 @@ def test_finite_float64_beyond_float32_range_is_reported_as_range_error():
             message = str(err)
         else:
             raise AssertionError("expected ValueError for a NaN sample")
-        assert "NaN or infinite" in message, message
+        assert message == NON_FINITE_MESSAGE, message
 
 
 def _run_all():
