@@ -456,7 +456,9 @@ int run_filter(const std::vector<std::string>& args) {
         }
         try {
             if (nfull == 1) {
-                basalt::fk_filter_gather(samples, samples, block, nsamples, single);
+                // One full block is a batch of one. `single` has one thread here, so the output is
+                // that of fk_filter_gather with threads = 1.
+                basalt::fk_filter_gathers(samples, samples, 1, block, nsamples, single);
             } else if (nfull >= 2) {
                 // The helper, when running, takes one of the workers.
                 basalt::FKMuteParams batch = params;

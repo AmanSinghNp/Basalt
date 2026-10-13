@@ -33,6 +33,10 @@
 #include <malloc.h>
 #endif
 
+#if defined(__SSE__)
+#include <xmmintrin.h>
+#endif
+
 // A sanitizer replaces malloc, so glibc's arena state is not the one malloc_trim expects.
 // Under AddressSanitizer the call crashes a worker at thread exit (a SEGV in the TLS destructors,
 // or a glibc arena assertion), so it is skipped whenever a sanitizer is active.
@@ -252,9 +256,49 @@ void drain(Job& job) {
     }
 }
 
+// The floating-point control register (MXCSR: rounding mode, FTZ, DAZ). It is per thread, and a new
+// thread starts with the register of the thread that creates it. Without SSE there is nothing to
+// copy.
+unsigned current_mxcsr() {
+#if defined(__SSE__)
+    return _mm_getcsr();
+#else
+    return 0;
+#endif
+}
+
+void set_mxcsr(unsigned value) {
+#if defined(__SSE__)
+    _mm_setcsr(value);
+#else
+    (void)value;
+#endif
+}
+
+// Sets the calling thread's floating-point control register to `value` for the life of the object,
+// and restores the previous value on exit.
+class MxcsrScope {
+public:
+    explicit MxcsrScope(unsigned value) : saved_(current_mxcsr()) {
+        set_mxcsr(value);
+    }
+    MxcsrScope(const MxcsrScope&) = delete;
+    MxcsrScope& operator=(const MxcsrScope&) = delete;
+    ~MxcsrScope() {
+        set_mxcsr(saved_);
+    }
+
+private:
+    unsigned saved_;
+};
+
 // Runs fn(i) for every i in [0, count), on the calling thread and up to `workers - 1` pool
 // workers. Returns when all indices are done. Rethrows the first exception that fn threw; once one
 // is thrown the remaining indices are skipped.
+//
+// A pool worker runs under the floating-point mode of the thread that created it, which need not
+// be the caller's. The results must not depend on that, so every task runs under the caller's mode
+// (FK_PIPELINE.md, section 4, bit-identity for every params.threads).
 void run_indexed(size_t count, size_t workers, std::function<void(size_t)> fn) {
     if (workers <= 1 || count <= 1) {
         for (size_t i = 0; i < count; ++i) {
@@ -263,9 +307,13 @@ void run_indexed(size_t count, size_t workers, std::function<void(size_t)> fn) {
         return;
     }
     const auto job = std::make_shared<Job>(std::move(fn), count);
+    const unsigned caller_mxcsr = current_mxcsr();
     for (size_t w = 1; w < workers; ++w) {
         try {
-            WorkerPool::instance().submit([job] { drain(*job); });
+            WorkerPool::instance().submit([job, caller_mxcsr] {
+                MxcsrScope mode(caller_mxcsr);
+                drain(*job);
+            });
         } catch (...) {
             break; // out of memory while queueing: the calling thread does the rest
         }

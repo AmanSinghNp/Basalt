@@ -24,6 +24,11 @@
 #include <unistd.h>
 #endif
 
+#if defined(__SSE__)
+#include "basalt/kernel/cpu_state.hpp"
+#include <xmmintrin.h>
+#endif
+
 using basalt::FKMode;
 using basalt::FKMuteParams;
 using basalt::fk_filter_gather;
@@ -147,6 +152,27 @@ TEST(FKBatch, MatchesPerGatherSingleThreadBitwise) {
                         << "shape " << s.ntr << "x" << s.ns << " gathers " << ngathers
                         << " threads " << threads << " mode " << static_cast<int>(mode);
                 }
+            }
+        }
+    }
+
+    // Above the parallel threshold of the weight table build (ntr_pad * nfreq >= 262144 in
+    // fk_pipeline.cpp), so with threads > 1 the shared table is built on several threads.
+    // 1001 x 1500 pads to about 1.7 M weights.
+    {
+        const Shape s{1001, 1500};
+        const size_t ngathers = 3;
+        for (const FKMode mode : {FKMode::Reject, FKMode::Pass}) {
+            FKMuteParams params = batch_params();
+            params.mode = mode;
+            const std::vector<float> in = random_values(ngathers * s.ntr * s.ns, 13);
+            const std::vector<float> expected =
+                per_gather_reference(in, ngathers, s.ntr, s.ns, params);
+            for (const size_t threads : {size_t{1}, size_t{4}}) {
+                params.threads = threads;
+                EXPECT_TRUE(bit_equal(batch_out_of_place(in, ngathers, s.ntr, s.ns, params),
+                                      expected))
+                    << "large shape threads " << threads << " mode " << static_cast<int>(mode);
             }
         }
     }
@@ -475,5 +501,53 @@ TEST(FKBatchPool, BackToBackCallsGiveIdenticalResults) {
         ASSERT_TRUE(bit_equal(batch_out_of_place(in, ngathers, ntr, ns, params), expected))
             << "call " << rep;
     }
+}
+#endif
+
+#if defined(__SSE__)
+// A pool worker runs under the floating-point mode of the thread that created it. The batch must
+// still give the caller's bits. Here the workers are created by a thread with FTZ and DAZ cleared,
+// and the batch then runs on a thread with them set. Inputs are at subnormal-range scale, so a mode
+// mismatch changes output bits.
+TEST(FKBatchPool, WorkersUseTheCallersFloatingPointMode) {
+    const size_t ngathers = 6;
+    const size_t ntr = 40;
+    const size_t ns = 120;
+    const size_t len = ntr * ns;
+    FKMuteParams params = batch_params();
+    std::vector<float> in = random_values(ngathers * len, 141);
+    for (float& x : in) {
+        x *= 1e-35f;
+    }
+
+    // Workers left by earlier tests exit after kIdleTimeout (2 s) without work. Waiting that long
+    // makes the workers below the ones this test creates.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+
+    params.threads = 4;
+    std::thread creator([&] {
+        // A new thread inherits the mode of the thread that starts it, so clear FTZ and DAZ here.
+        _mm_setcsr(_mm_getcsr() & ~0x8040u);
+        std::vector<float> scratch(in.size());
+        fk_filter_gathers(in.data(), scratch.data(), ngathers, ntr, ns, params);
+    });
+    creator.join();
+
+    // Restores the caller's mode when the test ends, even on failure.
+    struct ModeRestore {
+        unsigned value;
+        ~ModeRestore() {
+            _mm_setcsr(value);
+        }
+    } restore{_mm_getcsr()};
+    basalt::kernel::set_flush_to_zero();
+    ASSERT_TRUE(basalt::kernel::check_ftz_daz());
+
+    FKMuteParams reference = params;
+    reference.threads = 1;
+    const std::vector<float> expected = per_gather_reference(in, ngathers, ntr, ns, reference);
+    std::vector<float> out(in.size(), kSentinel);
+    fk_filter_gathers(in.data(), out.data(), ngathers, ntr, ns, params);
+    EXPECT_TRUE(bit_equal(out, expected));
 }
 #endif
