@@ -1,9 +1,19 @@
 // F-K mute pipeline: edge tapers, 2D real-to-complex FFT (pocketfft), apparent-
 // velocity band weighting and complex-to-real inverse. Contract: docs/design/FK_PIPELINE.md.
+//
+// The 2D transform is evaluated in stages that give the same result as one 2D real FFT:
+//   1. Time-axis r2c on the ntraces data rows only. Padded trace rows are zero in time, so
+//      their time spectrum is zero and is written as zeros.
+//   2. Per frequency column, a spatial c2c, weight and inverse c2c over the padded traces.
+//      Columns whose weights are all exactly 1 are skipped, because that transform pair is the
+//      identity. Columns whose weights are all exactly 0 are zeroed.
+//   3. Time-axis c2r on the ntraces rows that are cropped into the output.
+// Column classes are derived from the cached weight table, so they share its key and LRU.
 
 #include "basalt/fk.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -20,6 +30,11 @@ namespace basalt {
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
+
+// Frequency column classes, stored per column with the weight table.
+constexpr uint8_t kColTransform = 0;  // mixed weights: spatial forward, weight, inverse
+constexpr uint8_t kColOnes = 1;       // every weight is exactly 1.0f: the spatial pair is the identity
+constexpr uint8_t kColZeros = 2;      // every weight is exactly 0.0f: the column is zero
 
 // Passes touching at least this many elements are split across worker threads. Smaller passes
 // run on the calling thread so that small gathers do not pay for thread creation.
@@ -246,17 +261,18 @@ bool same_key(const WeightKey& a, const WeightKey& b) {
 
 struct WeightCacheEntry {
     bool valid = false;
-    uint64_t last_use = 0;     // value of the per-thread use counter at the last hit or build
+    uint64_t last_use = 0;          // value of the per-thread use counter at the last hit or build
     WeightKey key{};
-    std::vector<float> table;  // ntr_pad x nfreq, row i holds the bins of wavenumber index i
+    std::vector<float> table;       // ntr_pad x nfreq, row i holds the bins of wavenumber index i
+    std::vector<uint8_t> col_class; // nfreq, kColTransform / kColOnes / kColZeros
 };
 
-// Returns the ntr_pad x nfreq float weight table for `params`, building it on a miss. Tables
-// are cached per calling thread, at most kWeightCacheEntries of them. A hit counts as a use, and
-// on a miss when the cache is full the least recently used entry is overwritten. The reference
-// stays valid until the calling thread next calls this function.
-const std::vector<float>& weight_table(const FKMuteParams& params, size_t ntr_pad, size_t ns_pad,
-                                       double df, double dk, size_t nthreads) {
+// Returns the cache entry (weight table and column classes) for `params`, building it on a miss.
+// Entries are cached per calling thread, at most kWeightCacheEntries of them. A hit counts as a
+// use, and on a miss when the cache is full the least recently used entry is overwritten. The
+// reference stays valid until the calling thread next calls this function.
+const WeightCacheEntry& weight_table(const FKMuteParams& params, size_t ntr_pad, size_t ns_pad,
+                                     double df, double dk, size_t nthreads) {
     thread_local std::vector<WeightCacheEntry> cache;
     thread_local uint64_t use_counter = 0;
 
@@ -265,7 +281,7 @@ const std::vector<float>& weight_table(const FKMuteParams& params, size_t ntr_pa
     for (WeightCacheEntry& entry : cache) {
         if (entry.valid && same_key(entry.key, key)) {
             entry.last_use = use_counter;
-            return entry.table;
+            return entry;
         }
     }
 
@@ -306,9 +322,64 @@ const std::vector<float>& weight_table(const FKMuteParams& params, size_t ntr_pa
         }
     });
 
+    // Classify each frequency column by its float weights. This is one sequential pass over the
+    // table, and it runs only on a miss.
+    std::vector<uint8_t> all_one(nfreq, 1);
+    std::vector<uint8_t> all_zero(nfreq, 1);
+    for (size_t i = 0; i < ntr_pad; ++i) {
+        const float* row = table + i * nfreq;
+        for (size_t j = 0; j < nfreq; ++j) {
+            all_one[j] = static_cast<uint8_t>(all_one[j] & static_cast<uint8_t>(row[j] == 1.0f));
+            all_zero[j] = static_cast<uint8_t>(all_zero[j] & static_cast<uint8_t>(row[j] == 0.0f));
+        }
+    }
+    entry.col_class.resize(nfreq);
+    for (size_t j = 0; j < nfreq; ++j) {
+        entry.col_class[j] = all_one[j] != 0 ? kColOnes
+            : (all_zero[j] != 0 ? kColZeros : kColTransform);
+    }
+
     entry.key = key;
     entry.valid = true;
-    return entry.table;
+    return entry;
+}
+
+// Scales n complex bins by one real weight per bin (real and imaginary parts alike).
+inline void scale_bins(std::complex<float>* p, const float* w, size_t n) {
+    // complex<float> is layout-compatible with float[2] ([complex.numbers]).
+    float* f = reinterpret_cast<float*>(p);
+    for (size_t j = 0; j < n; ++j) {
+        f[2 * j] *= w[j];
+        f[2 * j + 1] *= w[j];
+    }
+}
+
+// A run of consecutive frequency columns that share a class.
+struct ColRun {
+    size_t begin;
+    size_t end;
+    uint8_t cls;
+};
+
+// Spatial forward transform, weighting and inverse transform of the `w` columns starting at `c0`
+// of the spectrum (ntr_pad rows, stride nfreq), in place. The forward transform is unnormalised
+// and the inverse carries inv_ntr = 1 / ntr_pad, so the pair applied to all-ones weights is the
+// identity.
+void transform_columns(std::complex<float>* spec, const float* weights, size_t nfreq,
+                       size_t ntr_pad, size_t c0, size_t w, float inv_ntr, size_t nthreads) {
+    const pocketfft::shape_t shape{ntr_pad, w};
+    const pocketfft::shape_t axes{0};
+    const pocketfft::stride_t stride{
+        static_cast<std::ptrdiff_t>(nfreq * sizeof(std::complex<float>)),
+        static_cast<std::ptrdiff_t>(sizeof(std::complex<float>))};
+    std::complex<float>* block = spec + c0;
+    pocketfft::c2c<float>(shape, stride, stride, axes, true, block, block, 1.0f, nthreads);
+    for_each_row_range(ntr_pad, nthreads, ntr_pad * w, [&](size_t i0, size_t i1) {
+        for (size_t i = i0; i < i1; ++i) {
+            scale_bins(block + i * nfreq, weights + i * nfreq + c0, w);
+        }
+    });
+    pocketfft::c2c<float>(shape, stride, stride, axes, false, block, block, inv_ntr, nthreads);
 }
 
 } // namespace
@@ -346,9 +417,9 @@ void fk_filter_gather(const float* in, float* out,
     const size_t ntr_pad = fk_padded_traces(ntraces, params);
     const size_t ns_pad = fk_padded_samples(nsamples, params);
     const size_t nfreq = ns_pad / 2 + 1;
-    // The padded real grid holds ntr_pad * ns_pad elements and the spectrum ntr_pad * nfreq,
-    // with nfreq <= ns_pad. Reject a product that would wrap size_t before anything indexes
-    // or allocates with it. ns_pad >= 1, so the division is safe.
+    // The padded grid holds ntr_pad * ns_pad elements, and the spectrum ntr_pad * nfreq with
+    // nfreq <= ns_pad. Reject a product that would wrap size_t before anything indexes or
+    // allocates with it. ns_pad >= 1, so the division is safe.
     if (ntr_pad > std::numeric_limits<size_t>::max() / ns_pad) {
         throw std::invalid_argument("fk: padded grid is too large");
     }
@@ -363,87 +434,121 @@ void fk_filter_gather(const float* in, float* out,
             "fk: dt or dx is out of range; the frequency or wavenumber step is not a positive finite value");
     }
     const size_t nthreads = resolve_threads(params.threads);
-    const size_t grid_count = ntr_pad * ns_pad;
-    const size_t spec_count = ntr_pad * nfreq;
 
-    // Work buffers persist per calling thread, so repeated calls do not allocate or zero the
-    // whole grid. Every element that is read is written first (see the padding below).
-    // Retention: these buffers and the weight tables (see weight_table) are kept until the
-    // calling thread exits, not released after each call. For a 2048 x 2048 gather (padded
-    // 3072 x 3072) that is about 113 MB per calling thread: about 75 MB of work buffers plus two
-    // 19 MB weight tables.
-    thread_local std::vector<float> real;
-    thread_local std::vector<std::complex<float>> spec;
-    real.resize(grid_count);
-    spec.resize(spec_count);
+    // Work buffers persist per calling thread, so repeated calls do not allocate. Retention:
+    // these buffers and the weight tables (see weight_table) are kept until the calling thread
+    // exits. For a 2048 x 2048 gather (padded 3072 x 3072) that is about 101 MB per calling
+    // thread: about 63 MB of work buffers plus two 19 MB weight tables.
+    thread_local std::vector<float> real;                // ntraces x ns_pad (time domain)
+    thread_local std::vector<std::complex<float>> spec;  // ntr_pad x nfreq (spectrum)
+    real.resize(ntraces * ns_pad);
+    spec.resize(ntr_pad * nfreq);
+    float* real_ptr = real.data();
+    std::complex<float>* spec_ptr = spec.data();
+    const pocketfft::shape_t time_shape{ntraces, ns_pad};
+    const pocketfft::shape_t time_axis{1};
+    const pocketfft::stride_t real_stride{
+        static_cast<std::ptrdiff_t>(ns_pad * sizeof(float)),
+        static_cast<std::ptrdiff_t>(sizeof(float))};
+    const pocketfft::stride_t spec_stride{
+        static_cast<std::ptrdiff_t>(nfreq * sizeof(std::complex<float>)),
+        static_cast<std::ptrdiff_t>(sizeof(std::complex<float>))};
 
-    // Step 3: copy the input into the top-left of the padded buffer, with edge tapers. Only the
-    // padding is zeroed: columns nsamples .. ns_pad - 1 of the data rows and every row
-    // ntraces .. ntr_pad - 1.
+    // Step 3: copy the data rows into the top-left of the padded grid, with edge tapers. Columns
+    // nsamples .. ns_pad - 1 are zeroed. Padded trace rows are never materialised. A non-finite
+    // input sample is detected here, before any transform. The copy writes only `real`, so `in`
+    // and `out` are untouched when the call throws.
     const std::vector<double> wt = make_edge_taper(ntraces, params.edge_taper_traces);
     const std::vector<double> ws = make_edge_taper(nsamples, params.edge_taper_samples);
-    float* real_ptr = real.data();
-    for_each_row_range(ntr_pad, nthreads, grid_count, [&](size_t t0, size_t t1) {
+    std::atomic<bool> nonfinite{false};
+    for_each_row_range(ntraces, nthreads, ntraces * nsamples, [&](size_t t0, size_t t1) {
+        bool bad = false;
         for (size_t t = t0; t < t1; ++t) {
-            float* dst = real_ptr + t * ns_pad;
-            if (t >= ntraces) {
-                std::fill(dst, dst + ns_pad, 0.0f);
-                continue;
-            }
             const float* src = in + t * nsamples;
+            float* dst = real_ptr + t * ns_pad;
             for (size_t s = 0; s < nsamples; ++s) {
+                bad |= !std::isfinite(src[s]);
                 dst[s] = static_cast<float>(static_cast<double>(src[s]) * wt[t] * ws[s]);
             }
             std::fill(dst + nsamples, dst + ns_pad, 0.0f);
         }
-    });
-
-    // Step 4: forward real-to-complex 2D FFT over {traces, samples}. Strides in bytes.
-    const pocketfft::shape_t shape{ntr_pad, ns_pad};
-    const pocketfft::shape_t axes{0, 1};
-    const pocketfft::stride_t stride_real{
-        static_cast<std::ptrdiff_t>(ns_pad * sizeof(float)),
-        static_cast<std::ptrdiff_t>(sizeof(float))};
-    const pocketfft::stride_t stride_spec{
-        static_cast<std::ptrdiff_t>(nfreq * sizeof(std::complex<float>)),
-        static_cast<std::ptrdiff_t>(sizeof(std::complex<float>))};
-
-    pocketfft::r2c<float>(shape, stride_real, stride_spec, axes, true,
-                          real_ptr, spec.data(), 1.0f, nthreads);
-
-    // Step 5: weight every bin by fk_mute_weight(f_j, k_i), from the per-thread weight cache.
-    // Nyquist row and column bins are not special-cased: the c2r inverse keeps only their
-    // Hermitian part, which matches numpy.fft.irfft2(rfft2(x) * w). Energy there requires
-    // aliased data (FK_PIPELINE.md section 3).
-    const std::vector<float>& weights = weight_table(params, ntr_pad, ns_pad, df, dk, nthreads);
-    const float* weight_ptr = weights.data();
-    std::complex<float>* spec_ptr = spec.data();
-    for_each_row_range(ntr_pad, nthreads, spec_count, [&](size_t i0, size_t i1) {
-        for (size_t i = i0; i < i1; ++i) {
-            // complex<float> is layout-compatible with float[2] ([complex.numbers]), so the real
-            // and imaginary parts are scaled by the same real weight.
-            float* p = reinterpret_cast<float*>(spec_ptr + i * nfreq);
-            const float* w = weight_ptr + i * nfreq;
-            for (size_t j = 0; j < nfreq; ++j) {
-                p[2 * j] *= w[j];
-                p[2 * j + 1] *= w[j];
-            }
+        if (bad) {
+            nonfinite.store(true, std::memory_order_relaxed);
         }
     });
+    if (nonfinite.load(std::memory_order_relaxed)) {
+        throw std::invalid_argument("fk: input contains NaN or infinite samples");
+    }
 
-    // Step 6: complex-to-real inverse 2D FFT with scale 1 / (ntr_pad * ns_pad).
-    // The padded buffer is free once the forward transform is done; reuse it for the result.
-    const float inv_scale = static_cast<float>(
-        1.0 / (static_cast<double>(ntr_pad) * static_cast<double>(ns_pad)));
-    pocketfft::c2r<float>(shape, stride_spec, stride_real, axes, false,
-                          spec_ptr, real_ptr, inv_scale, nthreads);
+    // Step 4a (A): forward time-axis r2c on the ntraces data rows.
+    pocketfft::r2c<float>(time_shape, real_stride, spec_stride, time_axis, true,
+                          real_ptr, spec_ptr, 1.0f, nthreads);
+    // Padded trace rows have a zero time spectrum.
+    const size_t npad = ntr_pad - ntraces;
+    if (npad > 0) {
+        for_each_row_range(npad, nthreads, npad * nfreq, [&](size_t r0, size_t r1) {
+            std::fill(spec_ptr + (ntraces + r0) * nfreq, spec_ptr + (ntraces + r1) * nfreq,
+                      std::complex<float>(0.0f, 0.0f));
+        });
+    }
 
-    // Step 7: copy the valid top-left block out. `in` is no longer read, so aliasing is safe.
+    // Step 5: weights and column classes from the per-thread cache.
+    const WeightCacheEntry& entry = weight_table(params, ntr_pad, ns_pad, df, dk, nthreads);
+    const float* weights = entry.table.data();
+
+    // Runs of consecutive columns that share a class.
+    std::vector<ColRun> runs;
+    for (size_t j = 0; j < nfreq;) {
+        const uint8_t cls = entry.col_class[j];
+        size_t e = j + 1;
+        while (e < nfreq && entry.col_class[e] == cls) {
+            ++e;
+        }
+        runs.push_back(ColRun{j, e, cls});
+        j = e;
+    }
+
+    // Step 4b (B): zero-weight columns are zeroed in every trace row. Ones-weight columns need no
+    // work, since their spatial pair is the identity and the time spectrum is already correct.
+    bool any_zero = false;
+    for (const ColRun& r : runs) {
+        any_zero = any_zero || r.cls == kColZeros;
+    }
+    if (any_zero) {
+        for_each_row_range(ntr_pad, nthreads, ntr_pad * nfreq, [&](size_t i0, size_t i1) {
+            for (size_t i = i0; i < i1; ++i) {
+                std::complex<float>* row = spec_ptr + i * nfreq;
+                for (const ColRun& r : runs) {
+                    if (r.cls == kColZeros) {
+                        std::fill(row + r.begin, row + r.end, std::complex<float>(0.0f, 0.0f));
+                    }
+                }
+            }
+        });
+    }
+
+    // Steps 4c, 5, 6 (B) for the mixed columns. The spatial inverse carries 1 / ntr_pad and the
+    // time inverse below carries 1 / ns_pad, so a transformed column gets 1 / (ntr_pad * ns_pad),
+    // the full scale of section 4. A skipped ones column gets only 1 / ns_pad, which is correct
+    // because its spatial pair is the identity with no scale.
+    const float inv_ntr = static_cast<float>(1.0 / static_cast<double>(ntr_pad));
+    for (const ColRun& r : runs) {
+        if (r.cls == kColTransform) {
+            transform_columns(spec_ptr, weights, nfreq, ntr_pad, r.begin, r.end - r.begin,
+                              inv_ntr, nthreads);
+        }
+    }
+
+    // Step 6 (A): complex-to-real inverse on the ntraces rows that are cropped into the output.
+    const float inv_ns = static_cast<float>(1.0 / static_cast<double>(ns_pad));
+    pocketfft::c2r<float>(time_shape, spec_stride, real_stride, time_axis, false,
+                          spec_ptr, real_ptr, inv_ns, nthreads);
+
+    // Step 7: copy the valid block out. `in` is no longer read, so aliasing is safe.
     for_each_row_range(ntraces, nthreads, ntraces * nsamples, [&](size_t t0, size_t t1) {
         for (size_t t = t0; t < t1; ++t) {
             const float* src = real_ptr + t * ns_pad;
-            float* dst = out + t * nsamples;
-            std::copy(src, src + nsamples, dst);
+            std::copy(src, src + nsamples, out + t * nsamples);
         }
     });
 }

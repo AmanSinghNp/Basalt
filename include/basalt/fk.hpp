@@ -30,13 +30,15 @@ struct FKMuteParams {
                                     // bin is evaluated at v = 0, since -f/k is undefined there
     size_t threads = 1;             // Threads for the FFT and the copy, weight and table passes;
                                     // 0 = hardware concurrency. Each calling thread keeps its work
-                                    // buffers and weight tables until it exits (about 113 MB for a
+                                    // buffers and weight tables until it exits (about 101 MB for a
                                     // 2048 x 2048 gather)
 };
 
 /// Filters a trace-major gather (`data[t * nsamples + s]`) in f-k space.
-/// Throws std::invalid_argument on invalid parameters, zero sizes, null pointers or a padded
-/// grid whose element count would overflow size_t.
+/// Throws std::invalid_argument on invalid parameters, zero sizes, null pointers, a padded
+/// grid whose element count would overflow size_t, or any NaN or infinite input sample
+/// ("fk: input contains NaN or infinite samples"). The non-finite check runs before any
+/// output is written, so `out` and, when aliased, `in` are unchanged when the call throws.
 /// `in` and `out` may alias (in-place filtering is allowed).
 void fk_filter_gather(const float* in, float* out,
                       size_t ntraces, size_t nsamples,

@@ -13,6 +13,7 @@
 #include <limits>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -1146,4 +1147,259 @@ TEST(FKPipeline, ReusedThreadBuffersLeaveNoStalePadding) {
     });
     worker.join();
     EXPECT_EQ(reused, fresh);
+}
+
+// ---- Staged path (row pruning, column skipping) and non-finite input ----
+
+namespace {
+
+// Weights are exactly 1 everywhere: Reject of an empty band, taper 0, no edge tapers.
+FKMuteParams all_ones_params() {
+    FKMuteParams p = event_params();
+    p.v_min = 1e29;
+    p.v_max = 1e30;
+    p.taper = 0.0;
+    p.mode = FKMode::Reject;
+    p.edge_taper_traces = 0;
+    p.edge_taper_samples = 0;
+    return p;
+}
+
+// Weights are exactly 0 everywhere: Pass of an empty band with the DC bin not preserved.
+FKMuteParams all_zeros_params() {
+    FKMuteParams p = all_ones_params();
+    p.mode = FKMode::Pass;
+    p.preserve_dc = false;
+    return p;
+}
+
+// Random band, taper, mode, DC handling, padding and edge tapers, for the randomised test.
+FKMuteParams random_params(std::mt19937& rng) {
+    std::uniform_real_distribution<double> u(0.0, 1.0);
+    const double pads[] = {1.0, 1.5, 2.0};
+    FKMuteParams p;
+    p.dt = 0.001 + 0.003 * u(rng);
+    p.dx = 5.0 + 15.0 * u(rng);
+    p.v_min = -2500.0 + 3000.0 * u(rng);
+    p.v_max = p.v_min + 100.0 + 2500.0 * u(rng);
+    p.taper = (rng() % 2 == 0) ? 0.0 : 0.3;
+    p.mode = (rng() % 2 == 0) ? FKMode::Reject : FKMode::Pass;
+    p.preserve_dc = (rng() % 2 == 0);
+    p.pad_factor = pads[rng() % 3];
+    p.edge_taper_traces = rng() % 4;
+    p.edge_taper_samples = rng() % 4;
+    return p;
+}
+
+// ||a - b|| / ||in||. Normalising by the input keeps the error meaningful when a reference or an
+// output is zero, which rel_rms cannot do.
+double error_vs_input(const std::vector<float>& a, const std::vector<float>& b,
+                      const std::vector<float>& in) {
+    double num = 0.0;
+    double den = 0.0;
+    for (size_t i = 0; i < a.size(); ++i) {
+        const double d = static_cast<double>(a[i]) - static_cast<double>(b[i]);
+        num += d * d;
+        den += static_cast<double>(in[i]) * static_cast<double>(in[i]);
+    }
+    return std::sqrt(num / den);
+}
+
+// Element-wise equality that treats NaN as equal to NaN (used for buffers that may hold NaN).
+bool same_values(const std::vector<float>& a, const std::vector<float>& b) {
+    if (a.size() != b.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < a.size(); ++i) {
+        const bool both_nan = std::isnan(a[i]) && std::isnan(b[i]);
+        if (!both_nan && a[i] != b[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Runs fn, which must throw std::invalid_argument naming the non-finite input.
+template <typename Fn>
+void expect_nonfinite_error(Fn&& fn) {
+    try {
+        fn();
+        ADD_FAILURE() << "expected std::invalid_argument";
+    } catch (const std::invalid_argument& e) {
+        EXPECT_NE(std::string(e.what()).find("NaN or infinite"), std::string::npos) << e.what();
+    } catch (...) {
+        ADD_FAILURE() << "expected std::invalid_argument";
+    }
+}
+
+} // namespace
+
+TEST(FKPipeline, StagedPathMatchesDirectReferenceRandomised) {
+    // Randomised configurations over every option the staged path branches on, at odd and even
+    // padded sizes, each run on one and on four threads. The direct reference shares no code with
+    // the pipeline. Column classes depend on the weights, so most sets are mixed; the all-ones,
+    // all-zeros and DC-only cases are covered by the next test and by ConsecutiveParamsDo....
+    std::mt19937 rng(20240601);
+    const std::pair<size_t, size_t> sizes[] = {
+        {1, 1}, {2, 5}, {7, 13}, {9, 33}, {13, 7}, {16, 20}, {15, 32}, {5, 40},
+    };
+    for (unsigned iter = 0; iter < 48; ++iter) {
+        const size_t ntr = sizes[iter % 8].first;
+        const size_t ns = sizes[iter % 8].second;
+        const FKMuteParams p = random_params(rng);
+        const auto in = random_gather(ntr, ns, 1000 + iter);
+        const auto ref = direct_fk_reference(in, ntr, ns, p);
+        for (size_t threads : {size_t{1}, size_t{4}}) {
+            FKMuteParams pt = p;
+            pt.threads = threads;
+            const auto out = fk_filter_gather(in, ntr, ns, pt);
+            EXPECT_LE(error_vs_input(out, ref, in), 1e-5)
+                << "iter " << iter << " ntr=" << ntr << " ns=" << ns << " threads=" << threads
+                << " mode=" << static_cast<int>(p.mode) << " pad=" << p.pad_factor;
+        }
+    }
+}
+
+TEST(FKPipeline, StagedPathColumnClassCasesMatchDirectReference) {
+    // Every column in one class (all ones: identity; all zeros), and a mixed set, at each padding
+    // factor with and without edge tapers. Odd sizes make the padded sizes differ from the data.
+    const double pads[] = {1.0, 1.5, 2.0};
+    for (double pad : pads) {
+        for (size_t edge : {size_t{0}, size_t{3}}) {
+            for (int kind = 0; kind < 3; ++kind) {
+                FKMuteParams p = kind == 0 ? all_ones_params()
+                                 : kind == 1 ? all_zeros_params()
+                                             : event_params();
+                p.pad_factor = pad;
+                if (kind == 2) {
+                    p.edge_taper_traces = edge;
+                    p.edge_taper_samples = edge;
+                }
+                const size_t ntr = 9;
+                const size_t ns = 33;
+                const auto in = random_gather(ntr, ns, 300 + static_cast<unsigned>(kind));
+                const auto out = fk_filter_gather(in, ntr, ns, p);
+                const auto ref = direct_fk_reference(in, ntr, ns, p);
+                EXPECT_LE(error_vs_input(out, ref, in), 1e-5)
+                    << "kind " << kind << " pad " << pad << " edge " << edge;
+                if (kind == 0 && edge == 0) {
+                    // Identity: the spatial pair is skipped, so the output is the input.
+                    EXPECT_LE(error_vs_input(out, in, in), 1e-5) << "pad " << pad;
+                }
+                if (kind == 1) {
+                    // All weights zero: exact zeros, not merely small.
+                    EXPECT_TRUE(std::all_of(out.begin(), out.end(),
+                                            [](float v) { return v == 0.0f; }))
+                        << "pad " << pad;
+                }
+            }
+        }
+    }
+}
+
+TEST(FKPipeline, StagedPathColumnClassesAreThreadIndependent) {
+    // 1001 x 1500 is large enough for the parallel passes with four workers. Each result is
+    // computed on a fresh thread, so no weight cache entry is reused.
+    const size_t ntr = 1001;
+    const size_t ns = 1500;
+    const auto in = random_gather(ntr, ns, 83);
+    FKMuteParams mixed = event_params();
+    mixed.mode = FKMode::Pass;
+    const FKMuteParams configs[] = {all_ones_params(), all_zeros_params(), mixed};
+    for (const FKMuteParams& base : configs) {
+        FKMuteParams p1 = base;
+        p1.threads = 1;
+        FKMuteParams p4 = base;
+        p4.threads = 4;
+        const auto one = filter_on_fresh_thread(in, ntr, ns, p1);
+        const auto four = filter_on_fresh_thread(in, ntr, ns, p4);
+        EXPECT_LE(error_vs_input(four, one, in), 1e-6);
+    }
+    const auto identity = filter_on_fresh_thread(in, ntr, ns, configs[0]);
+    EXPECT_LE(error_vs_input(identity, in, in), 1e-5);
+    const auto zeros = filter_on_fresh_thread(in, ntr, ns, configs[1]);
+    EXPECT_TRUE(std::all_of(zeros.begin(), zeros.end(), [](float v) { return v == 0.0f; }));
+}
+
+TEST(FKPipeline, ConsecutiveParamsDoNotReuseColumnClasses) {
+    // One thread, one gather size, and configurations whose column classes differ: all ones, all
+    // zeros, only the DC column transformed, and two mixed bands. A class kept from an earlier
+    // configuration would leave a column untransformed or zeroed, so every step is checked against
+    // the direct reference and against a fresh thread.
+    FKMuteParams dc_only = all_zeros_params();
+    dc_only.preserve_dc = true;  // Pass, empty band: only the DC bin keeps weight 1
+    FKMuteParams mixed = event_params();
+    mixed.mode = FKMode::Pass;
+    FKMuteParams mixed_shift = mixed;
+    mixed_shift.v_min = -800.0;
+    const FKMuteParams sequence[] = {
+        all_ones_params(), all_zeros_params(), mixed, all_ones_params(), dc_only,
+        all_zeros_params(), mixed_shift, mixed, all_ones_params(),
+    };
+    const size_t ntr = 9;
+    const size_t ns = 33;
+    const auto in = random_gather(ntr, ns, 89);
+    size_t step = 0;
+    for (const FKMuteParams& p : sequence) {
+        const auto out = fk_filter_gather(in, ntr, ns, p);
+        const auto ref = direct_fk_reference(in, ntr, ns, p);
+        EXPECT_LE(error_vs_input(out, ref, in), 1e-5) << "step " << step;
+        ++step;
+    }
+
+    const size_t big_ntr = 40;
+    const size_t big_ns = 90;
+    const auto big_in = random_gather(big_ntr, big_ns, 97);
+    for (const FKMuteParams& p : sequence) {
+        EXPECT_EQ(fk_filter_gather(big_in, big_ntr, big_ns, p),
+                  filter_on_fresh_thread(big_in, big_ntr, big_ns, p));
+    }
+}
+
+TEST(FKPipeline, NonFiniteInputIsRejectedAtFirstMiddleAndLastSample) {
+    // NaN, +Inf and -Inf at the first, middle and last sample. The call throws before writing
+    // `out`, and the in-place call leaves the buffer (which is the input) unchanged.
+    const size_t ntr = 9;
+    const size_t ns = 33;
+    const float bad_values[] = {std::numeric_limits<float>::quiet_NaN(),
+                                std::numeric_limits<float>::infinity(),
+                                -std::numeric_limits<float>::infinity()};
+    const size_t positions[] = {0, (ntr / 2) * ns + ns / 2, ntr * ns - 1};
+    const FKMuteParams p = event_params();
+    for (float value : bad_values) {
+        for (size_t pos : positions) {
+            auto in = random_gather(ntr, ns, 97);
+            in[pos] = value;
+            expect_nonfinite_error([&] { fk_filter_gather(in, ntr, ns, p); });
+
+            std::vector<float> out(in.size(), 7.0f);
+            expect_nonfinite_error([&] { fk_filter_gather(in.data(), out.data(), ntr, ns, p); });
+            EXPECT_EQ(out, std::vector<float>(in.size(), 7.0f)) << "pos " << pos;
+
+            std::vector<float> buf = in;
+            expect_nonfinite_error([&] { fk_filter_gather(buf.data(), buf.data(), ntr, ns, p); });
+            EXPECT_TRUE(same_values(buf, in)) << "in-place, pos " << pos;
+        }
+    }
+}
+
+TEST(FKPipeline, NonFiniteInputIsRejectedWithWorkerThreads) {
+    // 1001 x 1500 with four threads: the copy-in pass runs on workers, which must report the bad
+    // sample to the calling thread. The same thread then filters a clean gather correctly, so no
+    // partial state from the failed call is reused.
+    const size_t ntr = 1001;
+    const size_t ns = 1500;
+    const size_t positions[] = {0, (ntr / 2) * ns + ns / 2, ntr * ns - 1};
+    FKMuteParams p = event_params();
+    p.threads = 4;
+    const auto clean = random_gather(ntr, ns, 101);
+    for (size_t pos : positions) {
+        auto in = clean;
+        in[pos] = std::numeric_limits<float>::infinity();
+        std::vector<float> buf = in;
+        expect_nonfinite_error([&] { fk_filter_gather(buf.data(), buf.data(), ntr, ns, p); });
+        EXPECT_TRUE(same_values(buf, in)) << "pos " << pos;
+    }
+    const auto after = fk_filter_gather(clean, ntr, ns, p);
+    EXPECT_EQ(after, filter_on_fresh_thread(clean, ntr, ns, p));
 }

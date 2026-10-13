@@ -84,6 +84,11 @@ struct FKMuteParams {
 // (dt or dx so large that the product overflows, or so small that the reciprocal does).
 // Such an input is rejected rather than filtered, because every bin would otherwise collapse
 // onto f = 0 or k = 0 (or become NaN).
+// Any NaN or infinite input sample is rejected with std::invalid_argument ("fk: input contains
+// NaN or infinite samples"). The check runs in the copy-in pass, before any transform, and
+// writes nothing to `out`, so `in` is unchanged when the call throws, including when it aliases
+// `out`. Zero-weight columns are skipped (an implementation detail that does not change the
+// result for finite input), so the check is what keeps a non-finite sample from being dropped.
 // `in` and `out` may alias (in-place is allowed).
 void fk_filter_gather(const float* in, float* out,
                       size_t ntraces, size_t nsamples,
