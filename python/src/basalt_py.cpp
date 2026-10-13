@@ -102,13 +102,36 @@ bool any_nonfinite(const float* values, size_t count) {
     return bad != 0;
 }
 
+// Text the core throws for NaN or inf input (docs/design/FK_PIPELINE.md, section 4).
+const char* const kCoreNonFiniteMessage = "fk: input contains NaN or infinite samples";
+
+// True if every value of the caller's object is finite as float64. Runs only on the error path of
+// filter_gather, to tell non-finite input apart from finite input (for example 1e300 in float64)
+// that the float32 conversion turned into infinity.
+bool source_all_finite(const py::handle value) {
+    using DoubleArray = py::array_t<double, py::array::c_style | py::array::forcecast>;
+    const DoubleArray source = DoubleArray::ensure(value);
+    if (!source) {
+        return false;
+    }
+    const double* values = source.data();
+    const size_t count = static_cast<size_t>(source.size());
+    for (size_t i = 0; i < count; ++i) {
+        if (!std::isfinite(values[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // 2D float32 gather from any array-like. Ragged lists, strings and other values that do not
 // convert to a numeric array are ValueError, as are arrays that are not 2D.
 FloatArray as_gather(const py::handle value, const char* func, const char* name) {
     FloatArray array = FloatArray::ensure(value);
     if (!array) {
-        throw std::invalid_argument(std::string(func) + ": " + name +
-                                    " must be a 2D array-like of numbers, shape (ntraces, nsamples)");
+        throw std::invalid_argument(
+            std::string(func) + ": " + name +
+            " must be a 2D array-like of numbers, shape (ntraces, nsamples)");
     }
     if (array.ndim() != 2) {
         throw std::invalid_argument(std::string(func) + ": " + name +
@@ -180,12 +203,23 @@ py::array_t<float> filter_gather(const py::object& data, double dt, double dx, d
     // before any write to the output, and that surfaces here as ValueError.
     float* out_ptr = result.mutable_data();
     bool overflow = false;
-    {
+    try {
         py::gil_scoped_release release;
         fk_filter_gather(gather.data(), out_ptr, ntraces, nsamples, params);
         // Finite input can still overflow float32 inside the transform (for example at 1e36
         // scale). The check runs here, on the output that was just written, not through numpy.
         overflow = any_nonfinite(out_ptr, count);
+    } catch (const std::invalid_argument& err) {
+        // The GIL is held again here: the release guard was destroyed while unwinding. A float64
+        // value beyond the float32 range becomes infinite in the conversion above, so the core
+        // reports it as non-finite input. The caller's data is finite in that case, and the
+        // message says so.
+        if (std::string(err.what()) == kCoreNonFiniteMessage && source_all_finite(data)) {
+            throw std::invalid_argument(
+                "fk_filter: input values beyond the float32 range become infinite; scale the data "
+                "before filtering");
+        }
+        throw;
     }
     if (overflow) {
         throw std::invalid_argument(
@@ -215,11 +249,17 @@ py::dict read_file(const py::object& path) {
         data = io::read_segy(file);
     }
     // Copy into an array that owns its memory, so the result does not depend on the C++ data.
+    // The array can only be allocated once the size is known, which is after the read, so it is
+    // allocated under the GIL and the copy runs with the GIL released. `dst` is taken before the
+    // release, and `samples` keeps the buffer alive for the copy.
     py::array_t<float> samples(std::vector<py::ssize_t>{
         static_cast<py::ssize_t>(data.ntraces), static_cast<py::ssize_t>(data.nsamples)});
-    if (!data.samples.empty()) {
-        std::memcpy(samples.mutable_data(), data.samples.data(),
-                    data.samples.size() * sizeof(float));
+    float* dst = samples.mutable_data();
+    {
+        py::gil_scoped_release release;
+        if (!data.samples.empty()) {
+            std::memcpy(dst, data.samples.data(), data.samples.size() * sizeof(float));
+        }
     }
     py::dict result;
     result["samples"] = samples;
@@ -238,8 +278,11 @@ void write_file(const py::object& path, const py::object& samples, double dt,
     const io::SampleFormat out_format = parse_write_format(format);
     const size_t ntraces = static_cast<size_t>(array.shape(0));
     const size_t nsamples = static_cast<size_t>(array.shape(1));
-    const std::vector<float> values(array.data(), array.data() + array.size());
+    const float* src = array.data();
+    const size_t count = ntraces * nsamples;
     py::gil_scoped_release release;
+    // The copy of the gather runs with the GIL released. `array` keeps the source buffer alive.
+    const std::vector<float> values(src, src + count);
     const io::SegyData data = io::make_segy(values, ntraces, nsamples, dt, out_format);
     io::write_segy(file, data, out_format);
 }
@@ -254,7 +297,8 @@ PYBIND11_MODULE(_basalt, m) {
           "Filter a 2D gather (ntraces, nsamples) in f-k space and return a new float32 array.\n\n"
           "data is converted to C-contiguous float32. Complex data keeps only the real part "
           "(numpy emits ComplexWarning). NaN or inf samples, and output that overflows float32 "
-          "(for example data near 1e36), raise ValueError. Float parameters accept any real "
+          "(for example data near 1e36), and values beyond the float32 range (for example float64 "
+          "data near 1e300), raise ValueError. Float parameters accept any real "
           "number (bool counts as 0 or 1); a non-numeric value raises TypeError.",
           py::arg("data"), py::arg("dt"), py::arg("dx"),
           py::arg("v_min") = -1500.0, py::arg("v_max") = 1500.0, py::arg("taper") = 0.1,

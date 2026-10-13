@@ -12,6 +12,7 @@ import struct
 import tempfile
 import threading
 import time
+import tracemalloc
 
 import numpy as np
 
@@ -605,10 +606,36 @@ def test_read_only_float32_gather_is_accepted_and_not_modified():
     expected = basalt.fk_filter(gather, 0.004, 25.0, v_min=-800.0, v_max=1200.0)
     readonly = gather.copy()
     readonly.flags.writeable = False
+    snapshot = readonly.copy()
     result = basalt.fk_filter(readonly, 0.004, 25.0, v_min=-800.0, v_max=1200.0)
     assert np.array_equal(result, expected)
     assert result.dtype == np.float32 and result.flags.c_contiguous
-    assert not np.shares_memory(result, readonly)
+    # The input is only read: its values and its read-only flag are the same after the call.
+    assert np.array_equal(readonly, snapshot)
+    assert not readonly.flags.writeable
+
+
+def test_c_contiguous_float32_input_is_not_copied():
+    # numpy reports its buffers to tracemalloc, so the peak traced during a call is the output plus
+    # any Python-side copy of the input. The C++ core's own work buffers are not traced. Fortran
+    # order is the control: it must show the extra input-sized copy, or the measurement is void.
+    rng = np.random.default_rng(34)
+    c_gather = rng.standard_normal((1024, 1024)).astype(np.float32)
+    f_gather = np.asfortranarray(c_gather)
+    nbytes = c_gather.nbytes
+
+    def peak_during_filter(gather):
+        tracemalloc.start()
+        try:
+            basalt.fk_filter(gather, 0.004, 25.0, v_min=-800.0, v_max=1200.0)
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    c_peak = peak_during_filter(c_gather)
+    f_peak = peak_during_filter(f_gather)
+    assert c_peak < 1.5 * nbytes, (c_peak, nbytes)
+    assert f_peak > 1.8 * nbytes, (f_peak, nbytes)
 
 
 def test_non_finite_frequency_or_wavenumber_raises_value_error():
@@ -625,6 +652,37 @@ def test_step_overflow_and_output_overflow_raise_value_error():
     rng = np.random.default_rng(15)
     big = (rng.standard_normal((37, 53)) * 1e36).astype(np.float32)
     _raises(ValueError, basalt.fk_filter, big, 0.004, 25.0, v_min=-800.0, v_max=1200.0)
+
+
+def test_identity_configuration_overflow_is_reported_not_returned():
+    # Finite float32 input at 3e38: the transform overflows even though every weight is 1.
+    gather = np.full((37, 53), 3e38, dtype=np.float32)
+    identity = dict(v_min=1e29, v_max=1e30, taper=0.0, edge_taper_traces=0, edge_taper_samples=0)
+    _raises(ValueError, basalt.fk_filter, gather, 0.004, 25.0, **identity)
+
+
+def test_finite_float64_beyond_float32_range_is_reported_as_range_error():
+    # 1e300 is finite in float64; the float32 conversion makes it infinite. The message must not
+    # claim that the data contains NaN or inf. A real NaN in the same input still gets that message.
+    gather = np.full((4, 8), 1e300)
+    # numpy warns about the float64 to float32 overflow in the conversion; the binding reports it.
+    with np.errstate(over="ignore"):
+        try:
+            basalt.fk_filter(gather, 0.004, 25.0)
+        except ValueError as err:
+            message = str(err)
+        else:
+            raise AssertionError("expected ValueError for values beyond the float32 range")
+        assert "float32" in message and "NaN" not in message, message
+
+        gather[1, 1] = np.nan
+        try:
+            basalt.fk_filter(gather, 0.004, 25.0)
+        except ValueError as err:
+            message = str(err)
+        else:
+            raise AssertionError("expected ValueError for a NaN sample")
+        assert "NaN or infinite" in message, message
 
 
 def _run_all():
