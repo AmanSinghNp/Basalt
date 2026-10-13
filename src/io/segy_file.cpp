@@ -180,7 +180,11 @@ bool sample_count_matches(size_t ntraces, size_t nsamples, size_t count) {
 
 } // namespace
 
-SegyData read_segy(const std::string& path) {
+namespace {
+
+// Shared body of read_segy and read_segy_headers. With load_samples false, each trace's sample
+// bytes are skipped without being read, and `samples` stays empty.
+SegyData read_segy_file(const std::string& path, bool load_samples) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         throw std::runtime_error("cannot open SEG-Y file '" + path + "'");
@@ -268,13 +272,21 @@ SegyData read_segy(const std::string& path) {
     const auto ntraces = static_cast<size_t>(payload / trace_bytes);
     data.ntraces = ntraces;
     data.raw_trace_headers.resize(ntraces);
-    data.samples.resize(ntraces * nsamples);
+    if (load_samples) {
+        data.samples.resize(ntraces * nsamples);
+    }
 
-    std::vector<uint8_t> sample_buf(nsamples * bps);
+    const size_t sample_bytes = nsamples * bps;
+    std::vector<uint8_t> sample_buf(load_samples ? sample_bytes : 0);
     for (size_t t = 0; t < ntraces; ++t) {
         auto& header = data.raw_trace_headers[t];
         in.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(kTraceHeaderSize));
-        in.read(reinterpret_cast<char*>(sample_buf.data()), static_cast<std::streamsize>(sample_buf.size()));
+        if (load_samples) {
+            in.read(reinterpret_cast<char*>(sample_buf.data()), static_cast<std::streamsize>(sample_bytes));
+        } else {
+            // The file size was checked above, so every trace's samples are present to skip.
+            in.seekg(static_cast<std::streamoff>(sample_bytes), std::ios::cur);
+        }
         if (!in) {
             fail(path, "unexpected end of file while reading trace " + std::to_string(t));
         }
@@ -286,6 +298,9 @@ SegyData read_segy(const std::string& path) {
                            std::to_string(nsamples));
         }
 
+        if (!load_samples) {
+            continue;
+        }
         float* out = data.samples.data() + t * nsamples;
         for (size_t s = 0; s < nsamples; ++s) {
             const float value = decode_sample(sample_buf.data() + s * bps, data.format);
@@ -300,6 +315,16 @@ SegyData read_segy(const std::string& path) {
     }
 
     return data;
+}
+
+} // namespace
+
+SegyData read_segy(const std::string& path) {
+    return read_segy_file(path, true);
+}
+
+SegyData read_segy_headers(const std::string& path) {
+    return read_segy_file(path, false);
 }
 
 void write_segy(const std::string& path, const SegyData& data, SampleFormat out_format) {

@@ -72,6 +72,7 @@ add_library(basalt_core
     src/internal/thread_pool.cpp
     src/fk/fk_pipeline.cpp
     src/io/segy_file.cpp
+    src/io/trace_headers.cpp
 )
 target_include_directories(basalt_core
     PUBLIC
@@ -160,6 +161,7 @@ add_executable(basalt_tests
     tests/integration/pipeline_test.cpp
     tests/integrity/fk_pipeline_test.cpp
     tests/integrity/segy_file_test.cpp
+    tests/integrity/trace_headers_test.cpp
     tests/integration/cli_test.cpp
 )
 target_link_libraries(basalt_tests PRIVATE basalt_core GTest::gtest_main)

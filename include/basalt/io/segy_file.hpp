@@ -33,6 +33,12 @@ struct SegyData {
 // samples whose value exceeds the IEEE single-precision range (they cannot be represented).
 SegyData read_segy(const std::string& path);
 
+// Same layout checks as read_segy, but the sample data is skipped: it is neither read nor
+// decoded, so `samples` is empty and IBM words outside the IEEE range are not reported. The
+// textual and binary headers and every raw trace header are filled in as read_segy fills them.
+// Throws std::runtime_error (naming the file) on malformed headers or a malformed layout.
+SegyData read_segy_headers(const std::string& path);
+
 // Writes a SEG-Y file. Text and trace headers are written back from the raw arrays and the
 // binary header is written from its raw bytes, except that the format code is set to
 // `out_format` and the extended textual header count is set to zero. The `dt`, `text_header`
