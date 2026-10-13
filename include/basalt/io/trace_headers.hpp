@@ -70,9 +70,9 @@ struct TraceHeaderValues {
 };
 
 // Writes `values` into the raw big-endian trace headers, one entry per trace. A scalar that is not
-// given is chosen for each trace: -100 when a coordinate (or the elevation) of that trace is not a
-// whole number, and 1 otherwise. A scalar is written when it is given or when a value it scales is
-// given. Throws std::invalid_argument, naming the field, when a vector length differs from
+// given is chosen once for all traces: -100 when a coordinate (or the elevation) is not a whole
+// number in any trace, and 1 otherwise. A scalar is written when it is given or when a value it
+// scales is given. Throws std::invalid_argument, naming the field, when a vector length differs from
 // raw.size(), a value is not finite, an integer field is not a whole number, or a stored value does
 // not fit its field. Lengths and finiteness are checked before any byte is written; if a later
 // value fails, raw may already hold the values written for earlier traces.

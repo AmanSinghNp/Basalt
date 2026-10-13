@@ -120,21 +120,27 @@ int32_t scaled_value(double value, int16_t scalar, const char* name) {
     return static_cast<int32_t>(stored);
 }
 
-// The scalar of one trace. A given scalar is used as it is. Otherwise the default is -100 when a
-// scaled value of this trace is not a whole number, and 1 when all of them are.
-int16_t trace_scalar(const std::vector<double>& given,
-                     const std::vector<const std::vector<double>*>& scaled, size_t t,
-                     const char* name) {
-    if (!given.empty()) {
-        return static_cast<int16_t>(whole_value(given[t], name, std::numeric_limits<int16_t>::min(),
-                                                std::numeric_limits<int16_t>::max()));
-    }
+// The default scalar of one group of fields, chosen over all traces: -100 when a value that the
+// group scales is not a whole number in any trace, and 1 when they are all whole.
+int16_t default_scalar(const std::vector<const std::vector<double>*>& scaled) {
     for (const std::vector<double>* values : scaled) {
-        if (!values->empty() && std::floor((*values)[t]) != (*values)[t]) {
-            return -100;
+        for (double v : *values) {
+            if (std::floor(v) != v) {
+                return -100;
+            }
         }
     }
     return 1;
+}
+
+// The scalar of one trace. A given scalar is used as it is; otherwise the default applies.
+int16_t trace_scalar(const std::vector<double>& given, int16_t fallback, size_t t,
+                     const char* name) {
+    if (given.empty()) {
+        return fallback;
+    }
+    return static_cast<int16_t>(whole_value(given[t], name, std::numeric_limits<int16_t>::min(),
+                                            std::numeric_limits<int16_t>::max()));
 }
 
 void store_int16(uint8_t* p, size_t offset, const std::vector<double>& values, size_t t,
@@ -268,6 +274,8 @@ void encode_trace_headers(std::vector<std::array<uint8_t, kTraceHeaderSize>>& ra
     const bool coords_given = !values.source_x.empty() || !values.source_y.empty() ||
                               !values.group_x.empty() || !values.group_y.empty();
     const bool elevation_given = !values.receiver_elevation.empty();
+    const int16_t default_coord_scalar = default_scalar(coords);
+    const int16_t default_elev_scalar = default_scalar(elevations);
 
     for (size_t t = 0; t < ntraces; ++t) {
         uint8_t* p = raw[t].data();
@@ -277,13 +285,15 @@ void encode_trace_headers(std::vector<std::array<uint8_t, kTraceHeaderSize>>& ra
         store_int32(p, kOffsetOff, values.offset, t, "offset");
 
         if (elevation_given || !values.scalar_elev.empty()) {
-            const int16_t scalar = trace_scalar(values.scalar_elev, elevations, t, "scalar_elev");
+            const int16_t scalar =
+                trace_scalar(values.scalar_elev, default_elev_scalar, t, "scalar_elev");
             put_be16(p + kScalarElevOff, static_cast<uint16_t>(scalar));
             store_scaled(p, kRecvElevOff, values.receiver_elevation, t, "receiver_elevation",
                          scalar);
         }
         if (coords_given || !values.scalar_coord.empty()) {
-            const int16_t scalar = trace_scalar(values.scalar_coord, coords, t, "scalar_coord");
+            const int16_t scalar =
+                trace_scalar(values.scalar_coord, default_coord_scalar, t, "scalar_coord");
             put_be16(p + kScalarCoordOff, static_cast<uint16_t>(scalar));
             store_scaled(p, kSourceXOff, values.source_x, t, "source_x", scalar);
             store_scaled(p, kSourceYOff, values.source_y, t, "source_y", scalar);

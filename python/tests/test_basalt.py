@@ -796,10 +796,10 @@ def test_write_segy_headers_round_trip_through_read_trace_headers_and_read_segy(
     for name in ("trace_sequence", "field_record", "channel", "offset", "coord_units",
                  "delay_ms", "year", "day_of_year", "hour", "minute", "second"):
         assert got[name].tolist() == headers[name], name
-    # A trace with a fraction in a coordinate gets -100; a trace whose coordinates are all whole
-    # gets 1, so its values are exact.
-    assert got["scalar_coord"].tolist() == [-100, -100, 1, -100]
-    assert got["scalar_elev"].tolist() == [-100, -100, 1, 1]
+    # A fraction in any trace's coordinates gives every trace the coordinate scalar -100, and a
+    # fraction in any elevation does the same for the elevation scalar.
+    assert got["scalar_coord"].tolist() == [-100, -100, -100, -100]
+    assert got["scalar_elev"].tolist() == [-100, -100, -100, -100]
     for name in ("source_x", "source_y", "group_x", "group_y", "receiver_elevation"):
         expected = np.array(headers[name], dtype=np.float64)
         assert np.max(np.abs(got[name] - expected)) <= 0.005 + 1e-9, name
@@ -823,7 +823,7 @@ def test_arcsecond_coordinates_for_station_near_lat_27_7_lon_85_3():
         })
         got = basalt.read_trace_headers(path)
     assert got["coord_units"].tolist() == [2, 2]
-    assert got["scalar_coord"].tolist() == [1, -100]
+    assert got["scalar_coord"].tolist() == [-100, -100]
     assert got["group_x"][0] == 307080.0
     assert got["group_y"][0] == 99720.0
     assert np.max(np.abs(got["group_x"] - group_x)) <= 0.005 + 1e-9
@@ -886,7 +886,7 @@ def test_write_segy_given_scalars_are_stored_and_applied():
         assert basalt.read_trace_headers(big)["group_x"][0] == 1.0e10
 
 
-def test_write_segy_default_scalars_are_chosen_per_trace_and_absent_fields_stay_zero():
+def test_write_segy_default_scalars_are_chosen_over_all_traces_and_absent_fields_stay_zero():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "defaults.sgy")
         basalt.write_segy(path, np.zeros((3, 2), np.float32), 0.004, headers={
@@ -894,8 +894,20 @@ def test_write_segy_default_scalars_are_chosen_per_trace_and_absent_fields_stay_
             "receiver_elevation": [0.0, 0.0, 0.5],
         })
         got = basalt.read_trace_headers(path)
-    assert got["scalar_coord"].tolist() == [1, -100, 1]
-    assert got["scalar_elev"].tolist() == [1, 1, -100]
+        whole = os.path.join(tmp, "whole.sgy")
+        basalt.write_segy(whole, np.zeros((2, 2), np.float32), 0.004, headers={
+            "group_x": [1.0, -7.0],
+            "receiver_elevation": [0.0, 42.0],
+        })
+        whole_got = basalt.read_trace_headers(whole)
+    # The fraction in trace 1 makes the coordinate scalar -100 for all traces, and the fraction in
+    # trace 2 does the same for the elevation scalar.
+    assert got["scalar_coord"].tolist() == [-100, -100, -100]
+    assert got["scalar_elev"].tolist() == [-100, -100, -100]
+    # Without any fraction, both defaults are 1.
+    assert whole_got["scalar_coord"].tolist() == [1, 1]
+    assert whole_got["scalar_elev"].tolist() == [1, 1]
+    assert whole_got["receiver_elevation"].tolist() == [0.0, 42.0]
     assert got["group_x"].tolist() == [1.0, 2.5, -7.0]
     assert got["receiver_elevation"].tolist() == [0.0, 0.0, 0.5]
     # Fields that were not given keep their zero bytes.
@@ -918,9 +930,10 @@ def test_write_segy_header_bytes_are_big_endian_at_contract_positions():
     # Bytes 37-40 hold offset, 85-88 group_y, 71-72 scalar_coord and 161-162 hour (1-based).
     assert struct.unpack_from(">i", first, 36)[0] == -1
     assert struct.unpack_from(">i", second, 36)[0] == 258
-    assert struct.unpack_from(">i", first, 84)[0] == 70000
-    assert struct.unpack_from(">i", second, 84)[0] == -150    # -1.5 at scalar -100
-    assert struct.unpack_from(">h", first, 70)[0] == 1
+    # Trace 1 has a fraction, so both traces get scalar -100: 70000 and -1.5 are stored times 100.
+    assert struct.unpack_from(">i", first, 84)[0] == 7000000
+    assert struct.unpack_from(">i", second, 84)[0] == -150
+    assert struct.unpack_from(">h", first, 70)[0] == -100
     assert struct.unpack_from(">h", second, 70)[0] == -100
     assert struct.unpack_from(">h", first, 160)[0] == 5
     assert struct.unpack_from(">h", second, 160)[0] == 6
@@ -1038,7 +1051,7 @@ def test_write_segy_ibm_format_accepts_headers():
         full = basalt.read_segy(path)
     assert full["format"] == "ibm"
     assert got["year"].tolist() == [2026, 2027]
-    assert got["scalar_coord"].tolist() == [1, -100]
+    assert got["scalar_coord"].tolist() == [-100, -100]
     assert got["group_x"].tolist() == [307080.0, 12.25]
     assert np.allclose(full["samples"], samples)
 

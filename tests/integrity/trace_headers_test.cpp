@@ -557,7 +557,7 @@ TEST(TraceHeadersTest, AbsentFieldsAreLeftAsTheyWere) {
     EXPECT_TRUE(none.empty());
 }
 
-TEST(TraceHeadersTest, DefaultCoordinateScalarIsPerTrace) {
+TEST(TraceHeadersTest, DefaultScalarsAreChosenOverAllTraces) {
     TraceHeaderValues v;
     v.group_x = {12.5, 12.0, -0.25};
     v.group_y = {1.0, 2.0, 3.0};
@@ -566,14 +566,33 @@ TEST(TraceHeadersTest, DefaultCoordinateScalarIsPerTrace) {
     encode_trace_headers(raw, v);
     const TraceHeaders h = decode_trace_headers(raw);
 
-    // Trace 0 and 2 have a fraction in their coordinates, so they get -100. Trace 1 is whole.
-    EXPECT_EQ(h.scalar_coord, (std::vector<int16_t>{-100, 1, -100}));
-    EXPECT_EQ(h.scalar_elev, (std::vector<int16_t>{1, -100, 1}));
+    // A fraction in any trace's coordinates makes the coordinate scalar -100 for every trace, and
+    // a fraction in any trace's elevation does the same for the elevation scalar.
+    EXPECT_EQ(h.scalar_coord, (std::vector<int16_t>{-100, -100, -100}));
+    EXPECT_EQ(h.scalar_elev, (std::vector<int16_t>{-100, -100, -100}));
     EXPECT_DOUBLE_EQ(h.group_x[0], 12.5);
     EXPECT_DOUBLE_EQ(h.group_x[1], 12.0);
     EXPECT_DOUBLE_EQ(h.group_x[2], -0.25);
     EXPECT_DOUBLE_EQ(h.receiver_elevation[0], 100.0);
     EXPECT_DOUBLE_EQ(h.receiver_elevation[1], 100.5);
+}
+
+TEST(TraceHeadersTest, DefaultCoordinateAndElevationScalarsAreChosenIndependently) {
+    TraceHeaderValues v;
+    v.group_x = {12.0, 13.0};
+    v.receiver_elevation = {100.5, 42.0};
+    auto raw = blank_headers(2);
+    encode_trace_headers(raw, v);
+    const TraceHeaders h = decode_trace_headers(raw);
+
+    // The coordinates are whole, so their scalar is 1. The elevation has a fraction, so its
+    // scalar is -100 for both traces.
+    EXPECT_EQ(h.scalar_coord, (std::vector<int16_t>{1, 1}));
+    EXPECT_EQ(h.scalar_elev, (std::vector<int16_t>{-100, -100}));
+    EXPECT_DOUBLE_EQ(h.group_x[0], 12.0);
+    EXPECT_DOUBLE_EQ(h.group_x[1], 13.0);
+    EXPECT_DOUBLE_EQ(h.receiver_elevation[0], 100.5);
+    EXPECT_DOUBLE_EQ(h.receiver_elevation[1], 42.0);
 }
 
 TEST(TraceHeadersTest, GivenScalarIsStoredAndUsed) {
