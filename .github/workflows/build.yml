@@ -166,6 +166,22 @@ jobs:
       - name: Run consumer
         run: ctest --test-dir build-consumer --output-on-failure
 
+  windows:
+    name: MSVC Release (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Default generator: the newest Visual Studio installed on the runner.
+      - name: Configure
+        run: cmake -S . -B build -A x64
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
   format:
     name: clang-format check
     runs-on: ubuntu-latest
