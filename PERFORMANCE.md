@@ -110,7 +110,7 @@ Every row uses `row-first-column-strips` as the resolved FFT schedule. The `FFT 
 
 The last row is the NUMA-auto configuration. It replaces the earlier 8-thread row because this host has 4 vCPUs. On a single-node host the NUMA-auto path has no topology to exploit, so the row is a functional check only.
 
-Checksums: the `checksum_real` and `checksum_imag` fields are identical across all runs and thread counts for each SIMD mode. The AVX2 and AVX-512 checksums are identical at every size and thread count. The scalar checksums differ from the AVX2 and AVX-512 checksums at every size. This difference was observed but not investigated.
+Checksums: the `checksum_real` and `checksum_imag` fields are identical across all runs and thread counts for each SIMD mode. The AVX2 and AVX-512 checksums are identical at every size and thread count. The scalar checksums differ from the AVX2 and AVX-512 checksums at every size. This is expected: the scalar kernels evaluate the taper sigmoid with `std::exp` while the SIMD paths use the `fast_exp_avx` polynomial (weights agree within 1e-5), and the scalar FFT accumulates in a different order, so outputs agree to float tolerance but not bit for bit. The tests compare all three paths against double-precision references.
 
 ### FFT Schedule Comparison (forward 2D FFT)
 `fft2d_schedule_benchmark`, 10 iterations, 2 warmup shots, 3 interleaved rounds, 5 runs. Each cell is the minimum over the 5 runs of the per-run minimum.
@@ -141,7 +141,7 @@ Checksums: the `checksum_real` and `checksum_imag` fields are identical across a
 
 ## Regression Test Results
 - `ctest --output-on-failure`
-- Golden regression: deterministic single-thread AVX2 checksum in `runtime_test.cpp`
+- Pipeline regression: batch executor output must match the direct single-call pipeline within a relative tolerance (`runtime_test.cpp`), plus double-precision reference checks for FFT and filter
 - Threaded regression: multi-thread batch executor output must match single-thread output bit-exactly
 
 ## Contribution Breakdown
@@ -215,4 +215,3 @@ The Stage 1 profiling workflow also collects `perf` counters (`tools/profiling/r
 ## Future Work
 - Add self-hosted Linux benchmark baselines to populate this report with representative numbers.
 - Revisit AVX-512 FFT only after post-threading and post-NUMA profiling shows the kernel is no longer memory-wall dominated.
-- Investigate why the scalar checksums differ from the AVX2 and AVX-512 checksums.
