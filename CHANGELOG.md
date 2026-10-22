@@ -52,7 +52,7 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 - New options `BASALT_BUILD_TESTS`, `BASALT_BUILD_BENCHMARKS`, `BASALT_BUILD_CLI` and `BASALT_INSTALL`; tests and benchmarks default on only for top-level builds.
 - libnuma is no longer linked (the raw `mbind` syscall is used), so the installed package is relocatable.
 - Installation uses `GNUInstallDirs`; `Basalt::basalt_core` is available as an alias for `add_subdirectory` consumers.
-- One CI workflow covering GCC Release, ASan/UBSan, TSan, Clang, Windows MSVC, scalar-kernel tests, a SIMD isolation check, an install-and-consume check and clang-format; actions are pinned by commit SHA.
+- One CI workflow covering GCC Release, ASan/UBSan, TSan, Clang, Windows MSVC and MinGW, macOS (x86_64 under Rosetta 2), scalar-kernel tests, a SIMD isolation check, an install-and-consume check and clang-format; actions are pinned by commit SHA.
 - The whole tree is formatted with clang-format 18 (see `.git-blame-ignore-revs`).
 - `basalt_bench` exits 2 on usage errors and 0 for `--help`.
 
