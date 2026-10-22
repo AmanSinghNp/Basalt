@@ -9,11 +9,18 @@ namespace basalt::utils {
 /// Fast vectorizable exponential approximation.
 /// Based on Schraudolph's method or a Padé approximant.
 /// For this implementation, we use a high-performance 5th-order polynomial approximation 
-/// valid for the range [-87, 87] (input to exp).
+/// valid for the range [-87, 88] (input to exp).
 /// Derived from Agner Fog's VCL or similar high-perf libraries.
+///
+/// Inputs are clamped to [-87, 88] internally, so out-of-range arguments
+/// saturate to exp(-87) (~1.6e-38) or exp(88) (~1.65e38) instead of producing
+/// garbage from exponent-field overflow. NaN inputs propagate (result is NaN).
 inline __m256 fast_exp_avx(__m256 x) {
-    // Range clamping is assumed to be handled by caller (sigmoid inputs usually safe)
-    
+    // Operand order matters: _mm256_min/max_ps return the SECOND operand when
+    // either input is NaN, so x is passed second to let NaN propagate.
+    x = _mm256_min_ps(_mm256_set1_ps(88.0f), x);
+    x = _mm256_max_ps(_mm256_set1_ps(-87.0f), x);
+
     // Horner's method: (((((c5*x + c4)*x + c3)*x + c2)*x + c1)*x + c0)
     // But standard exp approximation is usually done via 2^x identity.
     // Let's use the valid range reduction method: exp(x) = 2^(x * log2(e))
@@ -57,6 +64,7 @@ inline __m256 fast_exp_avx(__m256 x) {
 }
 
 /// Fast Sigmoid: 1 / (1 + exp(-x))
+/// Inputs are clamped to [-87, 87]; NaN inputs propagate to NaN outputs.
 inline __m256 fast_sigmoid_avx(__m256 x) {
     const __m256 one = _mm256_set1_ps(1.0f);
     const __m256 zero = _mm256_set1_ps(0.0f);
@@ -66,8 +74,9 @@ inline __m256 fast_sigmoid_avx(__m256 x) {
     const __m256 max_input = _mm256_set1_ps(87.0f);
     const __m256 min_input = _mm256_set1_ps(-87.0f);
     
-    x = _mm256_min_ps(x, max_input);
-    x = _mm256_max_ps(x, min_input);
+    // x is the second operand so that NaN propagates (see fast_exp_avx).
+    x = _mm256_min_ps(max_input, x);
+    x = _mm256_max_ps(min_input, x);
     
     // exp(-x)
     __m256 neg_x = _mm256_sub_ps(zero, x);
