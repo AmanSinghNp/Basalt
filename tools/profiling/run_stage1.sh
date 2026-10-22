@@ -52,6 +52,8 @@ RAW_DIR="$RUN_DIR/raw"
 mkdir -p "$RAW_DIR"
 
 bash "$RESOLVE_SCRIPT" > "$RUN_DIR/resolved_events.env"
+# The file is generated at runtime, so shellcheck cannot follow it.
+# shellcheck disable=SC1091
 source "$RUN_DIR/resolved_events.env"
 
 echo "Running Stage 1 profiling in: $RUN_DIR"
