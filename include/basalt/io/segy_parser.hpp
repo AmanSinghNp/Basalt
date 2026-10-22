@@ -45,6 +45,14 @@ SegyTraceHeader parse_trace_header(const void* buffer, size_t size, bool little_
 
 // Resolved geometry of a SEG-Y file. Produced by describe_segy(), which has
 // already verified that every trace lies inside the buffer it was given.
+//
+// Two layouts exist. Fixed-length files (the common case) have n_traces equally
+// sized traces of samples_per_trace samples at data_offset + i * trace_stride.
+// Variable-length files (variable_length == true) store a different sample count
+// in each trace header; describe_segy() walks them once and records the byte
+// offset and sample count of every trace. Use trace_offset(i) and
+// trace_samples(i), which work in both modes, instead of computing offsets from
+// trace_stride.
 struct SegyLayout {
     SegyBinaryHeader binary{};  // decoded binary header (host order)
     bool little_endian = false; // byte order of all binary fields in the file
@@ -54,13 +62,57 @@ struct SegyLayout {
 
     uint16_t data_sample_format = 0; // validated code (1,2,3,5,6,7,8,9,10,11,12,15,16)
     size_t bytes_per_sample = 0;
-    size_t samples_per_trace = 0; // effective ns (> 0)
+    // Fixed mode: samples in every trace (> 0). Variable mode: the largest
+    // per-trace sample count (0 only if every trace is empty), so a buffer of
+    // this many floats holds any trace.
+    size_t samples_per_trace = 0;
 
     size_t n_ext_text_headers = 0; // number of 3200-byte extended textual headers
     size_t data_offset = 0;        // byte offset of the first trace header
-    size_t trace_stride = 0;       // 240 + samples_per_trace * bytes_per_sample
+    // 240 + samples_per_trace * bytes_per_sample in fixed mode; 0 in variable
+    // mode, where traces are not equally spaced.
+    size_t trace_stride = 0;
     size_t n_traces = 0;
     size_t trailer_bytes = 0; // rev 2 trailer stanzas after the last trace
+
+    // Variable-length support. variable_length is the resolved decision, not
+    // the header flag: see describe_segy().
+    bool variable_length = false;
+    size_t min_samples_per_trace = 0;    // smallest per-trace count (== samples_per_trace if fixed)
+    std::vector<uint64_t> trace_offsets; // variable mode: byte offset of each trace header
+    std::vector<uint32_t> trace_sample_counts; // variable mode: samples in each trace
+
+    // Samples in trace i. Throws std::out_of_range if i >= n_traces.
+    [[nodiscard]] size_t trace_samples(size_t i) const {
+        if (i >= n_traces) {
+            throw std::out_of_range("SEG-Y trace index " + std::to_string(i) + " out of range");
+        }
+        if (!variable_length) {
+            return samples_per_trace;
+        }
+        if (i >= trace_sample_counts.size()) {
+            throw std::out_of_range("SEG-Y variable-length layout has no entry for trace " +
+                                    std::to_string(i));
+        }
+        return trace_sample_counts[i];
+    }
+
+    // Byte offset of the header of trace i in the file. In fixed mode this is
+    // data_offset + i * trace_stride and is not overflow checked here (the
+    // read_trace_* functions do that). Throws std::out_of_range like trace_samples().
+    [[nodiscard]] uint64_t trace_offset(size_t i) const {
+        if (i >= n_traces) {
+            throw std::out_of_range("SEG-Y trace index " + std::to_string(i) + " out of range");
+        }
+        if (!variable_length) {
+            return static_cast<uint64_t>(data_offset) + static_cast<uint64_t>(i) * trace_stride;
+        }
+        if (i >= trace_offsets.size()) {
+            throw std::out_of_range("SEG-Y variable-length layout has no entry for trace " +
+                                    std::to_string(i));
+        }
+        return trace_offsets[i];
+    }
 };
 
 // Validates the complete file and returns its layout.
@@ -85,25 +137,47 @@ struct SegyLayout {
 //    and the bytes after the header block divide evenly into whole traces; a
 //    trailing partial trace is an error
 //
-// Variable-length traces are not supported: every trace is assumed to hold
-// samples_per_trace samples regardless of fixed_length_flag, which is only
-// reported (many writers leave it at 0 for fixed-length files).
+// Variable-length traces (SEG-Y rev 1/2): the layout is variable only when
+// revision >= 1, the binary header's fixed_length_flag is 0, and the fixed
+// interpretation does not hold, because either the bytes after the headers are
+// not a whole number of (240 + ns * bytes_per_sample) traces, or some trace
+// header's "samples in this trace" field (bytes 115-116, non-zero) differs from
+// the binary header ns. Many writers leave the flag at 0 for fixed-length
+// files; those keep the fast fixed layout. A trace header sample count of 0 is
+// treated as "unset" for this decision, so it never forces variable mode on a
+// file whose size is consistent. If the variable walk fails but the fixed
+// interpretation is size-consistent and every non-zero trace header count is the
+// same constant (a stale per-trace field), the fixed layout is used; headers
+// that differ from each other and fail the walk are reported as damage, so a
+// truncated variable-length file is never silently read as fixed. A zero binary
+// header ns with flag 0 (revision >= 1) selects variable mode directly.
+// Rev 0 files and files with flag 1 are always fixed-length.
+//
+// In variable mode each trace's length is its 16-bit header field (the rev 2
+// 32-bit extension needs additional trace headers, which are unsupported). The
+// walk checks every step: a trace whose header or samples would extend past the
+// end of the trace region, a trailing partial trace header, and a first trace
+// header that reports 0 samples while the binary header ns is non-zero (the
+// headers evidently do not carry sample counts) are all SegyFormatErrors. A
+// trace with 0 samples elsewhere is legal. samples_per_trace becomes the
+// maximum count; trace_stride is 0.
 SegyLayout describe_segy(const uint8_t* data, size_t size);
 
 // Returns the 240-byte header of trace i (0-based). Throws std::out_of_range
-// if i >= layout.n_traces and SegyFormatError if the layout does not fit 'size'.
+// if i >= layout.n_traces and SegyFormatError if the layout does not fit 'size'
+// (works for fixed and variable-length layouts).
 SegyTraceHeader read_trace_header(const uint8_t* data, size_t size, const SegyLayout& layout,
                                   size_t i);
 
-// Decodes the samples of trace i to float and writes layout.samples_per_trace
-// values to 'out'. 'out_capacity' must be >= layout.samples_per_trace
-// (std::invalid_argument otherwise). IBM float (1) is decoded via
-// utils::ibm_to_ieee; IEEE float (5), integers (2,3,8,7,9,10,11,12,15,16) and
-// IEEE double (6) are converted with the file's byte order.
+// Decodes the samples of trace i to float and writes layout.trace_samples(i)
+// values to 'out'. 'out_capacity' must be >= layout.trace_samples(i) (always
+// satisfied by layout.samples_per_trace; std::invalid_argument otherwise). IBM float (1) is decoded
+// via utils::ibm_to_ieee; IEEE float (5), integers (2,3,8,7,9,10,11,12,15,16) and IEEE double (6)
+// are converted with the file's byte order.
 void read_trace_samples(const uint8_t* data, size_t size, const SegyLayout& layout, size_t i,
                         float* out, size_t out_capacity);
 
-// Convenience overload returning a vector of layout.samples_per_trace samples.
+// Convenience overload returning a vector of layout.trace_samples(i) samples.
 std::vector<float> read_trace_samples(const uint8_t* data, size_t size, const SegyLayout& layout,
                                       size_t i);
 

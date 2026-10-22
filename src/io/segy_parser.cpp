@@ -117,6 +117,94 @@ struct Fixer {
     }
 };
 
+constexpr size_t kTraceNsOffset = offsetof(SegyTraceHeader, samples_this_trace); // 114
+
+enum class HeaderAgreement {
+    Agree,           // every trace header reports 0 (unset) or the binary header ns
+    DisagreeUniform, // all non-zero counts are one constant different from ns
+    DisagreeMixed    // the headers report different counts (a variable-length signature)
+};
+
+// Compares the trace headers' sample counts with the binary header ns. Only
+// called when the fixed layout is size-consistent (n traces of 'stride' bytes
+// from 'first'), so every header read lies inside the buffer. A count of 0 is
+// "unset" and counts as agreeing; ns above 65535 cannot be stored in the 16-bit
+// field at all, so such files always agree.
+HeaderAgreement compare_trace_header_counts(const uint8_t* data, uint64_t first, uint64_t stride,
+                                            uint64_t n, uint64_t ns, bool le) {
+    if (ns > std::numeric_limits<uint16_t>::max()) {
+        return HeaderAgreement::Agree;
+    }
+    uint32_t constant = 0; // the single non-zero count seen so far (0 = none)
+    bool mixed = false;
+    bool differs = false;
+    for (uint64_t i = 0; i < n; ++i) {
+        const uint16_t h = load_u16(data + first + i * stride + kTraceNsOffset, le);
+        if (h == 0) {
+            continue;
+        }
+        if (h != ns) {
+            differs = true;
+        }
+        if (constant == 0) {
+            constant = h;
+        } else if (constant != h) {
+            mixed = true;
+            break;
+        }
+    }
+    if (mixed) {
+        return HeaderAgreement::DisagreeMixed;
+    }
+    return differs ? HeaderAgreement::DisagreeUniform : HeaderAgreement::Agree;
+}
+
+// Walks the traces in [first, end) using each trace header's own sample count
+// and fills the variable-length fields of 'lay'. Throws SegyFormatError (and
+// leaves 'lay' untouched) if the walk does not tile the region exactly.
+// 'binary_ns' is the binary header sample count (0 if unset).
+void walk_variable_traces(const uint8_t* data, uint64_t first, uint64_t end, uint64_t binary_ns,
+                          SegyLayout& lay) {
+    std::vector<uint64_t> offsets;
+    std::vector<uint32_t> counts;
+    uint64_t pos = first;
+    uint32_t max_ns = 0;
+    uint32_t min_ns = std::numeric_limits<uint32_t>::max();
+    while (pos < end) {
+        const size_t idx = offsets.size();
+        if (end - pos < SEGY_TRACE_HEADER_SIZE) {
+            fail("SEG-Y trailing partial trace header: " + std::to_string(end - pos) +
+                 " stray bytes after " + std::to_string(idx) + " complete traces");
+        }
+        const uint32_t ns = load_u16(data + pos + kTraceNsOffset, lay.little_endian);
+        if (idx == 0 && ns == 0 && binary_ns != 0) {
+            fail("SEG-Y trace headers do not carry sample counts (trace 0 reports 0 samples, "
+                 "binary header says " +
+                 std::to_string(binary_ns) + ") and the file size is not a whole number of traces");
+        }
+        const uint64_t need =
+            checked_add(SEGY_TRACE_HEADER_SIZE,
+                        checked_mul(ns, lay.bytes_per_sample, "trace payload bytes"), "trace size");
+        if (need > end - pos) {
+            fail("SEG-Y trace " + std::to_string(idx) + " declares " + std::to_string(ns) +
+                 " samples but only " + std::to_string(end - pos) +
+                 " bytes remain (truncated or corrupt variable-length file)");
+        }
+        offsets.push_back(pos);
+        counts.push_back(ns);
+        max_ns = std::max(max_ns, ns);
+        min_ns = std::min(min_ns, ns);
+        pos += need;
+    }
+    lay.variable_length = true;
+    lay.n_traces = to_size_t(offsets.size(), "trace count");
+    lay.samples_per_trace = max_ns;
+    lay.min_samples_per_trace = offsets.empty() ? 0 : min_ns;
+    lay.trace_stride = 0;
+    lay.trace_offsets = std::move(offsets);
+    lay.trace_sample_counts = std::move(counts);
+}
+
 } // namespace
 
 size_t segy_bytes_per_sample(uint16_t fmt) {
@@ -347,7 +435,9 @@ SegyLayout describe_segy(const uint8_t* data, size_t size) {
     if (lay.revision_major >= 2 && b.ext_samples_per_trace != 0) {
         ns = b.ext_samples_per_trace;
     }
-    if (ns == 0) {
+    // Variable-length files (rev >= 1, flag 0) may leave the binary ns at 0.
+    const bool may_be_variable = lay.revision_major >= 1 && b.fixed_length_flag == 0;
+    if (ns == 0 && !may_be_variable) {
         fail("SEG-Y samples per trace is zero");
     }
     lay.samples_per_trace = to_size_t(ns, "samples per trace");
@@ -416,22 +506,57 @@ SegyLayout describe_segy(const uint8_t* data, size_t size) {
                               "trailer bytes");
     }
 
-    const uint64_t stride =
-        checked_add(SEGY_TRACE_HEADER_SIZE,
-                    checked_mul(ns, lay.bytes_per_sample, "trace payload bytes"), "trace stride");
-
     const uint64_t remaining = size - lay.data_offset;
     if (trailer > remaining) {
         fail("SEG-Y trailer stanzas truncated");
     }
     const uint64_t trace_region = remaining - trailer;
-    if (trace_region % stride != 0) {
-        fail("SEG-Y trailing partial trace: " + std::to_string(trace_region % stride) +
-             " stray bytes after " + std::to_string(trace_region / stride) + " complete traces");
-    }
-    lay.trace_stride = to_size_t(stride, "trace stride");
-    lay.n_traces = to_size_t(trace_region / stride, "trace count");
     lay.trailer_bytes = to_size_t(trailer, "trailer bytes");
+
+    // Fixed-length interpretation: whole traces of ns samples each.
+    uint64_t stride = 0;
+    bool fixed_ok = false;
+    if (ns != 0) {
+        stride = checked_add(SEGY_TRACE_HEADER_SIZE,
+                             checked_mul(ns, lay.bytes_per_sample, "trace payload bytes"),
+                             "trace stride");
+        fixed_ok = (trace_region % stride == 0);
+    }
+
+    // Variable-length interpretation, tried only when the header allows it and
+    // the fixed layout is wrong (or contradicted by the trace headers).
+    bool variable = false;
+    if (may_be_variable) {
+        HeaderAgreement agreement = HeaderAgreement::Agree;
+        if (fixed_ok) {
+            agreement = compare_trace_header_counts(data, lay.data_offset, stride,
+                                                    trace_region / stride, ns, lay.little_endian);
+        }
+        if (!fixed_ok || agreement != HeaderAgreement::Agree) {
+            try {
+                walk_variable_traces(data, lay.data_offset, lay.data_offset + trace_region, ns,
+                                     lay);
+                variable = true;
+            } catch (const SegyFormatError&) {
+                // A size-consistent file whose headers all carry one stale
+                // constant is a fixed-length file with a bad per-trace field.
+                // Anything else (differing counts, wrong size) is damage.
+                if (!fixed_ok || agreement == HeaderAgreement::DisagreeMixed) {
+                    throw;
+                }
+            }
+        }
+    }
+    if (!variable) {
+        if (!fixed_ok) {
+            fail("SEG-Y trailing partial trace: " + std::to_string(trace_region % stride) +
+                 " stray bytes after " + std::to_string(trace_region / stride) +
+                 " complete traces");
+        }
+        lay.trace_stride = to_size_t(stride, "trace stride");
+        lay.n_traces = to_size_t(trace_region / stride, "trace count");
+        lay.min_samples_per_trace = lay.samples_per_trace;
+    }
 
     // Rev 2 number of traces in file (0 = unknown).
     if (lay.revision_major >= 2 && b.num_traces_in_file != 0 &&
@@ -444,9 +569,14 @@ SegyLayout describe_segy(const uint8_t* data, size_t size) {
 
 namespace {
 
-// Returns a pointer to the start of trace i after re-validating that the whole
-// trace lies inside [data, data + size).
-const uint8_t* locate_trace(const uint8_t* data, size_t size, const SegyLayout& lay, size_t i) {
+struct TraceRef {
+    const uint8_t* ptr;
+    size_t ns;
+};
+
+// Returns a pointer to the start of trace i and its sample count after
+// re-validating that the whole trace lies inside [data, data + size).
+TraceRef locate_trace(const uint8_t* data, size_t size, const SegyLayout& lay, size_t i) {
     if (i >= lay.n_traces) {
         throw std::out_of_range("SEG-Y trace index " + std::to_string(i) + " out of range (" +
                                 std::to_string(lay.n_traces) + " traces)");
@@ -454,31 +584,47 @@ const uint8_t* locate_trace(const uint8_t* data, size_t size, const SegyLayout& 
     if (data == nullptr) {
         fail("SEG-Y null buffer");
     }
-    const uint64_t payload = checked_mul(lay.samples_per_trace, lay.bytes_per_sample, "payload");
-    if (checked_add(SEGY_TRACE_HEADER_SIZE, payload, "trace size") > lay.trace_stride) {
-        fail("SEG-Y layout inconsistent: trace stride smaller than a trace");
+    uint64_t begin;
+    uint64_t ns;
+    uint64_t span; // bytes from the trace header start that must be readable
+    if (lay.variable_length) {
+        if (i >= lay.trace_offsets.size() || i >= lay.trace_sample_counts.size()) {
+            fail("SEG-Y layout inconsistent: variable-length index shorter than trace count");
+        }
+        begin = lay.trace_offsets[i];
+        ns = lay.trace_sample_counts[i];
+        span = checked_add(SEGY_TRACE_HEADER_SIZE, checked_mul(ns, lay.bytes_per_sample, "payload"),
+                           "trace size");
+    } else {
+        ns = lay.samples_per_trace;
+        const uint64_t payload = checked_mul(ns, lay.bytes_per_sample, "payload");
+        if (checked_add(SEGY_TRACE_HEADER_SIZE, payload, "trace size") > lay.trace_stride) {
+            fail("SEG-Y layout inconsistent: trace stride smaller than a trace");
+        }
+        begin = checked_add(lay.data_offset, checked_mul(i, lay.trace_stride, "trace offset"),
+                            "trace offset");
+        span = lay.trace_stride;
     }
-    const uint64_t begin = checked_add(
-        lay.data_offset, checked_mul(i, lay.trace_stride, "trace offset"), "trace offset");
-    const uint64_t end = checked_add(begin, lay.trace_stride, "trace end");
+    const uint64_t end = checked_add(begin, span, "trace end");
     if (end > size) {
         fail("SEG-Y trace " + std::to_string(i) + " lies beyond the end of the buffer");
     }
-    return data + begin;
+    return {data + begin, to_size_t(ns, "samples per trace")};
 }
 
 } // namespace
 
 SegyTraceHeader read_trace_header(const uint8_t* data, size_t size, const SegyLayout& layout,
                                   size_t i) {
-    const uint8_t* p = locate_trace(data, size, layout, i);
+    const uint8_t* p = locate_trace(data, size, layout, i).ptr;
     return parse_trace_header(p, SEGY_TRACE_HEADER_SIZE, layout.little_endian);
 }
 
 void read_trace_samples(const uint8_t* data, size_t size, const SegyLayout& layout, size_t i,
                         float* out, size_t out_capacity) {
-    const uint8_t* p = locate_trace(data, size, layout, i);
-    const size_t ns = layout.samples_per_trace;
+    const TraceRef ref = locate_trace(data, size, layout, i);
+    const uint8_t* p = ref.ptr;
+    const size_t ns = ref.ns;
     if (out_capacity < ns || (ns != 0 && out == nullptr)) {
         throw std::invalid_argument("SEG-Y output buffer too small for trace samples");
     }
@@ -567,7 +713,8 @@ void read_trace_samples(const uint8_t* data, size_t size, const SegyLayout& layo
 
 std::vector<float> read_trace_samples(const uint8_t* data, size_t size, const SegyLayout& layout,
                                       size_t i) {
-    std::vector<float> out(layout.samples_per_trace);
+    // locate_trace validates the index and the layout before anything is allocated.
+    std::vector<float> out(locate_trace(data, size, layout, i).ns);
     read_trace_samples(data, size, layout, i, out.data(), out.size());
     return out;
 }
