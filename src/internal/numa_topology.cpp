@@ -13,7 +13,9 @@ namespace basalt::internal {
 
 namespace {
 
-#if defined(__linux__)
+// The sysfs parser only uses std::filesystem and iostreams, so it is built on every platform:
+// detect(root) works anywhere (tests feed it a fake tree), while detect() only probes the real
+// /sys tree on Linux.
 
 // Sanity limits so that corrupt sysfs content cannot trigger huge allocations.
 constexpr long kMaxCpuNumber = 1 << 16;
@@ -193,12 +195,24 @@ std::optional<ParsedTopology> parse_sysfs(const std::filesystem::path& root) {
     return parsed;
 }
 
-#endif
-
 } // namespace
 
 NumaTopology NumaTopology::detect() {
+#if defined(__linux__)
     return detect(std::filesystem::path("/sys/devices/system/node"));
+#else
+    NumaTopology topology;
+    topology.m_available = false;
+    topology.m_is_uma = true;
+    NumaNodeInfo node;
+    node.id = 0;
+    const unsigned concurrency = std::thread::hardware_concurrency();
+    for (unsigned cpu = 0; cpu < concurrency; ++cpu) {
+        node.cpus.push_back(static_cast<int>(cpu));
+    }
+    topology.m_nodes.push_back(std::move(node));
+    return topology;
+#endif
 }
 
 NumaTopology NumaTopology::detect(const std::filesystem::path& root) {
@@ -206,7 +220,6 @@ NumaTopology NumaTopology::detect(const std::filesystem::path& root) {
     topology.m_available = false;
     topology.m_is_uma = true;
 
-#if defined(__linux__)
     try {
         std::optional<ParsedTopology> parsed = parse_sysfs(root);
         if (parsed) {
@@ -221,17 +234,6 @@ NumaTopology NumaTopology::detect(const std::filesystem::path& root) {
         topology = NumaTopology();
     }
     topology.m_nodes.push_back(NumaNodeInfo{0, {}, {}});
-#else
-    (void)root;
-    NumaNodeInfo node;
-    node.id = 0;
-    const unsigned concurrency = std::thread::hardware_concurrency();
-    for (unsigned cpu = 0; cpu < concurrency; ++cpu) {
-        node.cpus.push_back(static_cast<int>(cpu));
-    }
-    topology.m_nodes.push_back(std::move(node));
-#endif
-
     return topology;
 }
 
