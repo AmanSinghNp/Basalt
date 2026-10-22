@@ -37,21 +37,32 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ### Changed
 
+- The library baseline is plain x86-64: AVX2/FMA and AVX-512 kernels are selected at runtime from `cpu_features()`, with scalar fallbacks for the FFT, transpose and f-k filter, so Basalt no longer crashes with an illegal instruction on CPUs without AVX2. `BASALT_SIMD_MAX=scalar|avx2|avx512` caps the path; `BASALT_NATIVE_ARCH=ON` opts back into `-march=native`. The AVX-512 filter now requires only AVX-512F and DQ.
+- `fft2d_forward` and `fft2d_inverse` take their scratch inside an `ArenaScope`, so caller allocations in the same arena survive and repeated calls need no `reset()`.
+- Auto 2D FFT selection picks the new `RowFirstColumnStrips` schedule for every shape. Results differ from the previous Auto choice only at float rounding level.
+- The `basalt` executable is a real command-line tool with `info`, `inspect` and `filter` subcommands (previously a diagnostics stub that exited 0 for any argument).
+- SEG-Y parser functions take `(pointer, size)`; `SegyBinaryHeader` and `SegyTraceHeader` expose named rev 1/2 fields instead of raw padding.
 - CMake no longer forces `-O3` or `-std`; Debug builds are real debug builds and consumers inherit `cxx_std_17`.
 - New options `BASALT_BUILD_TESTS`, `BASALT_BUILD_BENCHMARKS`, `BASALT_BUILD_CLI` and `BASALT_INSTALL`; tests and benchmarks default on only for top-level builds.
 - libnuma is no longer linked (the raw `mbind` syscall is used), so the installed package is relocatable.
 - Installation uses `GNUInstallDirs`; `Basalt::basalt_core` is available as an alias for `add_subdirectory` consumers.
-- One CI workflow covering GCC Release, ASan/UBSan, TSan, Clang, an install-and-consume check and clang-format.
+- One CI workflow covering GCC Release, ASan/UBSan, TSan, Clang, scalar-kernel tests, a SIMD isolation check, an install-and-consume check and clang-format; actions are pinned by commit SHA.
+- The whole tree is formatted with clang-format 18 (see `.git-blame-ignore-revs`).
 - `basalt_bench` exits 2 on usage errors and 0 for `--help`.
 
 ### Performance
 
 - FFT twiddle and bit-reversal plans are precomputed and cached; the first three radix-2 stages are vectorised; the 2D inverse applies a single combined scale. 1D n=1024 AVX forward went from about 10.6 us to 2.2 us and 2D 1024x1024 forward from about 27 ms to 7.8 ms on the development machine.
-- Auto 2D FFT schedule selection uses size classes for shapes without a tuned entry.
+- New transpose-free 2D FFT column pass (`FFT2DSchedule::RowFirstColumnStrips`) that transforms 64-column strips with SIMD lanes across columns: 1.4x to 2.0x faster than the best transpose-based schedule from 256x256 to 4096x1024.
 
 ### Added
 
 - `fft2d_scratch_bytes`, `MemoryArena::required_bytes`, `ComplexSoA::required_arena_bytes`.
+- `MemoryArena::mark()`, `MemoryArena::rewind()` and the `ArenaScope` RAII helper.
+- `basalt/kernel/cpu_features.hpp` with `cpu_features()`, and `SimdMode::Scalar`.
+- `describe_segy`, `read_trace_header` and `read_trace_samples` for validated trace access (IBM, IEEE and integer formats, big- and little-endian), with rev 2 trace-count and first-trace-offset checks.
+- `SegyWriter` / `write_segy_like` for atomic SEG-Y output that preserves the source headers.
+- `tools/check_simd_isolation.py`, which verifies that wide-SIMD instructions only appear in runtime-dispatched functions.
 - Reference-DFT, sign-convention, Hermitian-symmetry, fuzz-style SEG-Y, queue back-pressure, exception propagation and fake-sysfs NUMA tests.
 - `CITATION.cff`, `CONTRIBUTING.md`, `.editorconfig`, issue and pull request templates, Dependabot for GitHub Actions.
 

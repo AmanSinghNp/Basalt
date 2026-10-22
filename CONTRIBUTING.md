@@ -61,6 +61,10 @@ clang-format --version   # must report 18.x
 clang-format -i path/to/file.cpp
 ```
 
+CI pins clang-format 18.1.8 (`pip install clang-format==18.1.8`). The commit
+that first formatted the whole tree is listed in `.git-blame-ignore-revs`; run
+`git config blame.ignoreRevsFile .git-blame-ignore-revs` so `git blame` skips it.
+
 ## Commit Messages
 
 Use [Conventional Commits](https://www.conventionalcommits.org/):
