@@ -5,7 +5,8 @@
 namespace basalt::kernel {
 
 /// Prefetch data into L1 cache (temporal, highest priority).
-/// Call ~256 bytes ahead of where you're currently processing.
+/// Call ~256 bytes ahead of where you're currently processing; a distance of
+/// one vector (32 bytes) is useless because the line is needed immediately.
 inline void prefetch_l1(const void* addr) {
     _mm_prefetch(static_cast<const char*>(addr), _MM_HINT_T0);
 }
