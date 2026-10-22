@@ -32,12 +32,21 @@ The project provides:
 - C++17
 - CMake 3.15 or newer
 - x86_64 CPU with AVX2 and FMA support
-- Supported toolchains:
-  - Windows: MSVC or MinGW
-  - Linux: GCC or Clang
-  - macOS: Clang on AVX2-capable x86_64 environments
+
+Tested in CI: Linux with GCC and Clang. Windows (MSVC, MinGW) and macOS (x86_64 Clang) are expected to work but are not currently tested in CI.
 
 ## Build
+
+With CMake presets (CMake 3.19 or newer for `--preset`):
+
+```bash
+cmake --preset gcc-release
+cmake --build --preset gcc-release
+```
+
+Available presets are `gcc-release`, `gcc-debug`, `clang-debug` and `msvc-debug`. Build output goes to `build/<preset>/`.
+
+Or configure manually:
 
 ```bash
 mkdir build
@@ -46,9 +55,15 @@ cmake -DCMAKE_BUILD_TYPE=Release ..
 cmake --build . --config Release
 ```
 
+Build options:
+
+- `BASALT_BUILD_TESTS`: build the test suite (ON by default in a top-level build)
+- `BASALT_BUILD_BENCHMARKS`: build the benchmark executables (ON by default in a top-level build)
+- `BASALT_BUILD_CLI`: build the `basalt` diagnostic CLI (ON by default in a top-level build)
+
 ## Install
 
-Basalt installs the `basalt_core` library, public headers, and CMake package metadata.
+Basalt installs the `basalt_core` library, public headers, and CMake package metadata. When `BASALT_BUILD_CLI` is ON, the install also includes the `basalt` diagnostic CLI.
 
 ```bash
 cmake --install . --config Release --prefix <install-prefix>
@@ -85,11 +100,24 @@ scratch.reset();
 basalt::kernel::fft2d_inverse(data.real, data.imag, rows, cols, scratch, fft_config);
 ```
 
+Notes:
+
+- `rows` and `cols` must be powers of two. The FFT and filter functions throw `std::invalid_argument` on invalid sizes.
+- The mute band is `[mute_vel_min, mute_vel_max]`, measured in signed apparent velocity `v = f / k`. Bins with `k == 0` (infinite apparent velocity) are passed through unmuted.
+
 ## Testing
 
 ```bash
 ctest --output-on-failure
 ```
+
+## Citation
+
+If you use Basalt in published work, please cite it. Machine-readable citation metadata is in [CITATION.cff](./CITATION.cff). DOI: [10.5281/zenodo.18907551](https://doi.org/10.5281/zenodo.18907551).
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the build and test workflow, formatting, commit conventions and benchmarks.
 
 ## Benchmark Tools
 
