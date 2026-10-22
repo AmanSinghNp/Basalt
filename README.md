@@ -69,6 +69,21 @@ Basalt installs the `basalt_core` library, public headers, and CMake package met
 cmake --install . --config Release --prefix <install-prefix>
 ```
 
+## Command-line tool
+
+The `basalt` executable (built when `BASALT_BUILD_CLI` is ON) has three subcommands:
+
+- `basalt info`: version, runtime CPU features and FTZ/DAZ state.
+- `basalt inspect <file.segy>`: revision, sample format, byte order, samples per trace, sample interval, trace and extended header counts, and the inline/crossline/CDP of the first and last trace.
+- `basalt filter <in.segy> <out.segy> --dx M [--dt S] [--vmin V] [--vmax V] [--taper W]`: apply an f-k velocity mute to the whole file treated as one gather (time samples along one axis, traces along the other; both zero-padded to powers of two). Apparent velocities `v = f/k` between `--vmin` and `--vmax` (m/s) are muted, so the defaults (-1500 to 1500, or `-vmax..vmax` when only `--vmax` is given) remove slow events such as ground roll. `--dx` (trace spacing in meters) is required; `--dt` defaults to the binary header sample interval. The output keeps all headers byte for byte and stores samples as IEEE float, or IBM float if the input was IBM; other input sample formats are converted to IEEE float and the format code is updated. Inputs that need more working memory than 75% of RAM (about 16 bytes per padded sample) are refused; override with `--max-memory MB`.
+
+```bash
+basalt inspect shot.segy
+basalt filter shot.segy shot_muted.segy --dx 12.5 --vmax 1500 --taper 200
+```
+
+`basalt --help` and `basalt --version` print usage and version. Exit status is 0 on success, 1 for runtime errors (unreadable or invalid SEG-Y, I/O errors, out of memory) and 2 for usage errors. The library equivalent of the output step is `basalt::io::SegyWriter` / `write_segy_like` in `basalt/io/segy_writer.hpp`, which writes atomically through a temporary file.
+
 ## Usage
 
 ```cpp
