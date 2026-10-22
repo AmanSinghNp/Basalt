@@ -43,8 +43,22 @@ Record benchmark hardware here for every published run.
 ## Results Table
 Populate from `benchmark.csv` generated on representative hardware.
 
+> **Results pending.** No reproducible run on representative hardware has been recorded yet, so every value below is `TBD`. Do not read these rows as measurements. To fill them in:
+>
+> 1. Build the Release preset and run the matrix sweep:
+>    ```bash
+>    cmake --preset gcc-release && cmake --build --preset gcc-release
+>    ./build/gcc-release/basalt_bench --sizes 256,512,1024 --threads 1,8 --simd auto --numa off,auto --memory-policy bind-worker-buffers,bind-inputs-if-possible --csv-out benchmark.csv --json-out benchmark.json
+>    ```
+> 2. Or run the Stage 1 profiling workflow, which also collects `perf` counters:
+>    ```bash
+>    bash tools/profiling/run_stage1.sh --bench-bin ./build/gcc-release/basalt_bench --size 1024 --shots 100 --warmup 5 --seed 1337 --perf-repeats 3
+>    ```
+>    Results are written to `tools/profiling/output/stage1_<run-id>/`.
+> 3. Copy the values from the generated `benchmark.csv` or JSON into the table, and record the hardware in the table above.
+
 | Size | Threads | SIMD | NUMA | Memory Policy | FFT Schedule | FFT Tile | Mean ms | p99 ms | Throughput GB/s |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | 256 | 1 | auto | off | `bind-worker-buffers` | `TBD` | `TBD` | `TBD` | `TBD` | `TBD` |
 | 512 | 1 | auto | off | `bind-worker-buffers` | `TBD` | `TBD` | `TBD` | `TBD` | `TBD` |
 | 1024 | 1 | auto | off | `bind-worker-buffers` | `TBD` | `TBD` | `TBD` | `TBD` | `TBD` |
