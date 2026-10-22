@@ -1,14 +1,20 @@
 #include "basalt/kernel/transpose_avx.hpp"
 #include "basalt/kernel/transpose.hpp"
 #include "basalt/internal/fft_plan.hpp"
+#include "basalt/internal/simd_dispatch.hpp"
+#include "basalt/kernel/cpu_features.hpp"
 
 #include <algorithm>
 #include <immintrin.h>
 
 namespace basalt::kernel {
 
-void transpose_8x8_avx(const float* src, float* dst,
-                       size_t src_stride, size_t dst_stride) {
+namespace {
+
+/// AVX 8x8 micro-kernel (BASALT_TARGET_AVX2: run only after a cpu_features()
+/// check). Inlined into the tiled loop below.
+BASALT_TARGET_AVX2 inline void transpose_8x8_avx_impl(const float* src, float* dst,
+                                                      size_t src_stride, size_t dst_stride) {
     // Load 8 rows of 8 floats each.
     __m256 r0 = _mm256_loadu_ps(src + 0 * src_stride);
     __m256 r1 = _mm256_loadu_ps(src + 1 * src_stride);
@@ -60,17 +66,20 @@ void transpose_8x8_avx(const float* src, float* dst,
     _mm256_storeu_ps(dst + 7 * dst_stride, v7);
 }
 
-void transpose_tiled_avx(const float* src, float* dst,
-                         size_t rows, size_t cols,
-                         size_t block_size) {
-    if (!internal::validate_transpose_args(src, dst, rows, cols, "transpose_tiled_avx")) {
-        return;
+/// Portable 8x8 block transpose.
+void transpose_8x8_scalar(const float* src, float* dst,
+                          size_t src_stride, size_t dst_stride) {
+    for (size_t i = 0; i < 8; ++i) {
+        for (size_t j = 0; j < 8; ++j) {
+            dst[j * dst_stride + i] = src[i * src_stride + j];
+        }
     }
+}
 
-    // Keep cache tile at least one AVX micro-kernel wide.
-    if (block_size < 8) {
-        block_size = 8;
-    }
+/// Tiled transpose driver of the AVX2 path (arguments already validated).
+BASALT_TARGET_AVX2 void transpose_tiled_avx2_impl(const float* src, float* dst,
+                                                  size_t rows, size_t cols,
+                                                  size_t block_size) {
     // Clamp huge tiles so block_i + block_size cannot wrap around.
     block_size = std::min(block_size, std::max(rows, cols));
 
@@ -87,7 +96,7 @@ void transpose_tiled_avx(const float* src, float* dst,
             // AVX core for full 8x8 regions inside current cache tile.
             for (size_t bi = block_i; bi < i_avx_end; bi += 8) {
                 for (size_t bj = block_j; bj < j_avx_end; bj += 8) {
-                    transpose_8x8_avx(
+                    transpose_8x8_avx_impl(
                         src + bi * cols + bj,
                         dst + bj * rows + bi,
                         cols,
@@ -111,6 +120,37 @@ void transpose_tiled_avx(const float* src, float* dst,
             }
         }
     }
+}
+
+} // anonymous namespace
+
+void transpose_8x8_avx(const float* src, float* dst,
+                       size_t src_stride, size_t dst_stride) {
+    if (detail::use_avx2()) {
+        transpose_8x8_avx_impl(src, dst, src_stride, dst_stride);
+    } else {
+        transpose_8x8_scalar(src, dst, src_stride, dst_stride);
+    }
+}
+
+void transpose_tiled_avx(const float* src, float* dst,
+                         size_t rows, size_t cols,
+                         size_t block_size) {
+    if (!internal::validate_transpose_args(src, dst, rows, cols, "transpose_tiled_avx")) {
+        return;
+    }
+
+    // One dispatch decision per call.
+    if (!detail::use_avx2()) {
+        transpose_tiled(src, dst, rows, cols);
+        return;
+    }
+
+    // Keep cache tile at least one AVX micro-kernel wide.
+    if (block_size < 8) {
+        block_size = 8;
+    }
+    transpose_tiled_avx2_impl(src, dst, rows, cols, block_size);
 }
 
 } // namespace basalt::kernel

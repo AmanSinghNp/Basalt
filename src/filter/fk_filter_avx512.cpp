@@ -11,9 +11,9 @@ namespace basalt::filter::detail {
 
 namespace {
 
-#if defined(__GNUC__) || defined(__clang__)
-__attribute__((target("avx512f,avx512vl,avx512bw,avx512dq")))
-#endif
+// Needs AVX-512F (zmm, masks) and AVX-512DQ (_mm512_insertf32x8) only; the VL
+// and BW subsets are not used, so they are not required.
+BASALT_TARGET_AVX512
 void apply_fk_filter_avx512_impl(basalt::kernel::ComplexSoA& data,
                                  size_t rows, size_t cols,
                                  const FKParams& params,
@@ -102,15 +102,7 @@ void apply_fk_filter_avx512(basalt::kernel::ComplexSoA& data,
                             size_t rows, size_t cols,
                             const FKParams& params,
                             const FKFilterExecutionPlan& plan) {
-#if defined(__GNUC__) || defined(__clang__)
     apply_fk_filter_avx512_impl(data, rows, cols, params, plan);
-#else
-    (void)data;
-    (void)rows;
-    (void)cols;
-    (void)params;
-    (void)plan;
-#endif
 }
 
 } // namespace basalt::filter::detail

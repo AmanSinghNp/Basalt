@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include "basalt/internal/numa_memory.hpp"
+#include "basalt/kernel/cpu_features.hpp"
 #include "basalt/kernel/cpu_state.hpp"
 
 #include <algorithm>
@@ -108,14 +109,7 @@ void fill_input(std::vector<float>& real, std::vector<float>& imag) {
 }
 
 bool runtime_supports_avx512_filter() {
-#if (defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
-    return __builtin_cpu_supports("avx512f") &&
-           __builtin_cpu_supports("avx512vl") &&
-           __builtin_cpu_supports("avx512bw") &&
-           __builtin_cpu_supports("avx512dq");
-#else
-    return false;
-#endif
+    return basalt::kernel::cpu_features().can_use_avx512();
 }
 
 void run_direct_pipeline_safe(std::vector<float>& real,

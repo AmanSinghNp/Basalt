@@ -1,6 +1,7 @@
 #include "basalt/kernel/fft2d.hpp"
 #include "basalt/kernel/complex_soa.hpp"
 #include "basalt/internal/fft2d_auto.hpp"
+#include "basalt/internal/simd_dispatch.hpp"
 #include "basalt/arena.hpp"
 #include <gtest/gtest.h>
 #include <algorithm>
@@ -639,4 +640,77 @@ TEST(FFT2DTest, ScheduleVariantsMatch) {
     // Auto resolves to Legacy/128 for this size, so it must match bit for bit.
     EXPECT_EQ(auto_real, legacy_real);
     EXPECT_EQ(auto_imag, legacy_imag);
+}
+
+// ---------- Runtime dispatch: every cap must give correct transforms ----------
+
+class FFT2DSimdCapTest : public ::testing::TestWithParam<SimdMode> {};
+
+INSTANTIATE_TEST_SUITE_P(
+    Caps, FFT2DSimdCapTest,
+    ::testing::Values(SimdMode::Scalar, SimdMode::AVX2, SimdMode::AVX512),
+    [](const ::testing::TestParamInfo<SimdMode>& param_info) {
+        switch (param_info.param) {
+        case SimdMode::Scalar: return std::string("scalar");
+        case SimdMode::AVX2: return std::string("avx2");
+        default: return std::string("avx512");
+        }
+    });
+
+TEST_P(FFT2DSimdCapTest, MatchesDoublePrecisionReferenceAndRoundTrips) {
+    basalt::kernel::detail::ScopedSimdCap cap(GetParam());
+    const Shape2D shapes[] = {{1, 16}, {16, 1}, {2, 2}, {8, 8}, {16, 32}, {64, 128}, {128, 32},
+                              {256, 256}};
+    for (const Shape2D& shape : shapes) {
+        for (FFT2DSchedule schedule : {FFT2DSchedule::LegacyColumnFirst,
+                                       FFT2DSchedule::FourStepRowFirst, FFT2DSchedule::Auto}) {
+            const FFT2DConfig config{schedule, 96};
+            const size_t rows = shape.rows, cols = shape.cols, total = rows * cols;
+            std::vector<float> in_re(total), in_im(total);
+            fill_random(in_re, in_im, static_cast<uint32_t>(rows * 17 + cols));
+
+            std::vector<double> ref_re, ref_im;
+            reference_dft2d(in_re, in_im, rows, cols, ref_re, ref_im);
+
+            std::vector<float> re = in_re, im = in_im;
+            basalt::MemoryArena scratch(fft2d_scratch_bytes(rows, cols, config));
+            fft2d_forward(re.data(), im.data(), rows, cols, scratch, config);
+            EXPECT_LE(rel_l2_error(re, im, ref_re, ref_im), fft2d_error_bound(rows, cols))
+                << rows << "x" << cols << " " << schedule_name(schedule);
+
+            fft2d_inverse(re.data(), im.data(), rows, cols, scratch, config);
+            EXPECT_LE(rel_l2_error(re, im, in_re, in_im), 2.0 * fft2d_error_bound(rows, cols))
+                << "round trip " << rows << "x" << cols << " " << schedule_name(schedule);
+        }
+    }
+}
+
+TEST_P(FFT2DSimdCapTest, PlaneWavePeakLandsInExpectedBin) {
+    basalt::kernel::detail::ScopedSimdCap cap(GetParam());
+    const size_t rows = 32, cols = 64, k0 = 3, l0 = 5;
+    std::vector<float> re(rows * cols), im(rows * cols);
+    fill_plane_wave(re, im, rows, cols, k0, l0);
+    basalt::MemoryArena scratch(fft2d_scratch_bytes(rows, cols));
+    fft2d_forward(re.data(), im.data(), rows, cols, scratch);
+    EXPECT_NEAR(re[k0 * cols + l0], static_cast<float>(rows * cols), 1e-2f);
+    EXPECT_NEAR(im[k0 * cols + l0], 0.0f, 1e-2f);
+    EXPECT_NEAR(re[0], 0.0f, 1e-2f);
+}
+
+TEST(FFT2DDispatchTest, ScalarAndWidePathsAgree) {
+    const size_t rows = 128, cols = 256, total = rows * cols;
+    std::vector<float> in_re(total), in_im(total);
+    fill_random(in_re, in_im, 7);
+
+    std::vector<float> s_re = in_re, s_im = in_im, w_re = in_re, w_im = in_im;
+    {
+        basalt::MemoryArena scratch(fft2d_scratch_bytes(rows, cols));
+        basalt::kernel::detail::ScopedSimdCap cap(SimdMode::Scalar);
+        fft2d_forward(s_re.data(), s_im.data(), rows, cols, scratch);
+    }
+    {
+        basalt::MemoryArena scratch(fft2d_scratch_bytes(rows, cols));
+        fft2d_forward(w_re.data(), w_im.data(), rows, cols, scratch);  // best available path
+    }
+    EXPECT_LE(rel_l2_error(s_re, s_im, w_re, w_im), fft2d_error_bound(rows, cols));
 }

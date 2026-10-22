@@ -1,6 +1,8 @@
 #include "basalt/filter/fk_filter.hpp"
 #include "basalt/utils/fast_math.hpp"
 
+#include "basalt/internal/simd_dispatch.hpp"
+
 #include "fk_filter_impl.hpp"
 
 #include <algorithm>
@@ -63,17 +65,66 @@ FKFilterExecutionPlan make_execution_plan(size_t rows, size_t cols) {
     return plan;
 }
 
-bool cpu_supports_avx512_filter() {
-#if (defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
-    return __builtin_cpu_supports("avx512f") &&
-           __builtin_cpu_supports("avx512vl") &&
-           __builtin_cpu_supports("avx512bw") &&
-           __builtin_cpu_supports("avx512dq");
-#else
-    return false;
-#endif
+namespace {
+
+/// Scalar twin of fast_sigmoid_avx: 1 / (1 + exp(-x)), input clamped to
+/// [-87, 87], NaN propagates. Uses std::exp rather than the AVX polynomial.
+float sigmoid_scalar(float x) {
+    if (x > 87.0f) {
+        x = 87.0f;
+    } else if (x < -87.0f) {
+        x = -87.0f;
+    }
+    return 1.0f / (1.0f + std::exp(-x));
 }
 
+/// Scalar twin of band_weight_ps: 1 - S((v-min)s) * S((max-v)s).
+float band_weight_scalar(float vel, float steep, float vmin, float vmax) {
+    const float lo = sigmoid_scalar((vel - vmin) * steep);
+    const float hi = sigmoid_scalar((vmax - vel) * steep);
+    return 1.0f - lo * hi;
+}
+
+} // namespace
+
+void apply_fk_filter_scalar(basalt::kernel::ComplexSoA& data,
+                            size_t rows, size_t cols,
+                            const FKParams& params) {
+    const double df = 1.0 / (static_cast<double>(rows) * params.dt);
+    const double dk = 1.0 / (static_cast<double>(cols) * params.dx);
+
+    // Same single-precision constants as make_band_consts.
+    const float steep = 10.0f / static_cast<float>(params.taper_width);
+    const float vmin = static_cast<float>(params.mute_vel_min);
+    const float vmax = static_cast<float>(params.mute_vel_max);
+
+    for (size_t i = 0; i < rows; ++i) {
+        const float f = wrapped_frequency(i, rows, df);
+        const bool row_nyquist = is_nyquist_index(i, rows);
+        float* row_real = data.real + i * cols;
+        float* row_imag = data.imag + i * cols;
+
+        for (size_t j = 0; j < cols; ++j) {
+            const float k = wrapped_wavenumber(j, cols, dk);
+            float w;
+            if (k == 0.0f) {
+                w = 1.0f;  // infinite apparent velocity (includes DC) always passes
+            } else {
+                const float vel = f / k;
+                w = band_weight_scalar(vel, steep, vmin, vmax);
+                if (row_nyquist || is_nyquist_index(j, cols)) {
+                    // Nyquist has no defined sign: average the weight over +v and -v.
+                    const float w_neg = band_weight_scalar(-vel, steep, vmin, vmax);
+                    w = (w + w_neg) * 0.5f;
+                }
+            }
+            row_real[j] *= w;
+            row_imag[j] *= w;
+        }
+    }
+}
+
+BASALT_TARGET_AVX2
 void apply_fk_filter_avx2(basalt::kernel::ComplexSoA& data,
                           size_t rows, size_t cols,
                           const FKParams& params,
@@ -176,22 +227,21 @@ void apply_fk_filter(basalt::kernel::ComplexSoA& data,
     }
     detail::validate_buffer(data, rows, cols);
 
-    const detail::FKFilterExecutionPlan plan = detail::make_execution_plan(rows, cols);
-    const bool can_use_avx512 = simd_mode != basalt::kernel::SimdMode::AVX2 &&
-                                detail::cpu_supports_avx512_filter();
-
-    if (simd_mode == basalt::kernel::SimdMode::AVX512 && !can_use_avx512) {
-        detail::apply_fk_filter_avx2(data, rows, cols, params, plan);
-        return;
+    // One dispatch decision per call. Requests are best-effort: an explicit
+    // mode is clamped to what the CPU (and BASALT_SIMD_MAX) allows.
+    switch (basalt::kernel::detail::resolve_simd_level(simd_mode)) {
+    case basalt::kernel::detail::SimdLevel::AVX512:
+        detail::apply_fk_filter_avx512(data, rows, cols, params,
+                                       detail::make_execution_plan(rows, cols));
+        break;
+    case basalt::kernel::detail::SimdLevel::AVX2:
+        detail::apply_fk_filter_avx2(data, rows, cols, params,
+                                     detail::make_execution_plan(rows, cols));
+        break;
+    case basalt::kernel::detail::SimdLevel::Scalar:
+        detail::apply_fk_filter_scalar(data, rows, cols, params);
+        break;
     }
-
-    if ((simd_mode == basalt::kernel::SimdMode::AVX512 ||
-         (simd_mode == basalt::kernel::SimdMode::Auto && can_use_avx512))) {
-        detail::apply_fk_filter_avx512(data, rows, cols, params, plan);
-        return;
-    }
-
-    detail::apply_fk_filter_avx2(data, rows, cols, params, plan);
 }
 
 } // namespace basalt::filter

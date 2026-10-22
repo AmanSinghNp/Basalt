@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "basalt/filter/fk_filter.hpp"
 #include "basalt/kernel/complex_soa.hpp"
+#include "basalt/internal/simd_dispatch.hpp"
+#include "basalt/kernel/cpu_features.hpp"
 #include "basalt/utils/fast_math.hpp"
 #include <vector>
 #include <cmath>
@@ -166,13 +168,9 @@ void fill_pattern(ComplexSoA& data, size_t n) {
     }
 }
 
+// True when the AVX-512 filter will really run (CPU support, BASALT_SIMD_MAX).
 bool avx512_available() {
-#if (defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
-    return __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512vl") &&
-           __builtin_cpu_supports("avx512bw") && __builtin_cpu_supports("avx512dq");
-#else
-    return false;
-#endif
+    return basalt::kernel::cpu_features().can_use_avx512();
 }
 
 struct Result {
@@ -253,6 +251,8 @@ TEST(FKFilterTest, MatchesDoubleReferenceAllShapesAndModes) {
     FKParams sym;
     const FKParams asym = asymmetric_params();
     for (const Shape& sh : kShapes) {
+        expect_matches_reference(sh.rows, sh.cols, sym, SimdMode::Scalar, "scalar/sym");
+        expect_matches_reference(sh.rows, sh.cols, asym, SimdMode::Scalar, "scalar/asym");
         expect_matches_reference(sh.rows, sh.cols, sym, SimdMode::AVX2, "avx2/sym");
         expect_matches_reference(sh.rows, sh.cols, asym, SimdMode::AVX2, "avx2/asym");
         expect_matches_reference(sh.rows, sh.cols, asym, SimdMode::Auto, "auto/asym");
@@ -285,7 +285,7 @@ TEST(FKFilterTest, Avx2AndAvx512Agree) {
 TEST(FKFilterTest, HermitianSymmetryHoldsExactly) {
     const FKParams sym;
     const FKParams asym = asymmetric_params();
-    for (SimdMode mode : {SimdMode::AVX2, SimdMode::AVX512}) {
+    for (SimdMode mode : {SimdMode::Scalar, SimdMode::AVX2, SimdMode::AVX512}) {
         for (const Shape& sh : kShapes) {
             for (const FKParams& p : {sym, asym}) {
                 const std::vector<float> w = weight_map(sh.rows, sh.cols, p, mode);
@@ -371,6 +371,8 @@ TEST(FKFilterTest, ParameterValidationThrows) {
         EXPECT_THROW(apply_fk_filter(data, rows, cols, p), std::invalid_argument) << what;
         EXPECT_THROW(apply_fk_filter(data, rows, cols, p, SimdMode::AVX2), std::invalid_argument)
             << what;
+        EXPECT_THROW(apply_fk_filter(data, rows, cols, p, SimdMode::Scalar), std::invalid_argument)
+            << what;
     };
     FKParams p;
     p = FKParams{}; p.taper_width = nan; expect_throw(p, "taper NaN");
@@ -406,6 +408,7 @@ TEST(FKFilterTest, BufferValidationThrows) {
     // rows * cols larger than the buffer
     EXPECT_THROW(apply_fk_filter(data, rows + 1, cols, p), std::invalid_argument);
     EXPECT_THROW(apply_fk_filter(data, rows, cols + 1, p, SimdMode::AVX2), std::invalid_argument);
+    EXPECT_THROW(apply_fk_filter(data, rows, cols + 1, p, SimdMode::Scalar), std::invalid_argument);
     // rows * cols overflow
     EXPECT_THROW(apply_fk_filter(data, std::numeric_limits<size_t>::max() / 2 + 1, 2, p),
                  std::invalid_argument);
@@ -417,10 +420,27 @@ TEST(FKFilterTest, BufferValidationThrows) {
     EXPECT_NO_THROW(apply_fk_filter(empty, rows, 0, p));
 }
 
+namespace {
+
+// fast_math.hpp helpers require AVX2+FMA, so the probes carry the target
+// attribute and the test only calls them when the CPU supports it.
+BASALT_TARGET_AVX2 void probe_fast_exp(const float* in, float* out) {
+    _mm256_storeu_ps(out, basalt::utils::fast_exp_avx(_mm256_loadu_ps(in)));
+}
+
+BASALT_TARGET_AVX2 void probe_fast_sigmoid(const float* in, float* out) {
+    _mm256_storeu_ps(out, basalt::utils::fast_sigmoid_avx(_mm256_loadu_ps(in)));
+}
+
+} // namespace
+
 TEST(FKFilterTest, FastMathClampsAndPropagatesNaN) {
+    if (!basalt::kernel::cpu_features().can_use_avx2()) {
+        GTEST_SKIP() << "AVX2/FMA not available (or capped by BASALT_SIMD_MAX)";
+    }
     alignas(32) float in[8] = {-100.0f, -88.0f, -87.0f, 0.0f, 87.0f, 88.0f, 100.0f, 1e30f};
     alignas(32) float out[8];
-    _mm256_store_ps(out, basalt::utils::fast_exp_avx(_mm256_load_ps(in)));
+    probe_fast_exp(in, out);
     for (int i = 0; i < 8; ++i) {
         EXPECT_GT(out[i], 0.0f) << "exp(" << in[i] << ")";
         EXPECT_TRUE(std::isfinite(out[i])) << "exp(" << in[i] << ")";
@@ -430,11 +450,128 @@ TEST(FKFilterTest, FastMathClampsAndPropagatesNaN) {
     EXPECT_NEAR(out[6] / out[5], 1.0f, 1e-3f);          // saturates at exp(88)
 
     alignas(32) float nan_in[8] = {std::nanf(""), -1.0f, 1.0f, std::nanf(""), 0.0f, 0.0f, 0.0f, 0.0f};
-    _mm256_store_ps(out, basalt::utils::fast_sigmoid_avx(_mm256_load_ps(nan_in)));
+    probe_fast_sigmoid(nan_in, out);
     EXPECT_TRUE(std::isnan(out[0]));
     EXPECT_TRUE(std::isnan(out[3]));
     EXPECT_NEAR(out[1], 1.0f / (1.0f + std::exp(1.0f)), 1e-5f);
     EXPECT_NEAR(out[2], 1.0f / (1.0f + std::exp(-1.0f)), 1e-5f);
-    _mm256_store_ps(out, basalt::utils::fast_exp_avx(_mm256_load_ps(nan_in)));
+    probe_fast_exp(nan_in, out);
     EXPECT_TRUE(std::isnan(out[0]));
+}
+
+// ---------------------------------------------------------------------------
+// Scalar path and SIMD dispatch
+// ---------------------------------------------------------------------------
+
+TEST(FKFilterScalarTest, WeightsMatchAvx2Within1e5) {
+    const FKParams sym;
+    const FKParams asym = asymmetric_params();
+    FKParams narrow = asym;       // sharp taper stresses the sigmoid slope
+    narrow.taper_width = 10.0;
+    for (const Shape& sh : kShapes) {
+        for (const FKParams& p : {sym, asym, narrow}) {
+            const std::vector<float> ws = weight_map(sh.rows, sh.cols, p, SimdMode::Scalar);
+            const std::vector<float> wa = weight_map(sh.rows, sh.cols, p, SimdMode::AVX2);
+            ASSERT_EQ(ws.size(), wa.size());
+            for (size_t i = 0; i < ws.size(); ++i) {
+                ASSERT_NEAR(ws[i], wa[i], 1e-5f) << sh.rows << "x" << sh.cols << " idx " << i;
+            }
+        }
+    }
+}
+
+TEST(FKFilterScalarTest, WeightsMatchDoubleReferenceTightly) {
+    // The scalar path uses std::exp, so it should track the double reference
+    // closely (float rounding of the velocity only).
+    const FKParams asym = asymmetric_params();
+    for (const Shape& sh : kShapes) {
+        const std::vector<float> w = weight_map(sh.rows, sh.cols, asym, SimdMode::Scalar);
+        for (size_t i = 0; i < sh.rows; ++i) {
+            for (size_t j = 0; j < sh.cols; ++j) {
+                ASSERT_NEAR(static_cast<double>(w[i * sh.cols + j]),
+                            ref_weight(i, j, sh.rows, sh.cols, asym), 1e-5)
+                    << sh.rows << "x" << sh.cols << " i=" << i << " j=" << j;
+            }
+        }
+    }
+}
+
+TEST(FKFilterScalarTest, PassesKZeroAndDcAndSymmetrisesNyquist) {
+    const size_t rows = 16, cols = 16;
+    const FKParams asym = asymmetric_params();
+    const std::vector<float> w = weight_map(rows, cols, asym, SimdMode::Scalar);
+    for (size_t i = 0; i < rows; ++i) {
+        EXPECT_EQ(w[i * cols + 0], 1.0f) << "k == 0 must pass, row " << i;
+    }
+    // Nyquist column: weight equals the average over +v and -v, so the weight
+    // at (i, cols/2) equals the weight at the mirrored row (rows - i, cols/2).
+    for (size_t i = 1; i < rows; ++i) {
+        EXPECT_EQ(w[i * cols + cols / 2], w[(rows - i) * cols + cols / 2]) << "row " << i;
+    }
+}
+
+TEST(FKFilterScalarTest, ScalarOutputIsFiniteAndPreservesDataLayout) {
+    // Non-square, odd sizes: only the weight multiplies the data, the pattern
+    // survives scaled (real and imag use the same weight).
+    const size_t rows = 33, cols = 7;
+    const FKParams p;
+    const Result before = [&] {
+        basalt::MemoryArena arena(ComplexSoA::required_arena_bytes(rows * cols));
+        ComplexSoA d(arena, rows * cols);
+        fill_pattern(d, rows * cols);
+        return Result{std::vector<float>(d.real, d.real + rows * cols),
+                      std::vector<float>(d.imag, d.imag + rows * cols)};
+    }();
+    const Result after = run_filter(rows, cols, p, SimdMode::Scalar);
+    const std::vector<float> w = weight_map(rows, cols, p, SimdMode::Scalar);
+    for (size_t i = 0; i < rows * cols; ++i) {
+        ASSERT_TRUE(std::isfinite(after.re[i]) && std::isfinite(after.im[i]));
+        ASSERT_FLOAT_EQ(after.re[i], before.re[i] * w[i]);
+        ASSERT_FLOAT_EQ(after.im[i], before.im[i] * w[i]);
+    }
+}
+
+TEST(FKFilterDispatchTest, CapsSelectPathsAndFallBack) {
+    using basalt::kernel::detail::ScopedSimdCap;
+    const FKParams asym = asymmetric_params();
+    const Shape sh{64, 100};
+
+    const std::vector<float> scalar = weight_map(sh.rows, sh.cols, asym, SimdMode::Scalar);
+    const std::vector<float> avx2 = weight_map(sh.rows, sh.cols, asym, SimdMode::AVX2);
+    {
+        // Capped to scalar: every request (even AVX512) must produce the scalar result.
+        ScopedSimdCap cap(SimdMode::Scalar);
+        for (SimdMode mode : {SimdMode::Auto, SimdMode::AVX2, SimdMode::AVX512, SimdMode::Scalar}) {
+            EXPECT_EQ(weight_map(sh.rows, sh.cols, asym, mode), scalar)
+                << "mode " << static_cast<int>(mode);
+        }
+    }
+    {
+        // Capped to AVX2: Auto and AVX512 requests must run the AVX2 path.
+        ScopedSimdCap cap(SimdMode::AVX2);
+        for (SimdMode mode : {SimdMode::Auto, SimdMode::AVX2, SimdMode::AVX512}) {
+            EXPECT_EQ(weight_map(sh.rows, sh.cols, asym, mode), avx2)
+                << "mode " << static_cast<int>(mode);
+        }
+        EXPECT_EQ(weight_map(sh.rows, sh.cols, asym, SimdMode::Scalar), scalar);
+    }
+    // Explicit AVX2 / Auto without a cap on an AVX2 machine must be the AVX2 path
+    // (or scalar on a CPU without it): never garbage.
+    const std::vector<float> autow = weight_map(sh.rows, sh.cols, asym, SimdMode::Auto);
+    ASSERT_EQ(autow.size(), scalar.size());
+    for (size_t i = 0; i < autow.size(); ++i) {
+        ASSERT_NEAR(autow[i], scalar[i], 1e-5f) << i;
+    }
+}
+
+TEST(FKFilterDispatchTest, EveryModeMatchesReferenceUnderEveryCap) {
+    using basalt::kernel::detail::ScopedSimdCap;
+    const FKParams asym = asymmetric_params();
+    for (SimdMode cap_mode : {SimdMode::Scalar, SimdMode::AVX2, SimdMode::AVX512}) {
+        ScopedSimdCap cap(cap_mode);
+        for (SimdMode mode : {SimdMode::Auto, SimdMode::Scalar, SimdMode::AVX2, SimdMode::AVX512}) {
+            expect_matches_reference(64, 100, asym, mode, "capped");
+            expect_matches_reference(33, 7, asym, mode, "capped");
+        }
+    }
 }

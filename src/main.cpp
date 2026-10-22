@@ -1,22 +1,24 @@
 #include <iostream>
 #include <immintrin.h>
+#include "basalt/kernel/cpu_features.hpp"
 #include "basalt/kernel/cpu_state.hpp"
 
 // Simple architecture check
 void print_cpu_capabilities() {
     std::cout << "[Basalt] System Architecture Check:\n";
     
-    #ifdef __AVX2__
+    const basalt::kernel::CpuFeatures& cpu = basalt::kernel::cpu_features();
+    if (cpu.avx2) {
         std::cout << "  [OK] AVX2 Supported\n";
-    #else
-        std::cerr << "  [FAIL] AVX2 Not Detected! Performance will be critical.\n";
-    #endif
+    } else {
+        std::cerr << "  [WARN] AVX2 Not Detected! Using the scalar fallback kernels (slower).\n";
+    }
 
-    #ifdef __FMA__
+    if (cpu.fma) {
         std::cout << "  [OK] FMA Supported\n";
-    #else
+    } else {
         std::cerr << "  [WARN] FMA Not Detected.\n";
-    #endif
+    }
 }
 
 int main(int argc, char*[]) {

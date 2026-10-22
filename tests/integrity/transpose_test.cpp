@@ -1,9 +1,12 @@
 #include "basalt/kernel/transpose.hpp"
+#include "basalt/kernel/transpose_avx.hpp"
+#include "basalt/internal/simd_dispatch.hpp"
 #include <gtest/gtest.h>
 #include <limits>
 #include <stdexcept>
 #include <vector>
 #include <numeric>
+#include <utility>
 
 using namespace basalt::kernel;
 
@@ -165,4 +168,66 @@ TEST(TransposeValidationTest, EmptyMatrixIsNoOpAndOverflowThrows) {
     float x = 0.0f, y = 0.0f;
     EXPECT_THROW(transpose_tiled(&x, &y, std::numeric_limits<size_t>::max() / 2, 4),
                  std::invalid_argument);
+}
+
+// ---------- Runtime dispatch of the AVX transpose entry points ----------
+
+namespace {
+
+std::vector<float> make_matrix(size_t rows, size_t cols) {
+    std::vector<float> m(rows * cols);
+    for (size_t i = 0; i < m.size(); ++i) {
+        m[i] = static_cast<float>((i * 2654435761u) % 100003u) * 0.5f;
+    }
+    return m;
+}
+
+} // namespace
+
+TEST(TransposeDispatchTest, TiledAvxMatchesScalarUnderEveryCap) {
+    for (SimdMode cap_mode : {SimdMode::Scalar, SimdMode::AVX2, SimdMode::AVX512, SimdMode::Auto}) {
+        basalt::kernel::detail::ScopedSimdCap cap(cap_mode);
+        for (const auto& shape : {std::pair<size_t, size_t>{5, 3}, {8, 8}, {13, 19}, {64, 128},
+                                  {130, 66}, {300, 17}}) {
+            const size_t rows = shape.first, cols = shape.second;
+            const std::vector<float> src = make_matrix(rows, cols);
+            std::vector<float> expect(rows * cols);
+            transpose_tiled(src.data(), expect.data(), rows, cols);
+            for (const size_t tile : {size_t{8}, size_t{24}, size_t{128}}) {
+                std::vector<float> got(rows * cols, -1.0f);
+                transpose_tiled_avx(src.data(), got.data(), rows, cols, tile);
+                ASSERT_EQ(got, expect) << rows << "x" << cols << " tile " << tile
+                                       << " cap " << static_cast<int>(cap_mode);
+            }
+        }
+    }
+}
+
+TEST(TransposeDispatchTest, ScalarCapRoundTripAndValidation) {
+    basalt::kernel::detail::ScopedSimdCap cap(SimdMode::Scalar);
+    const size_t rows = 48, cols = 80;
+    const std::vector<float> src = make_matrix(rows, cols);
+    std::vector<float> t(rows * cols), back(rows * cols);
+    transpose_tiled_avx(src.data(), t.data(), rows, cols);
+    transpose_tiled_avx(t.data(), back.data(), cols, rows);
+    EXPECT_EQ(back, src);
+
+    // Validation (and its exception type) does not depend on the CPU path.
+    EXPECT_THROW(transpose_tiled_avx(nullptr, t.data(), rows, cols), std::invalid_argument);
+    EXPECT_THROW(transpose_tiled_avx(src.data(), nullptr, rows, cols), std::invalid_argument);
+    EXPECT_THROW(transpose_tiled_avx(t.data(), t.data(), rows, cols), std::invalid_argument);
+    EXPECT_NO_THROW(transpose_tiled_avx(nullptr, nullptr, 0, cols));
+}
+
+TEST(TransposeDispatchTest, EightByEightPrimitiveFallsBackToScalar) {
+    basalt::kernel::detail::ScopedSimdCap cap(SimdMode::Scalar);
+    constexpr size_t n = 8;
+    std::vector<float> src(n * n), dst(n * n, 0.0f);
+    std::iota(src.begin(), src.end(), 1.0f);
+    transpose_8x8_avx(src.data(), dst.data(), n, n);
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < n; ++j) {
+            ASSERT_EQ(dst[j * n + i], src[i * n + j]);
+        }
+    }
 }
