@@ -82,6 +82,8 @@ bool append_tile(Config& cfg, const std::string& value) {
     return true;
 }
 
+// Each shot restores the work buffers from the pristine input. The restore is
+// excluded from the timed region; only fn() is timed.
 double benchmark_path(const std::vector<float>& src_r,
                       const std::vector<float>& src_i,
                       std::vector<float>& work_r,
@@ -94,15 +96,16 @@ double benchmark_path(const std::vector<float>& src_r,
         fn(work_r.data(), work_i.data());
     }
 
-    auto start = std::chrono::high_resolution_clock::now();
+    std::chrono::steady_clock::duration measured{};
     for (int i = 0; i < iterations; ++i) {
         std::memcpy(work_r.data(), src_r.data(), src_r.size() * sizeof(float));
         std::memcpy(work_i.data(), src_i.data(), src_i.size() * sizeof(float));
+        const auto start = std::chrono::steady_clock::now();
         fn(work_r.data(), work_i.data());
+        measured += std::chrono::steady_clock::now() - start;
     }
-    auto end = std::chrono::high_resolution_clock::now();
 
-    std::chrono::duration<double, std::milli> elapsed = end - start;
+    std::chrono::duration<double, std::milli> elapsed = measured;
     return elapsed.count() / static_cast<double>(iterations);
 }
 
@@ -115,10 +118,12 @@ Result run_schedule_benchmark(const std::vector<float>& src_r,
                               int warmup, int iterations,
                               basalt::kernel::FFT2DSchedule schedule,
                               size_t tile) {
+    // One scratch arena for all shots so allocation stays out of the timed region.
+    basalt::MemoryArena scratch(scratch_bytes);
     const auto avg_ms = benchmark_path(
         src_r, src_i, work_r, work_i, warmup, iterations,
         [&](float* r, float* im) {
-            basalt::MemoryArena scratch(scratch_bytes);
+            scratch.reset();
             basalt::kernel::fft2d_forward(
                 r, im, rows, cols, scratch,
                 basalt::kernel::FFT2DConfig{schedule, tile}
