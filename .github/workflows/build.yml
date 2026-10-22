@@ -57,7 +57,7 @@ jobs:
             bench: false
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install dependencies
         run: |
@@ -66,13 +66,13 @@ jobs:
 
       # GoogleTest sources are fetched outside the build tree (FETCHCONTENT_BASE_DIR) so they can be cached.
       - name: Cache FetchContent sources
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .deps
           key: fetchcontent-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
 
       - name: Cache ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .ccache
           key: ccache-${{ runner.os }}-${{ matrix.name }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
@@ -105,6 +105,18 @@ jobs:
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
         run: ctest --test-dir build --output-on-failure --parallel 4
 
+      # The library must run on CPUs without AVX2: exercise the scalar kernels and check
+      # that wide-SIMD instructions stay inside the runtime-dispatched functions.
+      - name: Test scalar fallback kernels
+        if: matrix.bench
+        env:
+          BASALT_SIMD_MAX: scalar
+        run: ctest --test-dir build --output-on-failure --parallel 4
+
+      - name: Check SIMD isolation
+        if: matrix.bench
+        run: python3 tools/check_simd_isolation.py build/libbasalt_core.a
+
       - name: Benchmark smoke runs
         if: matrix.bench
         run: |
@@ -117,7 +129,7 @@ jobs:
 
       - name: Upload benchmark output
         if: matrix.bench
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: benchmark-smoke
           path: bench-out/
@@ -127,7 +139,7 @@ jobs:
     name: Install and consume
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install dependencies
         run: |
@@ -158,7 +170,7 @@ jobs:
     name: clang-format check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install clang-format
         run: python3 -m pip install clang-format==18.1.8
