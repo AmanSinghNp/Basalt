@@ -130,7 +130,7 @@ BatchExecutionStats BatchExecutor::run(const std::vector<BatchJob>& jobs,
                     return;  // an earlier job already failed; do not waste time on the rest
                 }
                 try {
-                    const auto start = std::chrono::high_resolution_clock::now();
+                    const auto start = std::chrono::steady_clock::now();
                     WorkerBuffers& buffers = buffers_for_current_thread();
                     const size_t total = validate_job(job, buffers.max_elements);
                     const size_t bytes = total * sizeof(float);
@@ -144,7 +144,7 @@ BatchExecutionStats BatchExecutor::run(const std::vector<BatchJob>& jobs,
                     }
                     process_job(job, buffers, m_options.simd_mode);
                     if (latencies_ms != nullptr) {
-                        const auto end = std::chrono::high_resolution_clock::now();
+                        const auto end = std::chrono::steady_clock::now();
                         const std::chrono::duration<double, std::milli> elapsed = end - start;
                         (*latencies_ms)[job_index] = elapsed.count();
                     }
