@@ -14,6 +14,8 @@ namespace basalt::utils {
 
 /// Check if all samples in a trace are effectively zero.
 /// This catches corrupted or blank traces that weren't flagged in the header.
+/// A NaN sample is never "zero": a trace containing NaN returns false.
+/// A null pointer or empty trace returns true.
 /// 'epsilon' controls the threshold (default: 1e-30 for IBM float precision).
 [[nodiscard]] bool is_zero_trace(const float* samples, size_t count, 
                                  float epsilon = 1e-30f);
