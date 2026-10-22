@@ -136,4 +136,11 @@ void MemoryArena::reset() {
     m_offset = 0;
 }
 
+void MemoryArena::rewind(size_t mark) {
+    if (mark > m_offset) {
+        throw std::invalid_argument("MemoryArena::rewind: mark is not a previous mark of this arena");
+    }
+    m_offset = mark;
+}
+
 } // namespace basalt
