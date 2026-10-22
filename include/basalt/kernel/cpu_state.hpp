@@ -11,7 +11,7 @@ inline void set_flush_to_zero() {
     // FTZ bit = bit 15 (0x8000)
     // DAZ bit = bit 6  (0x0040)
     unsigned int csr = _mm_getcsr();
-    csr |= 0x8040;  // FTZ | DAZ
+    csr |= 0x8040; // FTZ | DAZ
     _mm_setcsr(csr);
 }
 

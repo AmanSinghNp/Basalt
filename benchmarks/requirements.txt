@@ -1,0 +1,3 @@
+# Python dependencies for benchmarks/baseline.py
+# NumPy 2.0+ is required so the pipeline stays complex64 end to end.
+numpy>=2.0

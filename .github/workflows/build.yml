@@ -1,21 +1,245 @@
 name: Build & Test
-on: [push, pull_request]
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_COMPRESS: "1"
+  CCACHE_MAXSIZE: 200M
 
 jobs:
   build:
-    name: Build & Test (Linux)
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gcc Release
+            cc: gcc
+            cxx: g++
+            build_type: Release
+            cxx_flags: ""
+            linker_flags: ""
+            bench: true
+          - name: gcc Debug (ASan + UBSan)
+            cc: gcc
+            cxx: g++
+            build_type: Debug
+            cxx_flags: "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g"
+            linker_flags: "-fsanitize=address,undefined"
+            bench: false
+          - name: gcc TSan
+            cc: gcc
+            cxx: g++
+            build_type: RelWithDebInfo
+            cxx_flags: "-fsanitize=thread -fno-omit-frame-pointer -g"
+            linker_flags: "-fsanitize=thread"
+            bench: false
+            tsan: true
+          - name: clang Release
+            cc: clang
+            cxx: clang++
+            build_type: Release
+            cxx_flags: ""
+            linker_flags: ""
+            bench: false
 
-      - name: Configure CMake
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential ccache clang
+
+      # GoogleTest sources are fetched outside the build tree (FETCHCONTENT_BASE_DIR) so they can be cached.
+      - name: Cache FetchContent sources
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .deps
+          key: fetchcontent-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Cache ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ matrix.name }}-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ matrix.name }}-
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DFETCHCONTENT_BASE_DIR="$GITHUB_WORKSPACE/.deps" \
+            -DCMAKE_C_COMPILER=${{ matrix.cc }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            "-DCMAKE_CXX_FLAGS=${{ matrix.cxx_flags }}" \
+            "-DCMAKE_EXE_LINKER_FLAGS=${{ matrix.linker_flags }}"
 
       - name: Build
-        run: cmake --build build --config Release
+        run: cmake --build build --parallel
+
+      - name: Relax ASLR for ThreadSanitizer
+        if: matrix.tsan
+        run: sudo sysctl vm.mmap_rnd_bits=28
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: ctest --test-dir build --output-on-failure --parallel 4
+
+      # The library must run on CPUs without AVX2: exercise the scalar kernels and check
+      # that wide-SIMD instructions stay inside the runtime-dispatched functions.
+      - name: Test scalar fallback kernels
+        if: matrix.bench
+        env:
+          BASALT_SIMD_MAX: scalar
+        run: ctest --test-dir build --output-on-failure --parallel 4
+
+      - name: Check SIMD isolation
+        if: matrix.bench
+        run: python3 tools/check_simd_isolation.py build/libbasalt_core.a
+
+      - name: Benchmark smoke runs
+        if: matrix.bench
+        run: |
+          mkdir -p bench-out
+          ./build/fft_benchmark
+          ./build/fk_benchmark
+          ./build/fft2d_schedule_benchmark --size 256 --iterations 2 --warmup 1
+          ./build/basalt_bench --sizes 64 --threads 1 --shots 2 \
+            --json-out bench-out/basalt_bench.json --csv-out bench-out/basalt_bench.csv
+
+      - name: Upload benchmark output
+        if: matrix.bench
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: benchmark-smoke
+          path: bench-out/
+          if-no-files-found: error
+
+  package:
+    name: Install and consume
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential
+
+      - name: Configure (library only, no tests or benchmarks)
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBASALT_BUILD_TESTS=OFF -DBASALT_BUILD_BENCHMARKS=OFF
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Install to a scratch prefix
+        run: cmake --install build --prefix "$RUNNER_TEMP/basalt-prefix"
+
+      - name: Build consumer against the installed package
+        run: |
+          cmake -S tests/package -B build-consumer -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/basalt-prefix"
+          cmake --build build-consumer
+
+      - name: Run consumer
+        run: ctest --test-dir build-consumer --output-on-failure
+
+  windows:
+    name: MSVC Release (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Default generator: the newest Visual Studio installed on the runner.
+      - name: Configure
+        run: cmake -S . -B build -A x64
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  mingw:
+    name: MinGW-w64 GCC (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --parallel 4
+
+  # Apple Silicon runners run the x86_64 build under Rosetta 2, which also exercises the
+  # runtime CPU dispatch on a CPU model that does not advertise the same features as Linux CI.
+  macos:
+    name: Apple Clang x86_64 (macOS, Rosetta 2)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Report CPU features seen by Basalt
+        run: ./build/basalt info
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --parallel 4
+
+  format:
+    name: clang-format check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install clang-format
+        run: python3 -m pip install clang-format==18.1.8
+
+      - name: Check formatting
+        run: |
+          find include src tests benchmarks -type f \
+            \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.cc' \) -print0 \
+            | xargs -0 clang-format --dry-run --Werror

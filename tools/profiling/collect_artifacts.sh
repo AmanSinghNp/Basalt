@@ -17,6 +17,7 @@ import csv
 import glob
 import json
 import os
+import shlex
 import statistics
 import sys
 from datetime import datetime, timezone
@@ -35,7 +36,12 @@ def parse_env(path):
             if not line or "=" not in line:
                 continue
             k, v = line.split("=", 1)
-            v = v.strip().strip("'").strip('"')
+            # resolve_events.sh writes values with printf %q, so undo shell quoting.
+            try:
+                parts = shlex.split(v.strip())
+                v = parts[0] if parts else ""
+            except ValueError:
+                v = v.strip().strip("'").strip('"')
             out[k.strip()] = v
     return out
 

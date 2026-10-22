@@ -7,25 +7,33 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
-#include <functional>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
 
 namespace {
 
-struct Result {
-    basalt::kernel::FFT2DSchedule schedule;
+using basalt::kernel::FFT2DSchedule;
+
+struct Candidate {
+    FFT2DSchedule schedule;
     size_t tile;
-    double avg_ms;
+    double min_ms = std::numeric_limits<double>::infinity();
+    double total_ms = 0.0;
+    long shots = 0;
+    double avg_ms() const { return shots > 0 ? total_ms / static_cast<double>(shots) : 0.0; }
 };
 
 struct Config {
-    size_t size = 1024;
+    size_t rows = 1024;
+    size_t cols = 1024;
     int iterations = 20;
     int warmup = 3;
+    int rounds = 3;
+    bool inverse = false;
     std::vector<size_t> tiles;
 };
 
@@ -33,7 +41,8 @@ bool parse_positive_int(const std::string& s, int& out) {
     try {
         size_t idx = 0;
         int v = std::stoi(s, &idx);
-        if (idx != s.size() || v <= 0) return false;
+        if (idx != s.size() || v <= 0)
+            return false;
         out = v;
         return true;
     } catch (...) {
@@ -45,7 +54,8 @@ bool parse_positive_size(const std::string& s, size_t& out) {
     try {
         size_t idx = 0;
         unsigned long long v = std::stoull(s, &idx);
-        if (idx != s.size() || v == 0) return false;
+        if (idx != s.size() || v == 0)
+            return false;
         out = static_cast<size_t>(v);
         return true;
     } catch (...) {
@@ -57,14 +67,16 @@ bool is_power_of_two(size_t n) {
     return n > 0 && (n & (n - 1)) == 0;
 }
 
-const char* schedule_name(basalt::kernel::FFT2DSchedule schedule) {
+const char* schedule_name(FFT2DSchedule schedule) {
     switch (schedule) {
-    case basalt::kernel::FFT2DSchedule::Auto:
+    case FFT2DSchedule::Auto:
         return "auto";
-    case basalt::kernel::FFT2DSchedule::LegacyColumnFirst:
+    case FFT2DSchedule::LegacyColumnFirst:
         return "legacy-column-first";
-    case basalt::kernel::FFT2DSchedule::FourStepRowFirst:
+    case FFT2DSchedule::FourStepRowFirst:
         return "four-step-row-first";
+    case FFT2DSchedule::RowFirstColumnStrips:
+        return "row-first-column-strips";
     }
     return "unknown";
 }
@@ -82,53 +94,6 @@ bool append_tile(Config& cfg, const std::string& value) {
     return true;
 }
 
-double benchmark_path(const std::vector<float>& src_r,
-                      const std::vector<float>& src_i,
-                      std::vector<float>& work_r,
-                      std::vector<float>& work_i,
-                      int warmup, int iterations,
-                      const std::function<void(float*, float*)>& fn) {
-    for (int i = 0; i < warmup; ++i) {
-        std::memcpy(work_r.data(), src_r.data(), src_r.size() * sizeof(float));
-        std::memcpy(work_i.data(), src_i.data(), src_i.size() * sizeof(float));
-        fn(work_r.data(), work_i.data());
-    }
-
-    auto start = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < iterations; ++i) {
-        std::memcpy(work_r.data(), src_r.data(), src_r.size() * sizeof(float));
-        std::memcpy(work_i.data(), src_i.data(), src_i.size() * sizeof(float));
-        fn(work_r.data(), work_i.data());
-    }
-    auto end = std::chrono::high_resolution_clock::now();
-
-    std::chrono::duration<double, std::milli> elapsed = end - start;
-    return elapsed.count() / static_cast<double>(iterations);
-}
-
-Result run_schedule_benchmark(const std::vector<float>& src_r,
-                              const std::vector<float>& src_i,
-                              std::vector<float>& work_r,
-                              std::vector<float>& work_i,
-                              size_t rows, size_t cols,
-                              size_t scratch_bytes,
-                              int warmup, int iterations,
-                              basalt::kernel::FFT2DSchedule schedule,
-                              size_t tile) {
-    const auto avg_ms = benchmark_path(
-        src_r, src_i, work_r, work_i, warmup, iterations,
-        [&](float* r, float* im) {
-            basalt::MemoryArena scratch(scratch_bytes);
-            basalt::kernel::fft2d_forward(
-                r, im, rows, cols, scratch,
-                basalt::kernel::FFT2DConfig{schedule, tile}
-            );
-        }
-    );
-
-    return Result{schedule, tile, avg_ms};
-}
-
 } // namespace
 
 int main(int argc, char** argv) {
@@ -136,8 +101,19 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--size" && i + 1 < argc) {
-            if (!parse_positive_size(argv[++i], cfg.size)) {
+            if (!parse_positive_size(argv[++i], cfg.rows)) {
                 std::cerr << "Invalid --size\n";
+                return 1;
+            }
+            cfg.cols = cfg.rows;
+        } else if (arg == "--rows" && i + 1 < argc) {
+            if (!parse_positive_size(argv[++i], cfg.rows)) {
+                std::cerr << "Invalid --rows\n";
+                return 1;
+            }
+        } else if (arg == "--cols" && i + 1 < argc) {
+            if (!parse_positive_size(argv[++i], cfg.cols)) {
+                std::cerr << "Invalid --cols\n";
                 return 1;
             }
         } else if (arg == "--iterations" && i + 1 < argc) {
@@ -150,14 +126,25 @@ int main(int argc, char** argv) {
                 std::cerr << "Invalid --warmup\n";
                 return 1;
             }
+        } else if (arg == "--rounds" && i + 1 < argc) {
+            if (!parse_positive_int(argv[++i], cfg.rounds)) {
+                std::cerr << "Invalid --rounds\n";
+                return 1;
+            }
         } else if (arg == "--tile" && i + 1 < argc) {
             if (!append_tile(cfg, argv[++i])) {
                 std::cerr << "Invalid --tile\n";
                 return 1;
             }
+        } else if (arg == "--inverse") {
+            cfg.inverse = true;
         } else if (arg == "--help") {
-            std::cout << "Usage: fft2d_schedule_benchmark "
-                      << "[--size N] [--iterations N] [--warmup N] [--tile N ...]\n";
+            std::cout
+                << "Usage: fft2d_schedule_benchmark "
+                << "[--size N | --rows N --cols N] [--inverse] [--iterations N] [--warmup N] "
+                << "[--rounds N] [--tile N ...]\n"
+                << "Candidates are timed interleaved over --rounds rounds of --iterations shots;\n"
+                << "min and mean per shot are reported.\n";
             return 0;
         } else {
             std::cerr << "Unknown argument: " << arg << "\n";
@@ -165,26 +152,20 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!is_power_of_two(cfg.size)) {
-        std::cerr << "--size must be a power of two\n";
+    if (!is_power_of_two(cfg.rows) || !is_power_of_two(cfg.cols)) {
+        std::cerr << "--size / --rows / --cols must be powers of two\n";
         return 1;
     }
     if (cfg.tiles.empty()) {
         cfg.tiles = default_tiles();
     }
 
-    const size_t rows = cfg.size;
-    const size_t cols = cfg.size;
+    const size_t rows = cfg.rows;
+    const size_t cols = cfg.cols;
     const size_t total = rows * cols;
 
-    std::vector<float> input_r(total);
-    std::vector<float> input_i(total);
-    std::vector<float> work_r(total);
-    std::vector<float> work_i(total);
-    std::vector<float> legacy_r(total);
-    std::vector<float> legacy_i(total);
-    std::vector<float> four_r(total);
-    std::vector<float> four_i(total);
+    std::vector<float> input_r(total), input_i(total);
+    std::vector<float> work_r(total), work_i(total);
 
     std::mt19937 rng(1337);
     std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
@@ -193,102 +174,118 @@ int main(int argc, char** argv) {
         input_i[i] = dist(rng);
     }
 
-    const size_t scratch_bytes = total * sizeof(float) * 2 + 8192;
-    std::vector<Result> results;
-    results.reserve(cfg.tiles.size() * 2);
+    std::vector<Candidate> candidates;
     for (size_t tile : cfg.tiles) {
-        results.push_back(run_schedule_benchmark(
-            input_r, input_i, work_r, work_i, rows, cols, scratch_bytes,
-            cfg.warmup, cfg.iterations,
-            basalt::kernel::FFT2DSchedule::LegacyColumnFirst, tile
-        ));
-        results.push_back(run_schedule_benchmark(
-            input_r, input_i, work_r, work_i, rows, cols, scratch_bytes,
-            cfg.warmup, cfg.iterations,
-            basalt::kernel::FFT2DSchedule::FourStepRowFirst, tile
-        ));
+        candidates.push_back({FFT2DSchedule::LegacyColumnFirst, tile});
+        candidates.push_back({FFT2DSchedule::FourStepRowFirst, tile});
     }
+    candidates.push_back({FFT2DSchedule::RowFirstColumnStrips, 0}); // tile is ignored
+    candidates.push_back({FFT2DSchedule::Auto, 0});
 
-    const Result* best_legacy = nullptr;
-    const Result* best_four_step = nullptr;
-    for (const Result& result : results) {
-        if (result.schedule == basalt::kernel::FFT2DSchedule::LegacyColumnFirst &&
-            (best_legacy == nullptr || result.avg_ms < best_legacy->avg_ms)) {
-            best_legacy = &result;
+    basalt::MemoryArena scratch(basalt::kernel::fft2d_scratch_bytes(rows, cols));
+    auto run_once = [&](const Candidate& c) {
+        scratch.reset();
+        const basalt::kernel::FFT2DConfig fc{c.schedule, c.tile == 0 ? size_t{128} : c.tile};
+        if (cfg.inverse) {
+            basalt::kernel::fft2d_inverse(work_r.data(), work_i.data(), rows, cols, scratch, fc);
+        } else {
+            basalt::kernel::fft2d_forward(work_r.data(), work_i.data(), rows, cols, scratch, fc);
         }
-        if (result.schedule == basalt::kernel::FFT2DSchedule::FourStepRowFirst &&
-            (best_four_step == nullptr || result.avg_ms < best_four_step->avg_ms)) {
-            best_four_step = &result;
+    };
+    auto restore = [&]() {
+        std::memcpy(work_r.data(), input_r.data(), total * sizeof(float));
+        std::memcpy(work_i.data(), input_i.data(), total * sizeof(float));
+    };
+
+    for (Candidate& c : candidates) {
+        for (int i = 0; i < cfg.warmup; ++i) {
+            restore();
+            run_once(c);
         }
     }
 
-    // Correctness comparison on the same input.
-    std::memcpy(legacy_r.data(), input_r.data(), total * sizeof(float));
-    std::memcpy(legacy_i.data(), input_i.data(), total * sizeof(float));
-    {
-        basalt::MemoryArena scratch(scratch_bytes);
-        const size_t tile = best_legacy != nullptr ? best_legacy->tile : cfg.tiles.front();
-        basalt::kernel::fft2d_forward(
-            legacy_r.data(), legacy_i.data(), rows, cols, scratch,
-            basalt::kernel::FFT2DConfig{
-                basalt::kernel::FFT2DSchedule::LegacyColumnFirst,
-                tile
+    // Interleave: every round visits every candidate, so slow phases of a noisy
+    // shared machine hit all candidates alike. The restore is not timed.
+    for (int round = 0; round < cfg.rounds; ++round) {
+        for (Candidate& c : candidates) {
+            for (int i = 0; i < cfg.iterations; ++i) {
+                restore();
+                const auto start = std::chrono::steady_clock::now();
+                run_once(c);
+                const std::chrono::duration<double, std::milli> dt =
+                    std::chrono::steady_clock::now() - start;
+                c.min_ms = std::min(c.min_ms, dt.count());
+                c.total_ms += dt.count();
+                ++c.shots;
             }
-        );
+        }
     }
 
-    std::memcpy(four_r.data(), input_r.data(), total * sizeof(float));
-    std::memcpy(four_i.data(), input_i.data(), total * sizeof(float));
-    {
-        basalt::MemoryArena scratch(scratch_bytes);
-        const size_t tile = best_four_step != nullptr ? best_four_step->tile : cfg.tiles.front();
-        basalt::kernel::fft2d_forward(
-            four_r.data(), four_i.data(), rows, cols, scratch,
-            basalt::kernel::FFT2DConfig{
-                basalt::kernel::FFT2DSchedule::FourStepRowFirst,
-                tile
-            }
-        );
-    }
-
-    double max_abs_real = 0.0;
-    double max_abs_imag = 0.0;
+    // Correctness: compare every candidate with the first one on the same input.
+    restore();
+    run_once(candidates.front());
+    const std::vector<float> ref_r = work_r;
+    const std::vector<float> ref_i = work_i;
+    double worst_diff = 0.0;
+    double ref_max = 0.0;
     for (size_t i = 0; i < total; ++i) {
-        max_abs_real = std::max(max_abs_real, std::fabs(static_cast<double>(legacy_r[i] - four_r[i])));
-        max_abs_imag = std::max(max_abs_imag, std::fabs(static_cast<double>(legacy_i[i] - four_i[i])));
+        ref_max = std::max({ref_max, std::fabs(static_cast<double>(ref_r[i])),
+                            std::fabs(static_cast<double>(ref_i[i]))});
+    }
+    for (const Candidate& c : candidates) {
+        restore();
+        run_once(c);
+        for (size_t i = 0; i < total; ++i) {
+            worst_diff = std::max({worst_diff, std::fabs(static_cast<double>(work_r[i]) - ref_r[i]),
+                                   std::fabs(static_cast<double>(work_i[i]) - ref_i[i])});
+        }
     }
 
-    std::cout << "FFT2D Schedule Benchmark size=" << cfg.size
-              << " iters=" << cfg.iterations
-              << " warmup=" << cfg.warmup << "\n";
-    std::cout << "Candidate tiles:";
-    for (size_t tile : cfg.tiles) {
-        std::cout << ' ' << tile;
-    }
-    std::cout << "\n\n";
-
+    std::cout << "FFT2D Schedule Benchmark " << rows << "x" << cols
+              << (cfg.inverse ? " inverse" : " forward") << " iters=" << cfg.iterations
+              << " rounds=" << cfg.rounds << " warmup=" << cfg.warmup << "\n\n";
     std::cout << std::fixed << std::setprecision(3);
-    for (const Result& result : results) {
-        std::cout << schedule_name(result.schedule)
-                  << " tile=" << result.tile
-                  << " avg=" << result.avg_ms << " ms\n";
+    const Candidate* best_legacy = nullptr;
+    const Candidate* best_four_step = nullptr;
+    const Candidate* strips = nullptr;
+    for (const Candidate& c : candidates) {
+        std::cout << std::left << std::setw(26) << schedule_name(c.schedule) << std::right
+                  << " tile=" << std::setw(4) << c.tile << "  min=" << std::setw(9) << c.min_ms
+                  << " ms"
+                  << "  avg=" << std::setw(9) << c.avg_ms() << " ms\n";
+        if (c.schedule == FFT2DSchedule::LegacyColumnFirst &&
+            (best_legacy == nullptr || c.min_ms < best_legacy->min_ms)) {
+            best_legacy = &c;
+        }
+        if (c.schedule == FFT2DSchedule::FourStepRowFirst &&
+            (best_four_step == nullptr || c.min_ms < best_four_step->min_ms)) {
+            best_four_step = &c;
+        }
+        if (c.schedule == FFT2DSchedule::RowFirstColumnStrips) {
+            strips = &c;
+        }
     }
     std::cout << "\n";
-
     if (best_legacy != nullptr) {
-        std::cout << "Best legacy: tile=" << best_legacy->tile
-                  << " avg=" << best_legacy->avg_ms << " ms\n";
+        std::cout << "Best legacy:     tile=" << best_legacy->tile << " min=" << best_legacy->min_ms
+                  << " ms\n";
     }
     if (best_four_step != nullptr) {
-        std::cout << "Best four-step: tile=" << best_four_step->tile
-                  << " avg=" << best_four_step->avg_ms << " ms\n";
+        std::cout << "Best four-step:  tile=" << best_four_step->tile
+                  << " min=" << best_four_step->min_ms << " ms\n";
     }
-    if (best_legacy != nullptr && best_four_step != nullptr && best_four_step->avg_ms > 0.0) {
-        std::cout << "Best speedup (legacy/four-step): "
-                  << (best_legacy->avg_ms / best_four_step->avg_ms) << "x\n";
+    if (strips != nullptr) {
+        std::cout << "Column strips:   min=" << strips->min_ms << " ms\n";
+        const double best_old =
+            std::min(best_legacy != nullptr ? best_legacy->min_ms : 1e300,
+                     best_four_step != nullptr ? best_four_step->min_ms : 1e300);
+        if (strips->min_ms > 0.0) {
+            std::cout << "Speedup of strips over best transpose schedule: "
+                      << (best_old / strips->min_ms) << "x\n";
+        }
     }
-    std::cout << "Max abs diff real: " << max_abs_real << "\n";
-    std::cout << "Max abs diff imag: " << max_abs_imag << "\n";
+    std::cout << "Max abs diff vs first candidate: " << std::scientific << worst_diff
+              << " (max |value| " << ref_max << ")\n";
 
     return 0;
 }

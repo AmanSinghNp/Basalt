@@ -1,0 +1,22 @@
+# EditorConfig: https://editorconfig.org
+# C++ indentation follows .clang-format (4 spaces).
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# YAML, JSON and CMake presets use 2 spaces.
+[*.{yml,yaml,json}]
+indent_size = 2
+
+[CMakePresets.json]
+indent_size = 2
+
+# Markdown uses two trailing spaces as a hard line break.
+[*.md]
+trim_trailing_whitespace = false

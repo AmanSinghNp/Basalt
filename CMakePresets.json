@@ -2,14 +2,14 @@
   "version": 3,
   "cmakeMinimumRequired": {
     "major": 3,
-    "minor": 15,
+    "minor": 21,
     "patch": 0
   },
   "configurePresets": [
     {
       "name": "gcc-debug",
       "displayName": "GCC Debug",
-      "description": "Debug build using GCC (MinGW)",
+      "description": "Debug build using GCC",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/gcc-debug",
       "cacheVariables": {
@@ -21,13 +21,41 @@
     {
       "name": "gcc-release",
       "displayName": "GCC Release",
-      "description": "Release build using GCC (MinGW)",
+      "description": "Release build using GCC",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/gcc-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_COMPILER": "gcc",
         "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "gcc-asan",
+      "displayName": "GCC ASan+UBSan",
+      "description": "Debug build using GCC with AddressSanitizer and UndefinedBehaviorSanitizer",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/gcc-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    },
+    {
+      "name": "gcc-tsan",
+      "displayName": "GCC TSan",
+      "description": "RelWithDebInfo build using GCC with ThreadSanitizer",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/gcc-tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer -g",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread"
       }
     },
     {
@@ -43,14 +71,25 @@
       }
     },
     {
-      "name": "msvc-debug",
-      "displayName": "MSVC Debug",
-      "description": "Debug build using MSVC",
-      "generator": "Visual Studio 17 2022",
-      "binaryDir": "${sourceDir}/build/msvc-debug",
+      "name": "clang-release",
+      "displayName": "Clang Release",
+      "description": "Release build using Clang",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/clang-release",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
       }
+    },
+    {
+      "name": "msvc",
+      "displayName": "MSVC",
+      "description": "Multi-config build using MSVC (choose Debug or Release with a build or test preset)",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/msvc",
+      "cacheVariables": {},
+      "architecture": "x64"
     }
   ],
   "buildPresets": [
@@ -63,12 +102,90 @@
       "configurePreset": "gcc-release"
     },
     {
+      "name": "gcc-asan",
+      "configurePreset": "gcc-asan"
+    },
+    {
+      "name": "gcc-tsan",
+      "configurePreset": "gcc-tsan"
+    },
+    {
       "name": "clang-debug",
       "configurePreset": "clang-debug"
     },
     {
+      "name": "clang-release",
+      "configurePreset": "clang-release"
+    },
+    {
       "name": "msvc-debug",
-      "configurePreset": "msvc-debug"
+      "configurePreset": "msvc",
+      "configuration": "Debug"
+    },
+    {
+      "name": "msvc-release",
+      "configurePreset": "msvc",
+      "configuration": "Release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "gcc-debug",
+      "configurePreset": "gcc-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "gcc-release",
+      "configurePreset": "gcc-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "gcc-asan",
+      "configurePreset": "gcc-asan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "gcc-tsan",
+      "configurePreset": "gcc-tsan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "clang-debug",
+      "configurePreset": "clang-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "clang-release",
+      "configurePreset": "clang-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "msvc-debug",
+      "configurePreset": "msvc",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "msvc-release",
+      "configurePreset": "msvc",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }

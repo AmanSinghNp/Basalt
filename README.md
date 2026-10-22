@@ -31,13 +31,22 @@ The project provides:
 
 - C++17
 - CMake 3.15 or newer
-- x86_64 CPU with AVX2 and FMA support
-- Supported toolchains:
-  - Windows: MSVC or MinGW
-  - Linux: GCC or Clang
-  - macOS: Clang on AVX2-capable x86_64 environments
+- any x86_64 CPU: Basalt detects AVX2/FMA and AVX-512 at runtime and uses them when available, with portable scalar fallbacks otherwise. Set `BASALT_SIMD_MAX=scalar|avx2|avx512` to cap the instruction set (see `basalt/kernel/cpu_features.hpp`); configure with `-DBASALT_NATIVE_ARCH=ON` to build for the build machine's CPU (`-march=native`)
+
+Tested in CI: Linux with GCC and Clang (including ASan/UBSan and TSan builds), Windows with MSVC and MinGW-w64 GCC, and macOS with Apple Clang (x86_64 build run under Rosetta 2).
 
 ## Build
+
+With CMake presets (CMake 3.21 or newer for `--preset`):
+
+```bash
+cmake --preset gcc-release
+cmake --build --preset gcc-release
+```
+
+Available configure presets are `gcc-release`, `gcc-debug`, `gcc-asan`, `gcc-tsan`, `clang-release`, `clang-debug` and `msvc` (build with `msvc-debug` or `msvc-release`). Build output goes to `build/<preset>/`.
+
+Or configure manually:
 
 ```bash
 mkdir build
@@ -46,13 +55,34 @@ cmake -DCMAKE_BUILD_TYPE=Release ..
 cmake --build . --config Release
 ```
 
+Build options:
+
+- `BASALT_BUILD_TESTS`: build the test suite (ON by default in a top-level build)
+- `BASALT_BUILD_BENCHMARKS`: build the benchmark executables (ON by default in a top-level build)
+- `BASALT_BUILD_CLI`: build the `basalt` diagnostic CLI (ON by default in a top-level build)
+
 ## Install
 
-Basalt installs the `basalt_core` library, public headers, and CMake package metadata.
+Basalt installs the `basalt_core` library, public headers, and CMake package metadata. When `BASALT_BUILD_CLI` is ON, the install also includes the `basalt` diagnostic CLI.
 
 ```bash
 cmake --install . --config Release --prefix <install-prefix>
 ```
+
+## Command-line tool
+
+The `basalt` executable (built when `BASALT_BUILD_CLI` is ON) has three subcommands:
+
+- `basalt info`: version, runtime CPU features and FTZ/DAZ state.
+- `basalt inspect <file.segy>`: revision, sample format, byte order, samples per trace (or the minimum and maximum when traces have different lengths, with a `Variable-length traces: yes/no` line), sample interval, trace and extended header counts, and the inline/crossline/CDP of the first and last trace.
+- `basalt filter <in.segy> <out.segy> --dx M [--dt S] [--vmin V] [--vmax V] [--taper W]`: apply an f-k velocity mute to the whole file treated as one gather (time samples along one axis, traces along the other; both zero-padded to powers of two). Apparent velocities `v = f/k` between `--vmin` and `--vmax` (m/s) are muted, so the defaults (-1500 to 1500, or `-vmax..vmax` when only `--vmax` is given) remove slow events such as ground roll. `--dx` (trace spacing in meters) is required; `--dt` defaults to the binary header sample interval. Variable-length SEG-Y files (SEG-Y rev 1/2 with the fixed-length flag 0 and per-trace sample counts in trace header bytes 115-116) are supported: each trace is zero-padded to the longest trace for the transform and cropped back to its own length on output, and the summary says so. The output keeps all headers byte for byte and stores samples as IEEE float, or IBM float if the input was IBM; other input sample formats are converted to IEEE float and the format code is updated. Inputs that need more working memory than 75% of RAM (about 16 bytes per padded sample) are refused; override with `--max-memory MB`.
+
+```bash
+basalt inspect shot.segy
+basalt filter shot.segy shot_muted.segy --dx 12.5 --vmax 1500 --taper 200
+```
+
+`basalt --help` and `basalt --version` print usage and version. Exit status is 0 on success, 1 for runtime errors (unreadable or invalid SEG-Y, I/O errors, out of memory) and 2 for usage errors. The library equivalent of the output step is `basalt::io::SegyWriter` / `write_segy_like` in `basalt/io/segy_writer.hpp`, which writes atomically through a temporary file.
 
 ## Usage
 
@@ -81,15 +111,27 @@ params.taper_width = 100.0;
 
 basalt::filter::apply_fk_filter(data, rows, cols, params);
 
-scratch.reset();
 basalt::kernel::fft2d_inverse(data.real, data.imag, rows, cols, scratch, fft_config);
 ```
+
+Notes:
+
+- `rows` and `cols` must be powers of two. The FFT and filter functions throw `std::invalid_argument` on invalid sizes.
+- The mute band is `[mute_vel_min, mute_vel_max]`, measured in signed apparent velocity `v = f / k`. Bins with `k == 0` (infinite apparent velocity) are passed through unmuted.
 
 ## Testing
 
 ```bash
 ctest --output-on-failure
 ```
+
+## Citation
+
+If you use Basalt in published work, please cite it. Machine-readable citation metadata is in [CITATION.cff](./CITATION.cff). DOI: [10.5281/zenodo.18907551](https://doi.org/10.5281/zenodo.18907551).
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the build and test workflow, formatting, commit conventions and benchmarks.
 
 ## Benchmark Tools
 

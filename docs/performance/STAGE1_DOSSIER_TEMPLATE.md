@@ -25,7 +25,7 @@ Use this template for every Stage 1 baseline collection run.
 |---|---|---|
 | `perf stat` |  |  |
 | `perf record` / `perf annotate` |  |  |
-| Google benchmark harness (`basalt_bench`) |  |  |
+| Custom benchmark harness (`basalt_bench`) |  |  |
 | VTune (optional) |  |  |
 | LIKWID (optional) |  |  |
 | Cachegrind (optional) |  |  |

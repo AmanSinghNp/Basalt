@@ -1,11 +1,14 @@
 #pragma once
 
+#include "basalt/kernel/cpu_features.hpp"
+
 #include <immintrin.h>
 
 namespace basalt::kernel {
 
 /// Prefetch data into L1 cache (temporal, highest priority).
-/// Call ~256 bytes ahead of where you're currently processing.
+/// Call ~256 bytes ahead of where you're currently processing; a distance of
+/// one vector (32 bytes) is useless because the line is needed immediately.
 inline void prefetch_l1(const void* addr) {
     _mm_prefetch(static_cast<const char*>(addr), _MM_HINT_T0);
 }
@@ -17,8 +20,9 @@ inline void prefetch_l2(const void* addr) {
 }
 
 /// Non-temporal store: bypass cache when writing data that won't be reread soon.
-/// 'dst' MUST be 32-byte aligned.
-inline void stream_store(float* dst, __m256 val) {
+/// 'dst' MUST be 32-byte aligned. Needs AVX: call it only from BASALT_TARGET_AVX2
+/// code that runs when basalt::kernel::cpu_features().can_use_avx2() is true.
+BASALT_TARGET_AVX2 inline void stream_store(float* dst, __m256 val) {
     _mm256_stream_ps(dst, val);
 }
 
