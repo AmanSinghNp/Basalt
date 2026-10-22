@@ -1,5 +1,6 @@
 #include "basalt/kernel/transpose_avx.hpp"
 #include "basalt/kernel/transpose.hpp"
+#include "basalt/internal/fft_plan.hpp"
 
 #include <algorithm>
 #include <immintrin.h>
@@ -62,7 +63,7 @@ void transpose_8x8_avx(const float* src, float* dst,
 void transpose_tiled_avx(const float* src, float* dst,
                          size_t rows, size_t cols,
                          size_t block_size) {
-    if (rows == 0 || cols == 0) {
+    if (!internal::validate_transpose_args(src, dst, rows, cols, "transpose_tiled_avx")) {
         return;
     }
 
@@ -70,6 +71,8 @@ void transpose_tiled_avx(const float* src, float* dst,
     if (block_size < 8) {
         block_size = 8;
     }
+    // Clamp huge tiles so block_i + block_size cannot wrap around.
+    block_size = std::min(block_size, std::max(rows, cols));
 
     // Two-level blocking:
     //   cache tile (block_size) -> 8x8 AVX micro-kernel.
