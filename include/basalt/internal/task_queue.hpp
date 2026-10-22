@@ -29,13 +29,11 @@ inline size_t round_up_power_of_two(size_t value) {
 /// with the very same object. Constructing a T from the pushed value must not throw
 /// (move construction of std::function is noexcept); a throwing copy would leave a
 /// claimed slot unpublished.
-template <typename T>
-class TaskQueue {
+template <typename T> class TaskQueue {
 public:
     explicit TaskQueue(size_t capacity)
         : m_capacity(detail::round_up_power_of_two(capacity < 2 ? 2 : capacity)),
-          m_mask(m_capacity - 1),
-          m_buffer(std::make_unique<Cell[]>(m_capacity)) {
+          m_mask(m_capacity - 1), m_buffer(std::make_unique<Cell[]>(m_capacity)) {
         for (size_t i = 0; i < m_capacity; ++i) {
             m_buffer[i].sequence.store(i, std::memory_order_relaxed);
         }
@@ -52,14 +50,10 @@ public:
 
     /// Moves `value` into the queue only if a slot is available. On failure `value` is
     /// unchanged.
-    bool try_push(T&& value) {
-        return push_impl(std::move(value));
-    }
+    bool try_push(T&& value) { return push_impl(std::move(value)); }
 
     /// Copies `value` into the queue only if a slot is available.
-    bool try_push(const T& value) {
-        return push_impl(value);
-    }
+    bool try_push(const T& value) { return push_impl(value); }
 
     bool try_pop(T& value) {
         Cell* cell = nullptr;
@@ -68,12 +62,12 @@ public:
         for (;;) {
             cell = &m_buffer[position & m_mask];
             const size_t sequence = cell->sequence.load(std::memory_order_acquire);
-            const intptr_t diff = static_cast<intptr_t>(sequence) - static_cast<intptr_t>(position + 1);
+            const intptr_t diff =
+                static_cast<intptr_t>(sequence) - static_cast<intptr_t>(position + 1);
             if (diff == 0) {
-                if (m_dequeue_pos.compare_exchange_weak(
-                        position, position + 1,
-                        std::memory_order_relaxed,
-                        std::memory_order_relaxed)) {
+                if (m_dequeue_pos.compare_exchange_weak(position, position + 1,
+                                                        std::memory_order_relaxed,
+                                                        std::memory_order_relaxed)) {
                     break;
                 }
             } else if (diff < 0) {
@@ -104,9 +98,7 @@ public:
         return count > m_capacity ? m_capacity : count;
     }
 
-    [[nodiscard]] size_t capacity() const noexcept {
-        return m_capacity;
-    }
+    [[nodiscard]] size_t capacity() const noexcept { return m_capacity; }
 
 private:
     struct Cell {
@@ -114,8 +106,7 @@ private:
         alignas(T) unsigned char storage[sizeof(T)];
     };
 
-    template <typename U>
-    bool push_impl(U&& value) {
+    template <typename U> bool push_impl(U&& value) {
         Cell* cell = nullptr;
         size_t position = m_enqueue_pos.load(std::memory_order_relaxed);
 
@@ -124,10 +115,9 @@ private:
             const size_t sequence = cell->sequence.load(std::memory_order_acquire);
             const intptr_t diff = static_cast<intptr_t>(sequence) - static_cast<intptr_t>(position);
             if (diff == 0) {
-                if (m_enqueue_pos.compare_exchange_weak(
-                        position, position + 1,
-                        std::memory_order_relaxed,
-                        std::memory_order_relaxed)) {
+                if (m_enqueue_pos.compare_exchange_weak(position, position + 1,
+                                                        std::memory_order_relaxed,
+                                                        std::memory_order_relaxed)) {
                     break;
                 }
             } else if (diff < 0) {

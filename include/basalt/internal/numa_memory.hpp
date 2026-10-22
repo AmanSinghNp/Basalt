@@ -7,11 +7,7 @@
 
 namespace basalt::internal {
 
-enum class MemoryPolicy {
-    Default,
-    BindWorkerBuffers,
-    BindInputsIfPossible
-};
+enum class MemoryPolicy { Default, BindWorkerBuffers, BindInputsIfPossible };
 
 /// Owning, move-only handle to a block returned by allocate_numa_local().
 /// The destructor releases the memory through `deallocator`. Use release() to hand the
@@ -77,9 +73,7 @@ private:
 /// MemoryPolicy::BindWorkerBuffers the block is mmap'd and bound to the kernel NUMA node id
 /// `node` (best effort; numa_bound reports success). Node ids >= 1024 are rejected (the block
 /// is still returned, unbound). Throws std::bad_alloc on failure.
-[[nodiscard]] NumaMemoryBlock allocate_numa_local(size_t size,
-                                                  size_t node,
-                                                  bool numa_enabled,
+[[nodiscard]] NumaMemoryBlock allocate_numa_local(size_t size, size_t node, bool numa_enabled,
                                                   MemoryPolicy policy);
 
 /// Best-effort binding of an existing caller-owned buffer to the kernel NUMA node id `node`
@@ -94,11 +88,8 @@ private:
 /// With `move_existing_pages` the kernel also migrates pages that were already faulted in
 /// (MPOL_MF_MOVE, only pages used solely by this process). It defaults to false because
 /// repeatedly migrating a buffer shared by several jobs makes the pages ping-pong.
-[[nodiscard]] bool bind_existing_range_to_node(const void* ptr,
-                                               size_t size,
-                                               size_t node,
-                                               bool numa_enabled,
-                                               MemoryPolicy policy,
+[[nodiscard]] bool bind_existing_range_to_node(const void* ptr, size_t size, size_t node,
+                                               bool numa_enabled, MemoryPolicy policy,
                                                bool move_existing_pages = false);
 
 /// Debug counters for the mmap-backed allocation path (all zero on non-Linux platforms).

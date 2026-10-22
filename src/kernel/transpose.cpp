@@ -8,10 +8,10 @@
 
 namespace basalt::internal {
 
-bool validate_transpose_args(const float* src, const float* dst,
-                             size_t rows, size_t cols, const char* who) {
+bool validate_transpose_args(const float* src, const float* dst, size_t rows, size_t cols,
+                             const char* who) {
     if (rows == 0 || cols == 0) {
-        return false;  // Empty matrix: documented no-op, pointers not inspected.
+        return false; // Empty matrix: documented no-op, pointers not inspected.
     }
     if (rows > SIZE_MAX / cols || rows * cols > SIZE_MAX / sizeof(float)) {
         throw std::invalid_argument(std::string(who) + ": rows*cols overflows");
@@ -24,8 +24,9 @@ bool validate_transpose_args(const float* src, const float* dst,
     const uintptr_t d = reinterpret_cast<uintptr_t>(dst);
     // Half-open byte ranges [s, s+bytes) and [d, d+bytes) must be disjoint.
     if (s < d + bytes && d < s + bytes) {
-        throw std::invalid_argument(std::string(who) +
-                                    ": src and dst ranges overlap (in-place transpose is not supported)");
+        throw std::invalid_argument(
+            std::string(who) +
+            ": src and dst ranges overlap (in-place transpose is not supported)");
     }
     return true;
 }
@@ -34,9 +35,7 @@ bool validate_transpose_args(const float* src, const float* dst,
 
 namespace basalt::kernel {
 
-void transpose_tiled(const float* src, float* dst,
-                     size_t rows, size_t cols,
-                     size_t tile_size) {
+void transpose_tiled(const float* src, float* dst, size_t rows, size_t cols, size_t tile_size) {
     if (!internal::validate_transpose_args(src, dst, rows, cols, "transpose_tiled")) {
         return;
     }

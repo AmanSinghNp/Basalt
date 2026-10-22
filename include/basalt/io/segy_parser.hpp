@@ -46,21 +46,21 @@ SegyTraceHeader parse_trace_header(const void* buffer, size_t size, bool little_
 // Resolved geometry of a SEG-Y file. Produced by describe_segy(), which has
 // already verified that every trace lies inside the buffer it was given.
 struct SegyLayout {
-    SegyBinaryHeader binary{};      // decoded binary header (host order)
-    bool little_endian = false;     // byte order of all binary fields in the file
-    uint8_t revision_major = 0;     // 0 for pre-rev-1 files
+    SegyBinaryHeader binary{};  // decoded binary header (host order)
+    bool little_endian = false; // byte order of all binary fields in the file
+    uint8_t revision_major = 0; // 0 for pre-rev-1 files
     uint8_t revision_minor = 0;
-    bool fixed_length = true;       // fixed_length_flag from the header (informational)
+    bool fixed_length = true; // fixed_length_flag from the header (informational)
 
-    uint16_t data_sample_format = 0;  // validated code (1,2,3,5,6,7,8,9,10,11,12,15,16)
+    uint16_t data_sample_format = 0; // validated code (1,2,3,5,6,7,8,9,10,11,12,15,16)
     size_t bytes_per_sample = 0;
-    size_t samples_per_trace = 0;     // effective ns (> 0)
+    size_t samples_per_trace = 0; // effective ns (> 0)
 
-    size_t n_ext_text_headers = 0;    // number of 3200-byte extended textual headers
-    size_t data_offset = 0;           // byte offset of the first trace header
-    size_t trace_stride = 0;          // 240 + samples_per_trace * bytes_per_sample
+    size_t n_ext_text_headers = 0; // number of 3200-byte extended textual headers
+    size_t data_offset = 0;        // byte offset of the first trace header
+    size_t trace_stride = 0;       // 240 + samples_per_trace * bytes_per_sample
     size_t n_traces = 0;
-    size_t trailer_bytes = 0;         // rev 2 trailer stanzas after the last trace
+    size_t trailer_bytes = 0; // rev 2 trailer stanzas after the last trace
 };
 
 // Validates the complete file and returns its layout.
@@ -92,20 +92,20 @@ SegyLayout describe_segy(const uint8_t* data, size_t size);
 
 // Returns the 240-byte header of trace i (0-based). Throws std::out_of_range
 // if i >= layout.n_traces and SegyFormatError if the layout does not fit 'size'.
-SegyTraceHeader read_trace_header(const uint8_t* data, size_t size,
-                                  const SegyLayout& layout, size_t i);
+SegyTraceHeader read_trace_header(const uint8_t* data, size_t size, const SegyLayout& layout,
+                                  size_t i);
 
 // Decodes the samples of trace i to float and writes layout.samples_per_trace
 // values to 'out'. 'out_capacity' must be >= layout.samples_per_trace
 // (std::invalid_argument otherwise). IBM float (1) is decoded via
 // utils::ibm_to_ieee; IEEE float (5), integers (2,3,8,7,9,10,11,12,15,16) and
 // IEEE double (6) are converted with the file's byte order.
-void read_trace_samples(const uint8_t* data, size_t size, const SegyLayout& layout,
-                        size_t i, float* out, size_t out_capacity);
+void read_trace_samples(const uint8_t* data, size_t size, const SegyLayout& layout, size_t i,
+                        float* out, size_t out_capacity);
 
 // Convenience overload returning a vector of layout.samples_per_trace samples.
-std::vector<float> read_trace_samples(const uint8_t* data, size_t size,
-                                      const SegyLayout& layout, size_t i);
+std::vector<float> read_trace_samples(const uint8_t* data, size_t size, const SegyLayout& layout,
+                                      size_t i);
 
 // Returns the number of bytes per sample for a data_sample_format code, or 0
 // if the code is not a supported SEG-Y format.

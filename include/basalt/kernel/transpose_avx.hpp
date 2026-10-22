@@ -14,8 +14,7 @@ namespace basalt::kernel {
 /// dst (strided by dst_stride). This is an unchecked hot-path primitive: the
 /// caller guarantees that both 8x8 blocks are fully readable/writable and that
 /// the source and destination blocks do not overlap.
-void transpose_8x8_avx(const float* src, float* dst,
-                       size_t src_stride, size_t dst_stride);
+void transpose_8x8_avx(const float* src, float* dst, size_t src_stride, size_t dst_stride);
 
 /// AVX2-accelerated tiled transpose for full matrices.
 /// Uses a two-level tile:
@@ -28,8 +27,7 @@ void transpose_8x8_avx(const float* src, float* dst,
 /// not supported. Checked in every build type: null pointers, overlapping
 /// ranges (including src == dst) and rows*cols overflow throw
 /// std::invalid_argument. rows == 0 or cols == 0 is a no-op.
-void transpose_tiled_avx(const float* src, float* dst,
-                         size_t rows, size_t cols,
+void transpose_tiled_avx(const float* src, float* dst, size_t rows, size_t cols,
                          size_t block_size = 128);
 
 } // namespace basalt::kernel

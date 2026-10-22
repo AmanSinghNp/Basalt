@@ -19,7 +19,7 @@ namespace basalt::io {
 
 namespace {
 
-constexpr size_t kFormatFieldOffset = SEGY_TEXT_HEADER_SIZE + 24;  // data_sample_format
+constexpr size_t kFormatFieldOffset = SEGY_TEXT_HEADER_SIZE + 24; // data_sample_format
 
 void store_u16(uint8_t* p, uint16_t v, bool le) {
     if (le) {
@@ -50,11 +50,8 @@ std::string make_temp_path(const std::string& path) {
 
 SegyWriter::SegyWriter(const std::string& path, const uint8_t* header_block, size_t header_bytes,
                        const SegyLayout& layout)
-    : m_path(path),
-      m_le(layout.little_endian),
-      m_ns(layout.samples_per_trace),
-      m_expected_traces(layout.n_traces),
-      m_trailer_bytes(layout.trailer_bytes) {
+    : m_path(path), m_le(layout.little_endian), m_ns(layout.samples_per_trace),
+      m_expected_traces(layout.n_traces), m_trailer_bytes(layout.trailer_bytes) {
     if (header_block == nullptr || header_bytes != layout.data_offset ||
         header_bytes < SEGY_TEXT_HEADER_SIZE + SEGY_BINARY_HEADER_SIZE) {
         throw SegyWriteError("SEG-Y writer: header block must hold exactly layout.data_offset (" +

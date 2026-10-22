@@ -24,23 +24,17 @@
 
 namespace {
 
-enum class NumaMode {
-    Off,
-    Auto
-};
+enum class NumaMode { Off, Auto };
 
-enum class ParseStatus {
-    Ok,
-    Help,
-    Error
-};
+enum class ParseStatus { Ok, Help, Error };
 
 struct Config {
     std::vector<size_t> sizes{1024};
     std::vector<size_t> threads{1};
     std::vector<basalt::kernel::SimdMode> simd_modes{basalt::kernel::SimdMode::Auto};
     std::vector<NumaMode> numa_modes{NumaMode::Off};
-    std::vector<basalt::internal::MemoryPolicy> memory_policies{basalt::internal::MemoryPolicy::BindWorkerBuffers};
+    std::vector<basalt::internal::MemoryPolicy> memory_policies{
+        basalt::internal::MemoryPolicy::BindWorkerBuffers};
     size_t shots = 64;
     size_t warmup = 8;
     uint32_t seed = 1337;
@@ -87,7 +81,8 @@ uint64_t fnv1a_hash_bytes(const unsigned char* data, size_t count, uint64_t seed
 }
 
 uint64_t hash_floats(const float* data, size_t count, uint64_t seed = 1469598103934665603ULL) {
-    return fnv1a_hash_bytes(reinterpret_cast<const unsigned char*>(data), count * sizeof(float), seed);
+    return fnv1a_hash_bytes(reinterpret_cast<const unsigned char*>(data), count * sizeof(float),
+                            seed);
 }
 
 // Strict unsigned decimal parse. Rejects signs, whitespace, trailing garbage and overflow.
@@ -104,8 +99,7 @@ bool parse_u64(const std::string& text, uint64_t& out) {
     }
 }
 
-template <typename T>
-bool parse_unsigned_list(const std::string& text, std::vector<T>& out) {
+template <typename T> bool parse_unsigned_list(const std::string& text, std::vector<T>& out) {
     std::stringstream stream(text);
     std::string token;
     std::vector<T> parsed;
@@ -183,10 +177,14 @@ bool parse_memory_policy_list(const std::string& text,
 
 const char* simd_mode_name(basalt::kernel::SimdMode mode) {
     switch (mode) {
-    case basalt::kernel::SimdMode::Auto: return "auto";
-    case basalt::kernel::SimdMode::AVX2: return "avx2";
-    case basalt::kernel::SimdMode::AVX512: return "avx512";
-    case basalt::kernel::SimdMode::Scalar: return "scalar";
+    case basalt::kernel::SimdMode::Auto:
+        return "auto";
+    case basalt::kernel::SimdMode::AVX2:
+        return "avx2";
+    case basalt::kernel::SimdMode::AVX512:
+        return "avx512";
+    case basalt::kernel::SimdMode::Scalar:
+        return "scalar";
     }
     return "unknown";
 }
@@ -197,19 +195,26 @@ const char* numa_mode_name(NumaMode mode) {
 
 const char* memory_policy_name(basalt::internal::MemoryPolicy policy) {
     switch (policy) {
-    case basalt::internal::MemoryPolicy::Default: return "default";
-    case basalt::internal::MemoryPolicy::BindWorkerBuffers: return "bind-worker-buffers";
-    case basalt::internal::MemoryPolicy::BindInputsIfPossible: return "bind-inputs-if-possible";
+    case basalt::internal::MemoryPolicy::Default:
+        return "default";
+    case basalt::internal::MemoryPolicy::BindWorkerBuffers:
+        return "bind-worker-buffers";
+    case basalt::internal::MemoryPolicy::BindInputsIfPossible:
+        return "bind-inputs-if-possible";
     }
     return "unknown";
 }
 
 const char* schedule_name(basalt::kernel::FFT2DSchedule schedule) {
     switch (schedule) {
-    case basalt::kernel::FFT2DSchedule::Auto: return "auto";
-    case basalt::kernel::FFT2DSchedule::LegacyColumnFirst: return "legacy-column-first";
-    case basalt::kernel::FFT2DSchedule::FourStepRowFirst: return "four-step-row-first";
-    case basalt::kernel::FFT2DSchedule::RowFirstColumnStrips: return "row-first-column-strips";
+    case basalt::kernel::FFT2DSchedule::Auto:
+        return "auto";
+    case basalt::kernel::FFT2DSchedule::LegacyColumnFirst:
+        return "legacy-column-first";
+    case basalt::kernel::FFT2DSchedule::FourStepRowFirst:
+        return "four-step-row-first";
+    case basalt::kernel::FFT2DSchedule::RowFirstColumnStrips:
+        return "row-first-column-strips";
     }
     return "unknown";
 }
@@ -252,25 +257,26 @@ double percentile_ms(std::vector<double> values, double p) {
 }
 
 void print_usage() {
-    std::cout
-        << "Usage: basalt_bench [options]\n"
-        << "  --sizes <csv>     Grid sizes (powers of two). Default: 1024\n"
-        << "  --threads <csv>   Thread counts (>= 1). Default: 1\n"
-        << "  --simd <csv>      SIMD modes: auto,scalar,avx2,avx512. Default: auto\n"
-        << "  --numa <csv>      NUMA modes: off,auto. Default: off\n"
-        << "  --memory-policy <csv> Memory policy: default,bind-worker-buffers,bind-inputs-if-possible\n"
-        << "  --shots <N>       Timed shots (>= 1). Default: 64\n"
-        << "  --warmup <N>      Warmup shots (>= 0). Default: 8\n"
-        << "  --seed <N>        RNG seed, 0 to 4294967295. Default: 1337\n"
-        << "  --json-out <path> JSON output path\n"
-        << "  --csv-out <path>  CSV output path\n"
-        << "  --help            Show this help and exit\n"
-        << "Exit status: 0 on success, 1 on runtime failure, 2 on invalid arguments.\n";
+    std::cout << "Usage: basalt_bench [options]\n"
+              << "  --sizes <csv>     Grid sizes (powers of two). Default: 1024\n"
+              << "  --threads <csv>   Thread counts (>= 1). Default: 1\n"
+              << "  --simd <csv>      SIMD modes: auto,scalar,avx2,avx512. Default: auto\n"
+              << "  --numa <csv>      NUMA modes: off,auto. Default: off\n"
+              << "  --memory-policy <csv> Memory policy: "
+                 "default,bind-worker-buffers,bind-inputs-if-possible\n"
+              << "  --shots <N>       Timed shots (>= 1). Default: 64\n"
+              << "  --warmup <N>      Warmup shots (>= 0). Default: 8\n"
+              << "  --seed <N>        RNG seed, 0 to 4294967295. Default: 1337\n"
+              << "  --json-out <path> JSON output path\n"
+              << "  --csv-out <path>  CSV output path\n"
+              << "  --help            Show this help and exit\n"
+              << "Exit status: 0 on success, 1 on runtime failure, 2 on invalid arguments.\n";
 }
 
-ParseStatus report_invalid(const std::string& flag, const std::string& value, const char* expected) {
-    std::cerr << "basalt_bench: invalid value '" << value << "' for " << flag
-              << " (" << expected << ")\n"
+ParseStatus report_invalid(const std::string& flag, const std::string& value,
+                           const char* expected) {
+    std::cerr << "basalt_bench: invalid value '" << value << "' for " << flag << " (" << expected
+              << ")\n"
               << "Run 'basalt_bench --help' for usage.\n";
     return ParseStatus::Error;
 }
@@ -307,12 +313,14 @@ ParseStatus parse_args(int argc, char** argv, Config& cfg) {
             if (!parse_unsigned_list(value, cfg.threads)) {
                 return report_invalid(arg, value, "expected a comma-separated list of integers");
             }
-            if (std::any_of(cfg.threads.begin(), cfg.threads.end(), [](size_t t) { return t == 0; })) {
+            if (std::any_of(cfg.threads.begin(), cfg.threads.end(),
+                            [](size_t t) { return t == 0; })) {
                 return report_invalid(arg, value, "thread counts must be >= 1");
             }
         } else if (arg == "--simd") {
             if (!parse_simd_list(value, cfg.simd_modes)) {
-                return report_invalid(arg, value, "expected a comma-separated list of auto,scalar,avx2,avx512");
+                return report_invalid(arg, value,
+                                      "expected a comma-separated list of auto,scalar,avx2,avx512");
             }
         } else if (arg == "--numa") {
             if (!parse_numa_list(value, cfg.numa_modes)) {
@@ -321,7 +329,8 @@ ParseStatus parse_args(int argc, char** argv, Config& cfg) {
         } else if (arg == "--memory-policy") {
             if (!parse_memory_policy_list(value, cfg.memory_policies)) {
                 return report_invalid(arg, value,
-                                      "expected a comma-separated list of default,bind-worker-buffers,bind-inputs-if-possible");
+                                      "expected a comma-separated list of "
+                                      "default,bind-worker-buffers,bind-inputs-if-possible");
             }
         } else if (arg == "--shots") {
             uint64_t parsed = 0;
@@ -376,14 +385,9 @@ std::vector<uint64_t> delta_counts(const std::vector<uint64_t>& after,
     return out;
 }
 
-ResultRow run_case(size_t size,
-                   size_t thread_count,
-                   basalt::kernel::SimdMode simd_mode,
-                   NumaMode numa_mode,
-                   basalt::internal::MemoryPolicy memory_policy,
-                   size_t shots,
-                   size_t warmup,
-                   uint32_t seed) {
+ResultRow run_case(size_t size, size_t thread_count, basalt::kernel::SimdMode simd_mode,
+                   NumaMode numa_mode, basalt::internal::MemoryPolicy memory_policy, size_t shots,
+                   size_t warmup, uint32_t seed) {
     const size_t total = size * size;
     std::mt19937 rng(seed);
     std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
@@ -401,23 +405,16 @@ ResultRow run_case(size_t size,
     params.mute_vel_max = 1500.0;
     params.taper_width = 200.0;
 
-    const basalt::kernel::FFT2DConfig fft_config = basalt::internal::resolved_fft2d_config(
-        basalt::kernel::FFT2DConfig{}, size, size
-    );
+    const basalt::kernel::FFT2DConfig fft_config =
+        basalt::internal::resolved_fft2d_config(basalt::kernel::FFT2DConfig{}, size, size);
 
-    const size_t chunk_size = std::max<size_t>(1, std::min<size_t>(shots, thread_count <= 1 ? 1 : thread_count * 2));
+    const size_t chunk_size =
+        std::max<size_t>(1, std::min<size_t>(shots, thread_count <= 1 ? 1 : thread_count * 2));
 
     // One executor serves both warmup and the timed pass, so the timed pass starts warm.
-    basalt::internal::BatchExecutor executor({
-        thread_count,
-        true,
-        numa_mode == NumaMode::Auto,
-        memory_policy,
-        size,
-        size,
-        std::max<size_t>(256, chunk_size * 4),
-        simd_mode
-    });
+    basalt::internal::BatchExecutor executor({thread_count, true, numa_mode == NumaMode::Auto,
+                                              memory_policy, size, size,
+                                              std::max<size_t>(256, chunk_size * 4), simd_mode});
 
     std::vector<float> output_real(chunk_size * total);
     std::vector<float> output_imag(chunk_size * total);
@@ -430,17 +427,10 @@ ResultRow run_case(size_t size,
             std::vector<basalt::internal::BatchJob> jobs;
             jobs.reserve(current);
             for (size_t slot = 0; slot < current; ++slot) {
-                jobs.push_back({
-                    input_real.data(),
-                    input_imag.data(),
-                    output_real.data() + slot * total,
-                    output_imag.data() + slot * total,
-                    size,
-                    size,
-                    static_cast<size_t>(-1),
-                    params,
-                    fft_config
-                });
+                jobs.push_back({input_real.data(), input_imag.data(),
+                                output_real.data() + slot * total,
+                                output_imag.data() + slot * total, size, size,
+                                static_cast<size_t>(-1), params, fft_config});
             }
             chunks.push_back(std::move(jobs));
         }
@@ -473,7 +463,8 @@ ResultRow run_case(size_t size,
     Clock::duration measured{};
 
     for (const auto& jobs : timed_chunks) {
-        // Only executor.run() is timed. Latency collection and output hashing happen between windows.
+        // Only executor.run() is timed. Latency collection and output hashing happen between
+        // windows.
         const auto start = Clock::now();
         last_stats = executor.run(jobs, &chunk_latencies);
         measured += Clock::now() - start;
@@ -488,49 +479,40 @@ ResultRow run_case(size_t size,
     const std::chrono::duration<double> elapsed = measured;
     row.total_seconds = elapsed.count();
     row.mean_ms = latencies.empty() ? 0.0
-        : std::accumulate(latencies.begin(), latencies.end(), 0.0) / static_cast<double>(latencies.size());
+                                    : std::accumulate(latencies.begin(), latencies.end(), 0.0) /
+                                          static_cast<double>(latencies.size());
     row.p50_ms = percentile_ms(latencies, 0.50);
     row.p95_ms = percentile_ms(latencies, 0.95);
     row.p99_ms = percentile_ms(latencies, 0.99);
-    row.throughput_gb_s = (static_cast<double>(total) * sizeof(float) * 2.0 * static_cast<double>(shots))
-                          / row.total_seconds / 1e9;
+    row.throughput_gb_s =
+        (static_cast<double>(total) * sizeof(float) * 2.0 * static_cast<double>(shots)) /
+        row.total_seconds / 1e9;
     row.checksum_real = checksum_real;
     row.checksum_imag = checksum_imag;
     row.numa_nodes = last_stats.thread_pool.node_count;
     row.memory_policy = last_stats.memory_policy;
     row.preferred_node_counts = last_stats.preferred_node_counts;
     row.worker_home_node_counts = last_stats.thread_pool.worker_home_node_counts;
-    row.local_queue_executions_per_node = delta_counts(
-        last_stats.thread_pool.local_queue_executions_per_node,
-        warmup_stats.thread_pool.local_queue_executions_per_node
-    );
-    row.remote_steals_from_node = delta_counts(
-        last_stats.thread_pool.remote_steals_from_node,
-        warmup_stats.thread_pool.remote_steals_from_node
-    );
+    row.local_queue_executions_per_node =
+        delta_counts(last_stats.thread_pool.local_queue_executions_per_node,
+                     warmup_stats.thread_pool.local_queue_executions_per_node);
+    row.remote_steals_from_node = delta_counts(last_stats.thread_pool.remote_steals_from_node,
+                                               warmup_stats.thread_pool.remote_steals_from_node);
     return row;
 }
 
 void write_csv(std::ostream& out, const std::vector<ResultRow>& rows) {
-    out << "size,threads,simd,numa,memory_policy,fft_schedule,fft_tile,total_seconds,mean_ms,p50_ms,p95_ms,p99_ms,throughput_gb_s,checksum_real,checksum_imag,numa_nodes,preferred_node_counts,worker_home_node_counts,local_queue_executions_per_node,remote_steals_from_node\n";
+    out << "size,threads,simd,numa,memory_policy,fft_schedule,fft_tile,total_seconds,mean_ms,p50_"
+           "ms,p95_ms,p99_ms,throughput_gb_s,checksum_real,checksum_imag,numa_nodes,preferred_node_"
+           "counts,worker_home_node_counts,local_queue_executions_per_node,remote_steals_from_"
+           "node\n";
     for (const ResultRow& row : rows) {
-        out << row.size << ','
-            << row.thread_count << ','
-            << simd_mode_name(row.simd_mode) << ','
-            << numa_mode_name(row.numa_mode) << ','
-            << memory_policy_name(row.memory_policy) << ','
-            << schedule_name(row.fft_schedule) << ','
-            << row.fft_tile << ','
-            << row.total_seconds << ','
-            << row.mean_ms << ','
-            << row.p50_ms << ','
-            << row.p95_ms << ','
-            << row.p99_ms << ','
-            << row.throughput_gb_s << ','
-            << row.checksum_real << ','
-            << row.checksum_imag << ','
-            << row.numa_nodes << ','
-            << join_counts(row.preferred_node_counts) << ','
+        out << row.size << ',' << row.thread_count << ',' << simd_mode_name(row.simd_mode) << ','
+            << numa_mode_name(row.numa_mode) << ',' << memory_policy_name(row.memory_policy) << ','
+            << schedule_name(row.fft_schedule) << ',' << row.fft_tile << ',' << row.total_seconds
+            << ',' << row.mean_ms << ',' << row.p50_ms << ',' << row.p95_ms << ',' << row.p99_ms
+            << ',' << row.throughput_gb_s << ',' << row.checksum_real << ',' << row.checksum_imag
+            << ',' << row.numa_nodes << ',' << join_counts(row.preferred_node_counts) << ','
             << join_counts(row.worker_home_node_counts) << ','
             << join_counts(row.local_queue_executions_per_node) << ','
             << join_counts(row.remote_steals_from_node) << '\n';
@@ -599,24 +581,21 @@ int main(int argc, char** argv) {
                             if (threads == 1 && numa_mode == NumaMode::Auto) {
                                 continue;
                             }
-                            const ResultRow row = run_case(
-                                size, threads, simd_mode, numa_mode, memory_policy, cfg.shots, cfg.warmup, cfg.seed
-                            );
+                            const ResultRow row =
+                                run_case(size, threads, simd_mode, numa_mode, memory_policy,
+                                         cfg.shots, cfg.warmup, cfg.seed);
                             results.push_back(row);
-                            std::cout << std::fixed << std::setprecision(4)
-                                      << "size=" << row.size
-                                      << " threads=" << row.thread_count
-                                      << " simd=" << simd_mode_name(row.simd_mode)
-                                      << " numa=" << numa_mode_name(row.numa_mode)
-                                      << " policy=" << memory_policy_name(row.memory_policy)
-                                      << " fft=" << schedule_name(row.fft_schedule)
-                                      << "/" << row.fft_tile
-                                      << " mean_ms=" << row.mean_ms
-                                      << " p99_ms=" << row.p99_ms
-                                      << " throughput_gb_s=" << row.throughput_gb_s
-                                      << " local=" << join_counts(row.local_queue_executions_per_node)
-                                      << " remote=" << join_counts(row.remote_steals_from_node)
-                                      << "\n";
+                            std::cout
+                                << std::fixed << std::setprecision(4) << "size=" << row.size
+                                << " threads=" << row.thread_count
+                                << " simd=" << simd_mode_name(row.simd_mode)
+                                << " numa=" << numa_mode_name(row.numa_mode)
+                                << " policy=" << memory_policy_name(row.memory_policy)
+                                << " fft=" << schedule_name(row.fft_schedule) << "/" << row.fft_tile
+                                << " mean_ms=" << row.mean_ms << " p99_ms=" << row.p99_ms
+                                << " throughput_gb_s=" << row.throughput_gb_s
+                                << " local=" << join_counts(row.local_queue_executions_per_node)
+                                << " remote=" << join_counts(row.remote_steals_from_node) << "\n";
                         }
                     }
                 }

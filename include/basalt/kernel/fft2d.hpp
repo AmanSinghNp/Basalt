@@ -43,7 +43,7 @@ constexpr size_t fft2d_scratch_bytes(size_t rows, size_t cols,
         return kMax;
     }
     const size_t total = rows * cols;
-    constexpr size_t kSlack = basalt::MemoryArena::kAliasPadding + 63;  // padding + max align fix-up
+    constexpr size_t kSlack = basalt::MemoryArena::kAliasPadding + 63; // padding + max align fix-up
     if (total > (kMax / 2 - kSlack) / sizeof(float)) {
         return kMax;
     }
@@ -69,25 +69,19 @@ constexpr size_t fft2d_scratch_bytes(size_t rows, size_t cols,
 /// repeated calls on the same arena need no manual reset().
 
 /// In-place 2D forward FFT with the Auto schedule.
-void fft2d_forward(float* real, float* imag,
-                   size_t rows, size_t cols,
+void fft2d_forward(float* real, float* imag, size_t rows, size_t cols,
                    basalt::MemoryArena& scratch);
 
 /// In-place 2D forward FFT with explicit schedule/tile selection.
-void fft2d_forward(float* real, float* imag,
-                   size_t rows, size_t cols,
-                   basalt::MemoryArena& scratch,
+void fft2d_forward(float* real, float* imag, size_t rows, size_t cols, basalt::MemoryArena& scratch,
                    const FFT2DConfig& config);
 
 /// In-place 2D inverse FFT with 1/(rows*cols) scaling (applied once).
-void fft2d_inverse(float* real, float* imag,
-                   size_t rows, size_t cols,
+void fft2d_inverse(float* real, float* imag, size_t rows, size_t cols,
                    basalt::MemoryArena& scratch);
 
 /// In-place 2D inverse FFT with explicit schedule/tile selection.
-void fft2d_inverse(float* real, float* imag,
-                   size_t rows, size_t cols,
-                   basalt::MemoryArena& scratch,
+void fft2d_inverse(float* real, float* imag, size_t rows, size_t cols, basalt::MemoryArena& scratch,
                    const FFT2DConfig& config);
 
 } // namespace basalt::kernel

@@ -88,7 +88,7 @@ private:
     size_t m_trailer_bytes = 0;
     size_t m_written = 0;
     bool m_done = false;
-    std::vector<uint8_t> m_buf;  // one encoded trace payload
+    std::vector<uint8_t> m_buf; // one encoded trace payload
 };
 
 // Convenience: writes a file shaped like the source ('src', 'src_size',

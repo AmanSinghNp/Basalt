@@ -1,11 +1,11 @@
 #include "basalt/io/segy_parser.hpp"
+#include "basalt/segy_format.hpp"
 #include "basalt/utils/ebcdic.hpp"
 #include "basalt/utils/ibm_float.hpp"
-#include "basalt/segy_format.hpp"
-#include <gtest/gtest.h>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <gtest/gtest.h>
 #include <limits>
 #include <random>
 #include <string>
@@ -39,24 +39,25 @@ uint64_t get(const Bytes& b, size_t off, size_t width, bool le) {
 }
 
 struct Spec {
-    uint16_t format = 5;          // data_sample_format
-    uint16_t ns = 4;              // 16-bit samples per trace
-    uint32_t ext_ns = 0;          // rev 2 extended samples per trace
+    uint16_t format = 5; // data_sample_format
+    uint16_t ns = 4;     // 16-bit samples per trace
+    uint32_t ext_ns = 0; // rev 2 extended samples per trace
     size_t traces = 3;
-    size_t ext_records = 0;       // extended textual header records actually present
+    size_t ext_records = 0; // extended textual header records actually present
     bool override_ext_field = false;
-    int16_t ext_field = 0;        // value written at offset 304 if override_ext_field
+    int16_t ext_field = 0; // value written at offset 304 if override_ext_field
     uint8_t rev_major = 1;
     uint8_t rev_minor = 0;
     bool le = false;
     bool ascii_text = false;
-    int32_t trailer_field = 0;    // rev 2 trailer stanza count written to the header
-    size_t trailer_records = 0;   // trailer records actually appended
-    uint32_t max_additional = 0;  // rev 2 additional trace headers
-    uint32_t marker_override = 0; // nonzero: raw value written (BE) at offset 96 instead of auto
-    int endtext = 0;              // terminate the last ext record with EndText: 1 ASCII, 2 EBCDIC
+    int32_t trailer_field = 0;     // rev 2 trailer stanza count written to the header
+    size_t trailer_records = 0;    // trailer records actually appended
+    uint32_t max_additional = 0;   // rev 2 additional trace headers
+    uint32_t marker_override = 0;  // nonzero: raw value written (BE) at offset 96 instead of auto
+    int endtext = 0;               // terminate the last ext record with EndText: 1 ASCII, 2 EBCDIC
     uint64_t num_traces_field = 0; // rev 2 number of traces in file (bytes 3513-3520), 0 = unknown
-    uint64_t first_trace_field = 0; // rev 2 byte offset of first trace (bytes 3521-3528), 0 = unknown
+    uint64_t first_trace_field =
+        0; // rev 2 byte offset of first trace (bytes 3521-3528), 0 = unknown
 };
 
 constexpr size_t kBin = 3200; // start of binary header
@@ -69,25 +70,60 @@ size_t bps_of(uint16_t fmt) {
 }
 
 float sample_value(size_t t, size_t k) {
-    return static_cast<float>(t * 10 + k) - 7.0f; // small: fits every integer format, includes negatives
+    return static_cast<float>(t * 10 + k) -
+           7.0f; // small: fits every integer format, includes negatives
 }
 
 void encode_sample(Bytes& b, size_t off, uint16_t fmt, float v, bool le) {
     switch (fmt) {
-        case 1: put(b, off, utils::ieee_to_ibm(v), 4, le); break;
-        case 2: put(b, off, static_cast<uint32_t>(static_cast<int32_t>(v)), 4, le); break;
-        case 3: put(b, off, static_cast<uint16_t>(static_cast<int16_t>(v)), 2, le); break;
-        case 5: { uint32_t u; std::memcpy(&u, &v, 4); put(b, off, u, 4, le); break; }
-        case 6: { double d = v; uint64_t u; std::memcpy(&u, &d, 8); put(b, off, u, 8, le); break; }
-        case 7: put(b, off, static_cast<uint32_t>(static_cast<int32_t>(v)) & 0xFFFFFFu, 3, le); break;
-        case 8: put(b, off, static_cast<uint8_t>(static_cast<int8_t>(v)), 1, le); break;
-        case 9: put(b, off, static_cast<uint64_t>(static_cast<int64_t>(v)), 8, le); break;
-        case 10: put(b, off, static_cast<uint32_t>(v + 7.0f), 4, le); break;
-        case 11: put(b, off, static_cast<uint16_t>(v + 7.0f), 2, le); break;
-        case 12: put(b, off, static_cast<uint64_t>(v + 7.0f), 8, le); break;
-        case 15: put(b, off, static_cast<uint32_t>(v + 7.0f), 3, le); break;
-        case 16: put(b, off, static_cast<uint8_t>(v + 7.0f), 1, le); break;
-        default: break;
+    case 1:
+        put(b, off, utils::ieee_to_ibm(v), 4, le);
+        break;
+    case 2:
+        put(b, off, static_cast<uint32_t>(static_cast<int32_t>(v)), 4, le);
+        break;
+    case 3:
+        put(b, off, static_cast<uint16_t>(static_cast<int16_t>(v)), 2, le);
+        break;
+    case 5: {
+        uint32_t u;
+        std::memcpy(&u, &v, 4);
+        put(b, off, u, 4, le);
+        break;
+    }
+    case 6: {
+        double d = v;
+        uint64_t u;
+        std::memcpy(&u, &d, 8);
+        put(b, off, u, 8, le);
+        break;
+    }
+    case 7:
+        put(b, off, static_cast<uint32_t>(static_cast<int32_t>(v)) & 0xFFFFFFu, 3, le);
+        break;
+    case 8:
+        put(b, off, static_cast<uint8_t>(static_cast<int8_t>(v)), 1, le);
+        break;
+    case 9:
+        put(b, off, static_cast<uint64_t>(static_cast<int64_t>(v)), 8, le);
+        break;
+    case 10:
+        put(b, off, static_cast<uint32_t>(v + 7.0f), 4, le);
+        break;
+    case 11:
+        put(b, off, static_cast<uint16_t>(v + 7.0f), 2, le);
+        break;
+    case 12:
+        put(b, off, static_cast<uint64_t>(v + 7.0f), 8, le);
+        break;
+    case 15:
+        put(b, off, static_cast<uint32_t>(v + 7.0f), 3, le);
+        break;
+    case 16:
+        put(b, off, static_cast<uint8_t>(v + 7.0f), 1, le);
+        break;
+    default:
+        break;
     }
 }
 
@@ -115,8 +151,8 @@ Bytes build_segy(const Spec& s) {
     }
 
     // Binary header
-    put(b, kBin + 16, 2000, 2, s.le);        // hdt
-    put(b, kBin + 20, s.ns, 2, s.le);        // ns
+    put(b, kBin + 16, 2000, 2, s.le); // hdt
+    put(b, kBin + 20, s.ns, 2, s.le); // ns
     put(b, kBin + 24, s.format, 2, s.le);
     put(b, kBin + 68, s.ext_ns, 4, s.le);
     const uint32_t marker = s.marker_override
@@ -126,9 +162,9 @@ Bytes build_segy(const Spec& s) {
     b[kBin + 300] = s.rev_major;
     b[kBin + 301] = s.rev_minor;
     put(b, kBin + 302, 1, 2, s.le);
-    put(b, kBin + 304, static_cast<uint16_t>(s.override_ext_field
-                                                 ? s.ext_field
-                                                 : static_cast<int16_t>(s.ext_records)),
+    put(b, kBin + 304,
+        static_cast<uint16_t>(s.override_ext_field ? s.ext_field
+                                                   : static_cast<int16_t>(s.ext_records)),
         2, s.le);
     put(b, kBin + 306, s.max_additional, 4, s.le);
     put(b, kBin + 312, s.num_traces_field, 8, s.le);
@@ -151,8 +187,8 @@ Bytes build_segy(const Spec& s) {
     const size_t base = 3600 + s.ext_records * 3200;
     for (size_t t = 0; t < s.traces; ++t) {
         const size_t off = base + t * stride;
-        put(b, off + 4, t + 1, 4, s.le);                 // trace_seq_file
-        put(b, off + 114, eff_ns, 2, s.le);              // samples_this_trace
+        put(b, off + 4, t + 1, 4, s.le);    // trace_seq_file
+        put(b, off + 114, eff_ns, 2, s.le); // samples_this_trace
         for (size_t k = 0; k < eff_ns; ++k) {
             encode_sample(b, off + 240 + k * bps, s.format, sample_value(t, k), s.le);
         }
@@ -184,10 +220,8 @@ TEST(SegyHeaderTest, SwapEndian) {
 TEST(SegyHeaderTest, EbcdicConversion) {
     // EBCDIC for "C01 CLIENT"
     // C=0xC3, 0=0xF0, 1=0xF1, space=0x40, C=0xC3, L=0xD3, I=0xC9, E=0xC5, N=0xD5, T=0xE3
-    const unsigned char ebcdic_bytes[] = {
-        0xC3, 0xF0, 0xF1, 0x40,
-        0xC3, 0xD3, 0xC9, 0xC5, 0xD5, 0xE3
-    };
+    const unsigned char ebcdic_bytes[] = {0xC3, 0xF0, 0xF1, 0x40, 0xC3,
+                                          0xD3, 0xC9, 0xC5, 0xD5, 0xE3};
 
     std::string ascii = utils::EbcdicConverter::to_ascii(ebcdic_bytes, sizeof(ebcdic_bytes));
     EXPECT_EQ(ascii, "C01 CLIENT");
@@ -228,10 +262,10 @@ TEST(SegyHeaderTest, TextHeaderAsciiPassThrough) {
 
 TEST(SegyHeaderTest, ParseBinaryHeader) {
     Bytes raw(400, 0);
-    put(raw, 4, 101, 4, false);      // line_number
-    put(raw, 16, 2000, 2, false);    // sample_interval
-    put(raw, 20, 1500, 2, false);    // samples_per_trace
-    put(raw, 24, 5, 2, false);       // IEEE Float
+    put(raw, 4, 101, 4, false);   // line_number
+    put(raw, 16, 2000, 2, false); // sample_interval
+    put(raw, 20, 1500, 2, false); // samples_per_trace
+    put(raw, 24, 5, 2, false);    // IEEE Float
 
     SegyBinaryHeader parsed = parse_binary_header(raw.data(), raw.size());
 
@@ -266,8 +300,12 @@ TEST(SegyHeaderTest, BinaryHeaderAllFieldsBothEndians) {
     for (bool le : {false, true}) {
         SCOPED_TRACE(le ? "little" : "big");
         SegyBinaryHeader h = parse_binary_header(raw.data(), raw.size(), le);
-        auto c16 = [&](size_t off, uint16_t v) { EXPECT_EQ(v, get(raw, off, 2, le)) << "off " << off; };
-        auto c32 = [&](size_t off, uint32_t v) { EXPECT_EQ(v, get(raw, off, 4, le)) << "off " << off; };
+        auto c16 = [&](size_t off, uint16_t v) {
+            EXPECT_EQ(v, get(raw, off, 2, le)) << "off " << off;
+        };
+        auto c32 = [&](size_t off, uint32_t v) {
+            EXPECT_EQ(v, get(raw, off, 4, le)) << "off " << off;
+        };
         c32(0, h.job_id);
         c32(4, h.line_number);
         c32(8, h.reel_number);
@@ -329,10 +367,10 @@ TEST(SegyHeaderTest, BinaryHeaderAllFieldsBothEndians) {
 
 TEST(SegyHeaderTest, ParseTraceHeader) {
     Bytes raw(240, 0);
-    put(raw, 36, 1500, 4, false);    // source_receiver_offset
-    put(raw, 108, 100, 2, false);    // delay_recording_time
-    put(raw, 114, 2001, 2, false);   // samples_this_trace
-    put(raw, 28, 1, 2, false);       // trace_id_code
+    put(raw, 36, 1500, 4, false);  // source_receiver_offset
+    put(raw, 108, 100, 2, false);  // delay_recording_time
+    put(raw, 114, 2001, 2, false); // samples_this_trace
+    put(raw, 28, 1, 2, false);     // trace_id_code
 
     SegyTraceHeader parsed = parse_trace_header(raw.data(), raw.size());
 
@@ -543,7 +581,8 @@ TEST(SegyHeaderTest, TruncationAtEveryBoundary) {
 
 TEST(SegyHeaderTest, TruncatedTextAndBinaryHeaderBoundaries) {
     Bytes full = build_segy(Spec{});
-    for (size_t n : {size_t{0}, size_t{1}, size_t{3199}, size_t{3200}, size_t{3201}, size_t{3599}}) {
+    for (size_t n :
+         {size_t{0}, size_t{1}, size_t{3199}, size_t{3200}, size_t{3201}, size_t{3599}}) {
         EXPECT_THROW(describe_segy(full.data(), n), SegyFormatError) << "n=" << n;
     }
     EXPECT_NO_THROW(describe_segy(full.data(), 3600 + 3 * (240 + 16)));
@@ -913,8 +952,9 @@ TEST(SegyHeaderTest, TraceAccessorsAreBoundsChecked) {
 
     EXPECT_THROW(read_trace_header(file.data(), file.size(), lay, 2), std::out_of_range);
     EXPECT_THROW(read_trace_samples(file.data(), file.size(), lay, 99), std::out_of_range);
-    EXPECT_THROW(read_trace_header(file.data(), file.size(), lay,
-                                   std::numeric_limits<size_t>::max()), std::out_of_range);
+    EXPECT_THROW(
+        read_trace_header(file.data(), file.size(), lay, std::numeric_limits<size_t>::max()),
+        std::out_of_range);
 
     // Layout from a bigger buffer used with a shorter one.
     EXPECT_THROW(read_trace_header(file.data(), file.size() - 1, lay, 1), SegyFormatError);
@@ -955,13 +995,16 @@ TEST(SegyHeaderTest, DeterministicFuzzNeverCrashes) {
     auto exercise = [&](const Bytes& buf) {
         try {
             (void)parse_text_header(buf.data(), buf.size());
-        } catch (const SegyFormatError&) {}
+        } catch (const SegyFormatError&) {
+        }
         try {
             (void)parse_binary_header(buf.data(), buf.size(), (rng() & 1) != 0);
-        } catch (const SegyFormatError&) {}
+        } catch (const SegyFormatError&) {
+        }
         try {
             (void)parse_trace_header(buf.data(), buf.size(), (rng() & 1) != 0);
-        } catch (const SegyFormatError&) {}
+        } catch (const SegyFormatError&) {
+        }
         try {
             SegyLayout lay = describe_segy(buf.data(), buf.size());
             // A successful parse must account for every byte.
@@ -974,7 +1017,8 @@ TEST(SegyHeaderTest, DeterministicFuzzNeverCrashes) {
                 v.resize(lay.samples_per_trace);
                 read_trace_samples(buf.data(), buf.size(), lay, t, v.data(), v.size());
             }
-        } catch (const SegyFormatError&) {}
+        } catch (const SegyFormatError&) {
+        }
     };
 
     // 1. Pure random bytes of random size.

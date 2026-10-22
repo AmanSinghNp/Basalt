@@ -21,7 +21,9 @@ SimdLevel max_simd_level();
 SimdLevel resolve_simd_level(SimdMode requested);
 
 /// True when the AVX2+FMA kernels may run (shorthand for the common check).
-inline bool use_avx2() { return max_simd_level() >= SimdLevel::AVX2; }
+inline bool use_avx2() {
+    return max_simd_level() >= SimdLevel::AVX2;
+}
 
 /// Test hook: caps the dispatch level for the whole process, on top of the
 /// BASALT_SIMD_MAX environment variable. SimdMode::Auto removes the cap.

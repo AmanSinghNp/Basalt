@@ -1,22 +1,23 @@
-#include <gtest/gtest.h>
 #include "basalt/filter/fk_filter.hpp"
-#include "basalt/kernel/complex_soa.hpp"
 #include "basalt/internal/simd_dispatch.hpp"
+#include "basalt/kernel/complex_soa.hpp"
 #include "basalt/kernel/cpu_features.hpp"
 #include "basalt/utils/fast_math.hpp"
-#include <vector>
-#include <cmath>
 #include <algorithm>
-#include <numeric>
+#include <cmath>
 #include <cstdint>
+#include <gtest/gtest.h>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
+#include <vector>
 
 using namespace basalt::filter;
 using namespace basalt::kernel;
 
 // Helper to fill data with a specific velocity event
-void fill_event(ComplexSoA& data, size_t rows, size_t cols, double dt, double dx, double velocity, float amplitude) {
+void fill_event(ComplexSoA& data, size_t rows, size_t cols, double dt, double dx, double velocity,
+                float amplitude) {
     // In f-k domain, a linear event with velocity V maps to a line f = V*k
 
     double df = 1.0 / (static_cast<double>(rows) * dt);
@@ -25,15 +26,19 @@ void fill_event(ComplexSoA& data, size_t rows, size_t cols, double dt, double dx
     for (size_t i = 0; i < rows; ++i) {
         double f = static_cast<double>(i) * df;
         // Handle Nyquist f
-        if (i > rows/2) f = static_cast<double>((static_cast<int>(i) - static_cast<int>(rows))) * df;
+        if (i > rows / 2)
+            f = static_cast<double>((static_cast<int>(i) - static_cast<int>(rows))) * df;
 
         for (size_t j = 0; j < cols; ++j) {
             double k_val;
-            if (j <= cols/2) k_val = static_cast<double>(j) * dk;
-            else k_val = static_cast<double>((static_cast<int>(j) - static_cast<int>(cols))) * dk;
+            if (j <= cols / 2)
+                k_val = static_cast<double>(j) * dk;
+            else
+                k_val = static_cast<double>((static_cast<int>(j) - static_cast<int>(cols))) * dk;
 
             // Avoid singularity
-            if (std::abs(k_val) < 1e-6) continue;
+            if (std::abs(k_val) < 1e-6)
+                continue;
 
             double v_point = f / k_val;
 
@@ -77,14 +82,15 @@ TEST(FKFilterTest, MutesLowVelocity) {
     double df = 1.0 / (static_cast<double>(rows) * params.dt);
     double dk = 1.0 / (static_cast<double>(cols) * params.dx);
 
-    for (size_t i = 1; i < rows/2; ++i) {
-        for (size_t j = 1; j < cols/2; ++j) {
+    for (size_t i = 1; i < rows / 2; ++i) {
+        for (size_t j = 1; j < cols / 2; ++j) {
             double f = static_cast<double>(i) * df;
             double k_val = static_cast<double>(j) * dk;
             double v = f / k_val;
 
             size_t idx = i * cols + j;
-            float mag = std::sqrt(data.real[idx]*data.real[idx] + data.imag[idx]*data.imag[idx]);
+            float mag =
+                std::sqrt(data.real[idx] * data.real[idx] + data.imag[idx] * data.imag[idx]);
 
             if (std::abs(v - noise_vel) < noise_vel * 0.05) {
                 // Should be muted (near 0)
@@ -125,7 +131,9 @@ namespace {
 // Double precision scalar reference of the documented filter semantics.
 // ---------------------------------------------------------------------------
 
-double ref_sigmoid(double x) { return 1.0 / (1.0 + std::exp(-x)); }
+double ref_sigmoid(double x) {
+    return 1.0 / (1.0 + std::exp(-x));
+}
 
 double ref_band(double v, const FKParams& p) {
     const double s = 10.0 / p.taper_width;
@@ -133,16 +141,20 @@ double ref_band(double v, const FKParams& p) {
 }
 
 double ref_signed_index(size_t index, size_t size, double step) {
-    if (index <= size / 2) return static_cast<double>(index) * step;
+    if (index <= size / 2)
+        return static_cast<double>(index) * step;
     return (static_cast<double>(index) - static_cast<double>(size)) * step;
 }
 
-bool ref_nyquist(size_t index, size_t size) { return size % 2 == 0 && index == size / 2; }
+bool ref_nyquist(size_t index, size_t size) {
+    return size % 2 == 0 && index == size / 2;
+}
 
 double ref_weight(size_t i, size_t j, size_t rows, size_t cols, const FKParams& p) {
     const double f = ref_signed_index(i, rows, 1.0 / (static_cast<double>(rows) * p.dt));
     const double k = ref_signed_index(j, cols, 1.0 / (static_cast<double>(cols) * p.dx));
-    if (k == 0.0) return 1.0;  // infinite apparent velocity (includes DC)
+    if (k == 0.0)
+        return 1.0; // infinite apparent velocity (includes DC)
     const double v = f / k;
     // The Nyquist bin has no defined sign; the weight is symmetrised there.
     if (ref_nyquist(i, rows) || ref_nyquist(j, cols)) {
@@ -151,7 +163,10 @@ double ref_weight(size_t i, size_t j, size_t rows, size_t cols, const FKParams& 
     return ref_band(v, p);
 }
 
-struct Shape { size_t rows; size_t cols; };
+struct Shape {
+    size_t rows;
+    size_t cols;
+};
 
 const Shape kShapes[] = {{16, 17}, {64, 100}, {33, 7}, {300, 129}, {8, 1}, {16, 16}, {2, 2}};
 
@@ -221,9 +236,11 @@ void expect_matches_reference(size_t rows, size_t cols, const FKParams& params, 
         for (size_t j = 0; j < cols; ++j) {
             const size_t idx = i * cols + j;
             const double w = ref_weight(i, j, rows, cols, params);
-            ASSERT_NEAR(static_cast<double>(out.re[idx]), static_cast<double>(orig.real[idx]) * w, 1e-4)
+            ASSERT_NEAR(static_cast<double>(out.re[idx]), static_cast<double>(orig.real[idx]) * w,
+                        1e-4)
                 << label << " " << rows << "x" << cols << " i=" << i << " j=" << j;
-            ASSERT_NEAR(static_cast<double>(out.im[idx]), static_cast<double>(orig.imag[idx]) * w, 1e-4)
+            ASSERT_NEAR(static_cast<double>(out.im[idx]), static_cast<double>(orig.imag[idx]) * w,
+                        1e-4)
                 << label << " " << rows << "x" << cols << " i=" << i << " j=" << j;
         }
     }
@@ -237,14 +254,14 @@ TEST(FKFilterTest, DcPassesAndFZeroKNonZeroIsMuted) {
     ComplexSoA data(arena, rows * cols);
     std::fill_n(data.real, rows * cols, 1.0f);
     std::fill_n(data.imag, rows * cols, 0.0f);
-    FKParams params;  // band [-1500, 1500] contains v = 0
+    FKParams params; // band [-1500, 1500] contains v = 0
     apply_fk_filter(data, rows, cols, params);
 
-    EXPECT_FLOAT_EQ(data.real[0], 1.0f);                  // DC
-    EXPECT_NEAR(data.real[0 * cols + 1], 0.0f, 1e-4f);    // f=0, k!=0 -> v=0, muted
-    EXPECT_NEAR(data.real[0 * cols + 15], 0.0f, 1e-4f);   // f=0, k<0
-    EXPECT_FLOAT_EQ(data.real[3 * cols + 0], 1.0f);       // k=0, f!=0 -> passes
-    EXPECT_FLOAT_EQ(data.real[13 * cols + 0], 1.0f);      // k=0, f<0 -> passes
+    EXPECT_FLOAT_EQ(data.real[0], 1.0f);                // DC
+    EXPECT_NEAR(data.real[0 * cols + 1], 0.0f, 1e-4f);  // f=0, k!=0 -> v=0, muted
+    EXPECT_NEAR(data.real[0 * cols + 15], 0.0f, 1e-4f); // f=0, k<0
+    EXPECT_FLOAT_EQ(data.real[3 * cols + 0], 1.0f);     // k=0, f!=0 -> passes
+    EXPECT_FLOAT_EQ(data.real[13 * cols + 0], 1.0f);    // k=0, f<0 -> passes
 }
 
 TEST(FKFilterTest, MatchesDoubleReferenceAllShapesAndModes) {
@@ -294,8 +311,8 @@ TEST(FKFilterTest, HermitianSymmetryHoldsExactly) {
                         const size_t pi = (sh.rows - i) % sh.rows;
                         const size_t pj = (sh.cols - j) % sh.cols;
                         ASSERT_EQ(w[i * sh.cols + j], w[pi * sh.cols + pj])
-                            << sh.rows << "x" << sh.cols << " (" << i << "," << j << ") vs ("
-                            << pi << "," << pj << ")";
+                            << sh.rows << "x" << sh.cols << " (" << i << "," << j << ") vs (" << pi
+                            << "," << pj << ")";
                     }
                 }
             }
@@ -328,16 +345,17 @@ TEST(FKFilterTest, AsymmetricBandHonoursSignOfVelocity) {
 TEST(FKFilterTest, SymmetricBandMatchesAbsoluteVelocityFormula) {
     // With min == -max the signed band must reproduce the classic
     // sigmoid(|v| - vmax) mute.
-    const FKParams p;  // [-1500, 1500], taper 100
+    const FKParams p; // [-1500, 1500], taper 100
     const size_t rows = 64, cols = 100;
     const std::vector<float> w = weight_map(rows, cols, p);
     const double s = 10.0 / p.taper_width;
     for (size_t i = 0; i < rows; ++i) {
-        for (size_t j = 1; j < cols; ++j) {  // skip k = 0
+        for (size_t j = 1; j < cols; ++j) { // skip k = 0
             const double f = ref_signed_index(i, rows, 1.0 / (static_cast<double>(rows) * p.dt));
             const double k = ref_signed_index(j, cols, 1.0 / (static_cast<double>(cols) * p.dx));
             const double expected = ref_sigmoid((std::fabs(f / k) - p.mute_vel_max) * s);
-            ASSERT_NEAR(static_cast<double>(w[i * cols + j]), expected, 1e-4) << "i=" << i << " j=" << j;
+            ASSERT_NEAR(static_cast<double>(w[i * cols + j]), expected, 1e-4)
+                << "i=" << i << " j=" << j;
         }
     }
 }
@@ -375,20 +393,50 @@ TEST(FKFilterTest, ParameterValidationThrows) {
             << what;
     };
     FKParams p;
-    p = FKParams{}; p.taper_width = nan; expect_throw(p, "taper NaN");
-    p = FKParams{}; p.taper_width = 0.0; expect_throw(p, "taper 0");
-    p = FKParams{}; p.taper_width = -1.0; expect_throw(p, "taper negative");
-    p = FKParams{}; p.taper_width = inf; expect_throw(p, "taper inf");
-    p = FKParams{}; p.dt = 0.0; expect_throw(p, "dt 0");
-    p = FKParams{}; p.dt = -0.004; expect_throw(p, "dt negative");
-    p = FKParams{}; p.dt = nan; expect_throw(p, "dt NaN");
-    p = FKParams{}; p.dx = 0.0; expect_throw(p, "dx 0");
-    p = FKParams{}; p.dx = -25.0; expect_throw(p, "dx negative");
-    p = FKParams{}; p.dx = inf; expect_throw(p, "dx inf");
-    p = FKParams{}; p.mute_vel_min = 1500.0; p.mute_vel_max = 1500.0; expect_throw(p, "min == max");
-    p = FKParams{}; p.mute_vel_min = 2000.0; p.mute_vel_max = 1500.0; expect_throw(p, "min > max");
-    p = FKParams{}; p.mute_vel_min = nan; expect_throw(p, "min NaN");
-    p = FKParams{}; p.mute_vel_max = inf; expect_throw(p, "max inf");
+    p = FKParams{};
+    p.taper_width = nan;
+    expect_throw(p, "taper NaN");
+    p = FKParams{};
+    p.taper_width = 0.0;
+    expect_throw(p, "taper 0");
+    p = FKParams{};
+    p.taper_width = -1.0;
+    expect_throw(p, "taper negative");
+    p = FKParams{};
+    p.taper_width = inf;
+    expect_throw(p, "taper inf");
+    p = FKParams{};
+    p.dt = 0.0;
+    expect_throw(p, "dt 0");
+    p = FKParams{};
+    p.dt = -0.004;
+    expect_throw(p, "dt negative");
+    p = FKParams{};
+    p.dt = nan;
+    expect_throw(p, "dt NaN");
+    p = FKParams{};
+    p.dx = 0.0;
+    expect_throw(p, "dx 0");
+    p = FKParams{};
+    p.dx = -25.0;
+    expect_throw(p, "dx negative");
+    p = FKParams{};
+    p.dx = inf;
+    expect_throw(p, "dx inf");
+    p = FKParams{};
+    p.mute_vel_min = 1500.0;
+    p.mute_vel_max = 1500.0;
+    expect_throw(p, "min == max");
+    p = FKParams{};
+    p.mute_vel_min = 2000.0;
+    p.mute_vel_max = 1500.0;
+    expect_throw(p, "min > max");
+    p = FKParams{};
+    p.mute_vel_min = nan;
+    expect_throw(p, "min NaN");
+    p = FKParams{};
+    p.mute_vel_max = inf;
+    expect_throw(p, "max inf");
 
     // Data must not have been touched by rejected calls.
     for (size_t i = 0; i < rows * cols; ++i) {
@@ -445,11 +493,12 @@ TEST(FKFilterTest, FastMathClampsAndPropagatesNaN) {
         EXPECT_GT(out[i], 0.0f) << "exp(" << in[i] << ")";
         EXPECT_TRUE(std::isfinite(out[i])) << "exp(" << in[i] << ")";
     }
-    EXPECT_NEAR(out[0] / out[2], 1.0f, 1e-3f);          // exp(-100) saturates at exp(-87)
+    EXPECT_NEAR(out[0] / out[2], 1.0f, 1e-3f); // exp(-100) saturates at exp(-87)
     EXPECT_NEAR(out[3], 1.0f, 1e-5f);
-    EXPECT_NEAR(out[6] / out[5], 1.0f, 1e-3f);          // saturates at exp(88)
+    EXPECT_NEAR(out[6] / out[5], 1.0f, 1e-3f); // saturates at exp(88)
 
-    alignas(32) float nan_in[8] = {std::nanf(""), -1.0f, 1.0f, std::nanf(""), 0.0f, 0.0f, 0.0f, 0.0f};
+    alignas(32) float nan_in[8] = {std::nanf(""), -1.0f, 1.0f, std::nanf(""),
+                                   0.0f,          0.0f,  0.0f, 0.0f};
     probe_fast_sigmoid(nan_in, out);
     EXPECT_TRUE(std::isnan(out[0]));
     EXPECT_TRUE(std::isnan(out[3]));
@@ -466,7 +515,7 @@ TEST(FKFilterTest, FastMathClampsAndPropagatesNaN) {
 TEST(FKFilterScalarTest, WeightsMatchAvx2Within1e5) {
     const FKParams sym;
     const FKParams asym = asymmetric_params();
-    FKParams narrow = asym;       // sharp taper stresses the sigmoid slope
+    FKParams narrow = asym; // sharp taper stresses the sigmoid slope
     narrow.taper_width = 10.0;
     for (const Shape& sh : kShapes) {
         for (const FKParams& p : {sym, asym, narrow}) {

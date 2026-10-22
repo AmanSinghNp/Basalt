@@ -55,9 +55,7 @@ public:
                             std::vector<double>* latencies_ms = nullptr);
 
     struct WorkerBuffers {
-        WorkerBuffers(size_t max_elements,
-                      size_t home_node,
-                      bool numa_enabled,
+        WorkerBuffers(size_t max_elements, size_t home_node, bool numa_enabled,
                       MemoryPolicy memory_policy);
 
         /// `home_node` is the kernel NUMA node id used for binding (not a dense index).
@@ -77,8 +75,7 @@ private:
     /// Throws std::invalid_argument / std::runtime_error.
     static size_t validate_job(const BatchJob& job, size_t max_elements);
 
-    static void process_job(const BatchJob& job,
-                            WorkerBuffers& buffers,
+    static void process_job(const BatchJob& job, WorkerBuffers& buffers,
                             basalt::kernel::SimdMode simd_mode);
 
     WorkerBuffers& buffers_for_current_thread();

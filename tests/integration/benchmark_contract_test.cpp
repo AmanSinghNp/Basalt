@@ -38,20 +38,21 @@ TEST(BenchmarkContractTest, JsonStatsUseArrays) {
     const std::filesystem::path exe = benchmark_executable_path();
     ASSERT_TRUE(std::filesystem::exists(exe)) << "Missing benchmark executable: " << exe.string();
 
-    const std::filesystem::path output = std::filesystem::current_path() / "benchmark_contract_output.json";
+    const std::filesystem::path output =
+        std::filesystem::current_path() / "benchmark_contract_output.json";
     std::filesystem::remove(output);
 
     std::string command;
 #if defined(_WIN32)
-    command =
-        "cmd /c \"\"" + exe.string() + "\" --sizes 256 --threads 2 --simd avx2 --numa off "
-        "--memory-policy bind-worker-buffers --shots 1 --warmup 0 --json-out \"" +
-        output.string() + "\"\"";
+    command = "cmd /c \"\"" + exe.string() +
+              "\" --sizes 256 --threads 2 --simd avx2 --numa off "
+              "--memory-policy bind-worker-buffers --shots 1 --warmup 0 --json-out \"" +
+              output.string() + "\"\"";
 #else
-    command =
-        "\"" + exe.string() + "\" --sizes 256 --threads 2 --simd avx2 --numa off "
-        "--memory-policy bind-worker-buffers --shots 1 --warmup 0 --json-out \"" +
-        output.string() + "\"";
+    command = "\"" + exe.string() +
+              "\" --sizes 256 --threads 2 --simd avx2 --numa off "
+              "--memory-policy bind-worker-buffers --shots 1 --warmup 0 --json-out \"" +
+              output.string() + "\"";
 #endif
     ASSERT_EQ(std::system(command.c_str()), 0) << command;
     ASSERT_TRUE(std::filesystem::exists(output));
@@ -100,7 +101,8 @@ TEST(BenchmarkContractTest, HelpExitsZero) {
 #else
 
 TEST(BenchmarkContractTest, JsonStatsUseArrays) {
-    GTEST_SKIP() << "basalt_bench is not configured (BASALT_BENCH_PATH is not defined); benchmarks are disabled";
+    GTEST_SKIP() << "basalt_bench is not configured (BASALT_BENCH_PATH is not defined); benchmarks "
+                    "are disabled";
 }
 
 #endif // BASALT_BENCH_PATH

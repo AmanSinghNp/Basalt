@@ -79,7 +79,8 @@ void mmap_deallocate(void* ptr) {
         return;
     }
     MmapHeader header;
-    std::memcpy(&header, static_cast<const unsigned char*>(ptr) - sizeof(MmapHeader), sizeof(header));
+    std::memcpy(&header, static_cast<const unsigned char*>(ptr) - sizeof(MmapHeader),
+                sizeof(header));
     if (munmap(header.base, header.mapping_size) != 0) {
         g_munmap_failures.fetch_add(1, std::memory_order_relaxed);
         return;
@@ -101,15 +102,8 @@ bool mbind_pages(void* page_aligned_address, size_t length, size_t node, bool mo
     const unsigned long maxnode = static_cast<unsigned long>(nodemask.size() * kBitsPerWord + 1);
     const unsigned long flags = move_pages ? static_cast<unsigned long>(MPOL_MF_MOVE) : 0UL;
 
-    const long result = syscall(
-        SYS_mbind,
-        page_aligned_address,
-        length,
-        MPOL_BIND,
-        nodemask.data(),
-        maxnode,
-        flags
-    );
+    const long result = syscall(SYS_mbind, page_aligned_address, length, MPOL_BIND, nodemask.data(),
+                                maxnode, flags);
     return result == 0;
 #else
     (void)page_aligned_address;
@@ -132,15 +126,14 @@ bool bind_range_inward(void* ptr, size_t size, size_t node, bool move_pages) {
     if (last <= first) {
         return false;
     }
-    return mbind_pages(reinterpret_cast<void*>(first), static_cast<size_t>(last - first), node, move_pages);
+    return mbind_pages(reinterpret_cast<void*>(first), static_cast<size_t>(last - first), node,
+                       move_pages);
 }
 #endif
 
 } // namespace
 
-NumaMemoryBlock allocate_numa_local(size_t size,
-                                    size_t node,
-                                    bool numa_enabled,
+NumaMemoryBlock allocate_numa_local(size_t size, size_t node, bool numa_enabled,
                                     MemoryPolicy policy) {
     NumaMemoryBlock block;
     block.size = size;
@@ -155,13 +148,15 @@ NumaMemoryBlock allocate_numa_local(size_t size,
             throw std::bad_alloc();
         }
         const size_t mapping_size = (size + overhead + page_size - 1) & ~(page_size - 1);
-        void* mapping = mmap(nullptr, mapping_size, PROT_READ | PROT_WRITE,
-                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        void* mapping =
+            mmap(nullptr, mapping_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (mapping != MAP_FAILED) {
             const uintptr_t raw = reinterpret_cast<uintptr_t>(mapping) + sizeof(MmapHeader);
-            const uintptr_t aligned = (raw + (kArenaAlignment - 1)) & ~static_cast<uintptr_t>(kArenaAlignment - 1);
+            const uintptr_t aligned =
+                (raw + (kArenaAlignment - 1)) & ~static_cast<uintptr_t>(kArenaAlignment - 1);
             const MmapHeader header{mapping, mapping_size};
-            std::memcpy(reinterpret_cast<void*>(aligned - sizeof(MmapHeader)), &header, sizeof(header));
+            std::memcpy(reinterpret_cast<void*>(aligned - sizeof(MmapHeader)), &header,
+                        sizeof(header));
 
             block.ptr = reinterpret_cast<void*>(aligned);
             block.deallocator = &mmap_deallocate;
@@ -182,13 +177,10 @@ NumaMemoryBlock allocate_numa_local(size_t size,
     return block;
 }
 
-bool bind_existing_range_to_node(const void* ptr,
-                                 size_t size,
-                                 size_t node,
-                                 bool numa_enabled,
-                                 MemoryPolicy policy,
-                                 bool move_existing_pages) {
-    if (!numa_enabled || policy != MemoryPolicy::BindInputsIfPossible || ptr == nullptr || size == 0) {
+bool bind_existing_range_to_node(const void* ptr, size_t size, size_t node, bool numa_enabled,
+                                 MemoryPolicy policy, bool move_existing_pages) {
+    if (!numa_enabled || policy != MemoryPolicy::BindInputsIfPossible || ptr == nullptr ||
+        size == 0) {
         return false;
     }
 
@@ -212,7 +204,8 @@ NumaMemoryDebugStats numa_memory_debug_stats() noexcept {
     stats.mapped_blocks_released = released;
     stats.munmap_failures = g_munmap_failures.load(std::memory_order_relaxed);
     const uint64_t allocated_bytes = g_mapped_bytes_allocated.load(std::memory_order_relaxed);
-    stats.mapped_bytes_live = allocated_bytes >= released_bytes ? allocated_bytes - released_bytes : 0;
+    stats.mapped_bytes_live =
+        allocated_bytes >= released_bytes ? allocated_bytes - released_bytes : 0;
 #endif
     return stats;
 }

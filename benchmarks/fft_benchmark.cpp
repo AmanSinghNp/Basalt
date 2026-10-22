@@ -1,13 +1,13 @@
-#include <iostream>
-#include <vector>
-#include <chrono>
-#include <cstring>
-#include <random>
-#include <cmath>
-#include "basalt/kernel/cpu_state.hpp"
-#include "basalt/kernel/fft_avx.hpp"
-#include "basalt/kernel/fft2d.hpp"
 #include "basalt/kernel/complex_soa.hpp"
+#include "basalt/kernel/cpu_state.hpp"
+#include "basalt/kernel/fft2d.hpp"
+#include "basalt/kernel/fft_avx.hpp"
+#include <chrono>
+#include <cmath>
+#include <cstring>
+#include <iostream>
+#include <random>
+#include <vector>
 
 using namespace basalt::kernel;
 
@@ -80,9 +80,8 @@ static bool benchmark_fft(size_t n, int warmup, int iterations) {
     const double avg_time_sec = elapsed_sec / iterations;
     const double throughput_mitems = (static_cast<double>(n) * iterations) / elapsed_sec / 1e6;
 
-    std::cout << "FFT Size " << n << ": "
-              << avg_time_sec * 1e6 << " us/op, "
-              << throughput_mitems << " MItems/s" << std::endl;
+    std::cout << "FFT Size " << n << ": " << avg_time_sec * 1e6 << " us/op, " << throughput_mitems
+              << " MItems/s" << std::endl;
     return true;
 }
 
@@ -119,8 +118,7 @@ static bool benchmark_fft2d(size_t rows, size_t cols, int warmup, int iterations
     const double avg_ms = elapsed_sec * 1e3 / iterations;
     const double throughput_mitems = (static_cast<double>(total) * iterations) / elapsed_sec / 1e6;
 
-    std::cout << "2D FFT " << rows << "x" << cols << ": "
-              << avg_ms << " ms/op, "
+    std::cout << "2D FFT " << rows << "x" << cols << ": " << avg_ms << " ms/op, "
               << throughput_mitems << " MItems/s" << std::endl;
     return true;
 }

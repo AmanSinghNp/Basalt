@@ -14,8 +14,6 @@ namespace basalt::kernel {
 ///     overlap (in-place transpose is not supported, src == dst is rejected).
 ///   - rows*cols*sizeof(float) does not overflow size_t.
 /// rows == 0 or cols == 0 is a no-op (pointers are not inspected).
-void transpose_tiled(const float* src, float* dst,
-                     size_t rows, size_t cols,
-                     size_t tile_size = 8);
+void transpose_tiled(const float* src, float* dst, size_t rows, size_t cols, size_t tile_size = 8);
 
 } // namespace basalt::kernel

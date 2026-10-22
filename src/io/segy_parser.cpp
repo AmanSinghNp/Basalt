@@ -12,7 +12,8 @@ namespace basalt::io {
 namespace {
 
 constexpr size_t kFileHeaderBytes = SEGY_TEXT_HEADER_SIZE + SEGY_BINARY_HEADER_SIZE; // 3600
-constexpr uint32_t kByteOrderMarkerLittle = 0x04030201u; // 0x01020304 as seen by a big-endian reader
+constexpr uint32_t kByteOrderMarkerLittle =
+    0x04030201u; // 0x01020304 as seen by a big-endian reader
 
 [[noreturn]] void fail(const std::string& what) {
     throw SegyFormatError(what);
@@ -79,8 +80,10 @@ float double_to_float(double d) {
         return std::numeric_limits<float>::quiet_NaN();
     }
     // Out-of-range double to float conversion is undefined, so saturate.
-    if (d > static_cast<double>(FLT_MAX)) return std::numeric_limits<float>::infinity();
-    if (d < -static_cast<double>(FLT_MAX)) return -std::numeric_limits<float>::infinity();
+    if (d > static_cast<double>(FLT_MAX))
+        return std::numeric_limits<float>::infinity();
+    if (d < -static_cast<double>(FLT_MAX))
+        return -std::numeric_limits<float>::infinity();
     return static_cast<float>(d);
 }
 
@@ -99,8 +102,7 @@ bool contains_end_text(const uint8_t* p, size_t n) {
 // In-place conversion helper: swaps only when file order differs from host.
 struct Fixer {
     bool swap;
-    template <typename T>
-    void operator()(T& v) const {
+    template <typename T> void operator()(T& v) const {
         if (swap) {
             v = byte_swap(v);
         }
@@ -119,20 +121,34 @@ struct Fixer {
 
 size_t segy_bytes_per_sample(uint16_t fmt) {
     switch (fmt) {
-        case 1:  return 4; // IBM float
-        case 2:  return 4; // int32
-        case 3:  return 2; // int16
-        case 5:  return 4; // IEEE float
-        case 6:  return 8; // IEEE double
-        case 7:  return 3; // int24
-        case 8:  return 1; // int8
-        case 9:  return 8; // int64
-        case 10: return 4; // uint32
-        case 11: return 2; // uint16
-        case 12: return 8; // uint64
-        case 15: return 3; // uint24
-        case 16: return 1; // uint8
-        default: return 0; // 4 (obsolete fixed point with gain) and unknown codes
+    case 1:
+        return 4; // IBM float
+    case 2:
+        return 4; // int32
+    case 3:
+        return 2; // int16
+    case 5:
+        return 4; // IEEE float
+    case 6:
+        return 8; // IEEE double
+    case 7:
+        return 3; // int24
+    case 8:
+        return 1; // int8
+    case 9:
+        return 8; // int64
+    case 10:
+        return 4; // uint32
+    case 11:
+        return 2; // uint16
+    case 12:
+        return 8; // uint64
+    case 15:
+        return 3; // uint24
+    case 16:
+        return 1; // uint8
+    default:
+        return 0; // 4 (obsolete fixed point with gain) and unknown codes
     }
 }
 
@@ -338,9 +354,8 @@ SegyLayout describe_segy(const uint8_t* data, size_t size) {
 
     // Rev 2 additional trace headers change the trace stride; not supported.
     if (lay.revision_major >= 2) {
-        const uint32_t extra =
-            load_u32(bin + offsetof(SegyBinaryHeader, max_additional_trace_headers_raw),
-                     lay.little_endian);
+        const uint32_t extra = load_u32(
+            bin + offsetof(SegyBinaryHeader, max_additional_trace_headers_raw), lay.little_endian);
         if (extra != 0) {
             fail("SEG-Y additional trace headers are not supported");
         }
@@ -352,8 +367,9 @@ SegyLayout describe_segy(const uint8_t* data, size_t size) {
         const int16_t n_ext = b.num_ext_text_headers;
         if (n_ext >= 0) {
             lay.n_ext_text_headers = static_cast<size_t>(n_ext);
-            pos = checked_add(pos, checked_mul(static_cast<uint64_t>(n_ext),
-                                               SEGY_TEXT_HEADER_SIZE, "extended header bytes"),
+            pos = checked_add(pos,
+                              checked_mul(static_cast<uint64_t>(n_ext), SEGY_TEXT_HEADER_SIZE,
+                                          "extended header bytes"),
                               "data offset");
             if (pos > size) {
                 fail("SEG-Y extended textual headers truncated: need " + std::to_string(pos) +
@@ -396,13 +412,13 @@ SegyLayout describe_segy(const uint8_t* data, size_t size) {
     // Rev 2 trailer stanzas follow the last trace.
     uint64_t trailer = 0;
     if (lay.revision_major >= 2 && b.num_trailer_stanzas > 0) {
-        trailer = checked_mul(static_cast<uint64_t>(b.num_trailer_stanzas),
-                              SEGY_TEXT_HEADER_SIZE, "trailer bytes");
+        trailer = checked_mul(static_cast<uint64_t>(b.num_trailer_stanzas), SEGY_TEXT_HEADER_SIZE,
+                              "trailer bytes");
     }
 
-    const uint64_t stride = checked_add(
-        SEGY_TRACE_HEADER_SIZE,
-        checked_mul(ns, lay.bytes_per_sample, "trace payload bytes"), "trace stride");
+    const uint64_t stride =
+        checked_add(SEGY_TRACE_HEADER_SIZE,
+                    checked_mul(ns, lay.bytes_per_sample, "trace payload bytes"), "trace stride");
 
     const uint64_t remaining = size - lay.data_offset;
     if (trailer > remaining) {
@@ -453,14 +469,14 @@ const uint8_t* locate_trace(const uint8_t* data, size_t size, const SegyLayout& 
 
 } // namespace
 
-SegyTraceHeader read_trace_header(const uint8_t* data, size_t size,
-                                  const SegyLayout& layout, size_t i) {
+SegyTraceHeader read_trace_header(const uint8_t* data, size_t size, const SegyLayout& layout,
+                                  size_t i) {
     const uint8_t* p = locate_trace(data, size, layout, i);
     return parse_trace_header(p, SEGY_TRACE_HEADER_SIZE, layout.little_endian);
 }
 
-void read_trace_samples(const uint8_t* data, size_t size, const SegyLayout& layout,
-                        size_t i, float* out, size_t out_capacity) {
+void read_trace_samples(const uint8_t* data, size_t size, const SegyLayout& layout, size_t i,
+                        float* out, size_t out_capacity) {
     const uint8_t* p = locate_trace(data, size, layout, i);
     const size_t ns = layout.samples_per_trace;
     if (out_capacity < ns || (ns != 0 && out == nullptr)) {
@@ -471,86 +487,86 @@ void read_trace_samples(const uint8_t* data, size_t size, const SegyLayout& layo
     const size_t bps = layout.bytes_per_sample;
 
     switch (layout.data_sample_format) {
-        case 1:
-            for (size_t k = 0; k < ns; ++k) {
-                out[k] = utils::ibm_to_ieee(load_u32(s + k * bps, le));
-            }
-            break;
-        case 2:
-            for (size_t k = 0; k < ns; ++k) {
-                out[k] = static_cast<float>(static_cast<int32_t>(load_u32(s + k * bps, le)));
-            }
-            break;
-        case 3:
-            for (size_t k = 0; k < ns; ++k) {
-                out[k] = static_cast<float>(static_cast<int16_t>(load_u16(s + k * bps, le)));
-            }
-            break;
-        case 5:
-            for (size_t k = 0; k < ns; ++k) {
-                const uint32_t bits = load_u32(s + k * bps, le);
-                float f;
-                std::memcpy(&f, &bits, sizeof f);
-                out[k] = f;
-            }
-            break;
-        case 6:
-            for (size_t k = 0; k < ns; ++k) {
-                const uint64_t bits = load_u64(s + k * bps, le);
-                double d;
-                std::memcpy(&d, &bits, sizeof d);
-                out[k] = double_to_float(d);
-            }
-            break;
-        case 7:
-            for (size_t k = 0; k < ns; ++k) {
-                const uint32_t v = load_u24(s + k * bps, le);
-                out[k] = static_cast<float>(static_cast<int32_t>(v ^ 0x800000u) - 0x800000);
-            }
-            break;
-        case 8:
-            for (size_t k = 0; k < ns; ++k) {
-                out[k] = static_cast<float>(static_cast<int8_t>(s[k]));
-            }
-            break;
-        case 9:
-            for (size_t k = 0; k < ns; ++k) {
-                out[k] = static_cast<float>(static_cast<int64_t>(load_u64(s + k * bps, le)));
-            }
-            break;
-        case 10:
-            for (size_t k = 0; k < ns; ++k) {
-                out[k] = static_cast<float>(load_u32(s + k * bps, le));
-            }
-            break;
-        case 11:
-            for (size_t k = 0; k < ns; ++k) {
-                out[k] = static_cast<float>(load_u16(s + k * bps, le));
-            }
-            break;
-        case 12:
-            for (size_t k = 0; k < ns; ++k) {
-                out[k] = static_cast<float>(load_u64(s + k * bps, le));
-            }
-            break;
-        case 15:
-            for (size_t k = 0; k < ns; ++k) {
-                out[k] = static_cast<float>(load_u24(s + k * bps, le));
-            }
-            break;
-        case 16:
-            for (size_t k = 0; k < ns; ++k) {
-                out[k] = static_cast<float>(s[k]);
-            }
-            break;
-        default:
-            fail("SEG-Y unsupported data sample format code " +
-                 std::to_string(layout.data_sample_format));
+    case 1:
+        for (size_t k = 0; k < ns; ++k) {
+            out[k] = utils::ibm_to_ieee(load_u32(s + k * bps, le));
+        }
+        break;
+    case 2:
+        for (size_t k = 0; k < ns; ++k) {
+            out[k] = static_cast<float>(static_cast<int32_t>(load_u32(s + k * bps, le)));
+        }
+        break;
+    case 3:
+        for (size_t k = 0; k < ns; ++k) {
+            out[k] = static_cast<float>(static_cast<int16_t>(load_u16(s + k * bps, le)));
+        }
+        break;
+    case 5:
+        for (size_t k = 0; k < ns; ++k) {
+            const uint32_t bits = load_u32(s + k * bps, le);
+            float f;
+            std::memcpy(&f, &bits, sizeof f);
+            out[k] = f;
+        }
+        break;
+    case 6:
+        for (size_t k = 0; k < ns; ++k) {
+            const uint64_t bits = load_u64(s + k * bps, le);
+            double d;
+            std::memcpy(&d, &bits, sizeof d);
+            out[k] = double_to_float(d);
+        }
+        break;
+    case 7:
+        for (size_t k = 0; k < ns; ++k) {
+            const uint32_t v = load_u24(s + k * bps, le);
+            out[k] = static_cast<float>(static_cast<int32_t>(v ^ 0x800000u) - 0x800000);
+        }
+        break;
+    case 8:
+        for (size_t k = 0; k < ns; ++k) {
+            out[k] = static_cast<float>(static_cast<int8_t>(s[k]));
+        }
+        break;
+    case 9:
+        for (size_t k = 0; k < ns; ++k) {
+            out[k] = static_cast<float>(static_cast<int64_t>(load_u64(s + k * bps, le)));
+        }
+        break;
+    case 10:
+        for (size_t k = 0; k < ns; ++k) {
+            out[k] = static_cast<float>(load_u32(s + k * bps, le));
+        }
+        break;
+    case 11:
+        for (size_t k = 0; k < ns; ++k) {
+            out[k] = static_cast<float>(load_u16(s + k * bps, le));
+        }
+        break;
+    case 12:
+        for (size_t k = 0; k < ns; ++k) {
+            out[k] = static_cast<float>(load_u64(s + k * bps, le));
+        }
+        break;
+    case 15:
+        for (size_t k = 0; k < ns; ++k) {
+            out[k] = static_cast<float>(load_u24(s + k * bps, le));
+        }
+        break;
+    case 16:
+        for (size_t k = 0; k < ns; ++k) {
+            out[k] = static_cast<float>(s[k]);
+        }
+        break;
+    default:
+        fail("SEG-Y unsupported data sample format code " +
+             std::to_string(layout.data_sample_format));
     }
 }
 
-std::vector<float> read_trace_samples(const uint8_t* data, size_t size,
-                                      const SegyLayout& layout, size_t i) {
+std::vector<float> read_trace_samples(const uint8_t* data, size_t size, const SegyLayout& layout,
+                                      size_t i) {
     std::vector<float> out(layout.samples_per_trace);
     read_trace_samples(data, size, layout, i, out.data(), out.size());
     return out;

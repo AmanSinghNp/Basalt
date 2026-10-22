@@ -1,13 +1,13 @@
 #include "basalt/io/segy_parser.hpp"
 #include "basalt/io/segy_writer.hpp"
 #include "basalt/segy_format.hpp"
-#include <gtest/gtest.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <gtest/gtest.h>
 #include <iterator>
 #include <random>
 #include <string>
@@ -54,14 +54,18 @@ Bytes build(const Spec& s) {
 
     std::mt19937 rng(1234);
     // Random text header, random ext headers, random trace headers, random trailer.
-    for (size_t i = 0; i < 3200; ++i) b[i] = static_cast<uint8_t>(rng());
-    for (size_t i = 0; i < s.ext_records * 3200; ++i) b[3600 + i] = static_cast<uint8_t>(rng());
+    for (size_t i = 0; i < 3200; ++i)
+        b[i] = static_cast<uint8_t>(rng());
+    for (size_t i = 0; i < s.ext_records * 3200; ++i)
+        b[3600 + i] = static_cast<uint8_t>(rng());
     for (size_t t = 0; t < s.traces; ++t) {
         const size_t off = 3600 + s.ext_records * 3200 + t * stride;
-        for (size_t i = 0; i < 240; ++i) b[off + i] = static_cast<uint8_t>(rng());
+        for (size_t i = 0; i < 240; ++i)
+            b[off + i] = static_cast<uint8_t>(rng());
     }
     const size_t trailer_off = 3600 + s.ext_records * 3200 + s.traces * stride;
-    for (size_t i = 0; i < s.trailer_records * 3200; ++i) b[trailer_off + i] = static_cast<uint8_t>(rng());
+    for (size_t i = 0; i < s.trailer_records * 3200; ++i)
+        b[trailer_off + i] = static_cast<uint8_t>(rng());
 
     const size_t bin = 3200;
     put(b, bin + 16, 2000, 2, s.le);
@@ -94,7 +98,9 @@ public:
         std::error_code ec;
         fs::remove_all(m_path, ec);
     }
-    [[nodiscard]] std::string file(const std::string& name) const { return (m_path / name).string(); }
+    [[nodiscard]] std::string file(const std::string& name) const {
+        return (m_path / name).string();
+    }
     [[nodiscard]] const fs::path& path() const { return m_path; }
 
 private:
@@ -110,7 +116,8 @@ std::vector<float> make_samples(size_t traces, size_t ns) {
     std::mt19937 rng(99);
     std::uniform_real_distribution<float> dist(-1000.0f, 1000.0f);
     std::vector<float> v(traces * ns);
-    for (float& x : v) x = dist(rng);
+    for (float& x : v)
+        x = dist(rng);
     // Include some awkward values.
     if (v.size() > 4) {
         v[0] = 0.0f;
@@ -141,7 +148,8 @@ Bytes round_trip(const Bytes& src, const std::vector<float>& samples, const Temp
     EXPECT_EQ(lay.little_endian, in.little_endian);
     EXPECT_EQ(lay.trailer_bytes, in.trailer_bytes);
     EXPECT_EQ(dir_entries(dir.path()), 1u) << "temporary file left behind";
-    if (out_layout) *out_layout = lay;
+    if (out_layout)
+        *out_layout = lay;
     return out;
 }
 
@@ -149,7 +157,8 @@ void expect_headers_equal(const Bytes& src, const SegyLayout& in, const Bytes& o
                           const SegyLayout& lay, bool format_patched) {
     ASSERT_EQ(in.data_offset, lay.data_offset);
     for (size_t i = 0; i < in.data_offset; ++i) {
-        if (format_patched && (i == 3224 || i == 3225)) continue;
+        if (format_patched && (i == 3224 || i == 3225))
+            continue;
         ASSERT_EQ(src[i], out[i]) << "file header byte " << i;
     }
     for (size_t t = 0; t < in.n_traces; ++t) {
@@ -204,9 +213,9 @@ TEST(SegyWriterTest, IeeeLittleEndianRev2RoundTripIsExact) {
     const size_t off = lay.data_offset + lay.trace_stride + 240;
     uint32_t bits;
     std::memcpy(&bits, &samples[s.ns], 4);
-    const uint32_t got = static_cast<uint32_t>(out[off]) | (static_cast<uint32_t>(out[off + 1]) << 8) |
-                         (static_cast<uint32_t>(out[off + 2]) << 16) |
-                         (static_cast<uint32_t>(out[off + 3]) << 24);
+    const uint32_t got =
+        static_cast<uint32_t>(out[off]) | (static_cast<uint32_t>(out[off + 1]) << 8) |
+        (static_cast<uint32_t>(out[off + 2]) << 16) | (static_cast<uint32_t>(out[off + 3]) << 24);
     EXPECT_EQ(got, bits);
     for (size_t t = 0; t < s.traces; ++t) {
         const auto back = read_trace_samples(out.data(), out.size(), lay, t);
@@ -335,14 +344,17 @@ TEST(SegyWriterTest, RejectsMisuse) {
     TempDir dir;
     const Bytes src = build(Spec{});
     const SegyLayout in = describe_segy(src.data(), src.size());
-    EXPECT_THROW(SegyWriter(dir.file("a.segy"), src.data(), in.data_offset - 1, in), SegyWriteError);
+    EXPECT_THROW(SegyWriter(dir.file("a.segy"), src.data(), in.data_offset - 1, in),
+                 SegyWriteError);
     EXPECT_THROW(SegyWriter(dir.file("a.segy"), nullptr, in.data_offset, in), SegyWriteError);
     // Destination directory does not exist.
-    EXPECT_THROW(SegyWriter(dir.file("nodir/a.segy"), src.data(), in.data_offset, in), SegyWriteError);
+    EXPECT_THROW(SegyWriter(dir.file("nodir/a.segy"), src.data(), in.data_offset, in),
+                 SegyWriteError);
     // Too many traces.
     SegyWriter w(dir.file("a.segy"), src.data(), in.data_offset, in);
     const std::vector<float> trace(in.samples_per_trace, 0.0f);
-    for (size_t i = 0; i < in.n_traces; ++i) w.write_trace(src.data() + in.data_offset, trace.data());
+    for (size_t i = 0; i < in.n_traces; ++i)
+        w.write_trace(src.data() + in.data_offset, trace.data());
     EXPECT_THROW(w.write_trace(src.data() + in.data_offset, trace.data()), SegyWriteError);
     // Source buffer truncated.
     EXPECT_THROW(write_segy_like(dir.file("b.segy"), src.data(), src.size() - 1, in,

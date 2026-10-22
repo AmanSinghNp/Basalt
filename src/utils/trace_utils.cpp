@@ -11,7 +11,7 @@ bool is_zero_trace(const float* samples, size_t count, float epsilon) {
         // Written as !(<=) so a NaN sample counts as non-zero (NaN compares
         // false with everything, which used to make all-NaN traces look blank).
         if (!(std::fabs(samples[i]) <= epsilon)) {
-            return false;  // Early exit on first non-zero (or NaN) sample
+            return false; // Early exit on first non-zero (or NaN) sample
         }
     }
     return true;

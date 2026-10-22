@@ -1,9 +1,9 @@
 #include "basalt/arena.hpp"
 #include "basalt/kernel/complex_soa.hpp"
-#include <gtest/gtest.h>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <gtest/gtest.h>
 #include <limits>
 #include <new>
 #include <stdexcept>
@@ -21,9 +21,9 @@ TEST(ArenaTest, ResetWorks) {
     basalt::MemoryArena arena(1024);
     void* ptr1 = arena.allocate(512);
     EXPECT_NE(ptr1, nullptr);
-    
+
     arena.reset();
-    
+
     // Should be able to allocate again from start
     void* ptr2 = arena.allocate(512);
     EXPECT_NE(ptr2, nullptr);
@@ -31,17 +31,17 @@ TEST(ArenaTest, ResetWorks) {
 
 TEST(ArenaTest, AllocationAlignment64) {
     basalt::MemoryArena arena(4096);
-    
+
     // Allocate with default 64-byte alignment
     void* ptr1 = arena.allocate(100);
     EXPECT_NE(ptr1, nullptr);
     EXPECT_EQ(reinterpret_cast<uintptr_t>(ptr1) % 64, 0);
-    
+
     // Allocate again - should still be 64-byte aligned
     void* ptr2 = arena.allocate(100);
     EXPECT_NE(ptr2, nullptr);
     EXPECT_EQ(reinterpret_cast<uintptr_t>(ptr2) % 64, 0);
-    
+
     // Allocate with 32-byte alignment
     void* ptr3 = arena.allocate(100, 32);
     EXPECT_NE(ptr3, nullptr);
@@ -53,11 +53,11 @@ TEST(ArenaTest, OverflowReturnsNullptr) {
     size_t alloc_size = 200;
     size_t capacity = alloc_size + basalt::MemoryArena::kAliasPadding + 10;
     basalt::MemoryArena arena(capacity);
-    
+
     // First allocation succeeds
     void* ptr1 = arena.allocate(alloc_size);
     EXPECT_NE(ptr1, nullptr);
-    
+
     // Second allocation should fail — not enough space
     void* ptr2 = arena.allocate(alloc_size);
     EXPECT_EQ(ptr2, nullptr);
@@ -67,7 +67,7 @@ TEST(ArenaTest, ExactCapacityAllocation) {
     // Arena size must include the alias padding
     constexpr size_t alloc_size = 64;
     basalt::MemoryArena arena(alloc_size + basalt::MemoryArena::kAliasPadding);
-    
+
     void* ptr = arena.allocate(alloc_size);
     EXPECT_NE(ptr, nullptr);
     EXPECT_EQ(reinterpret_cast<uintptr_t>(ptr) % 64, 0);
@@ -78,13 +78,13 @@ TEST(ArenaTest, CapacityIntrospection) {
     EXPECT_EQ(arena.total_size(), 4096u);
     EXPECT_EQ(arena.bytes_used(), 0u);
     EXPECT_EQ(arena.bytes_remaining(), 4096u);
-    
+
     void* p = arena.allocate(100);
     EXPECT_NE(p, nullptr);
     EXPECT_GT(arena.bytes_used(), 0u);
     EXPECT_LT(arena.bytes_remaining(), 4096u);
     EXPECT_EQ(arena.bytes_used() + arena.bytes_remaining(), arena.total_size());
-    
+
     arena.reset();
     EXPECT_EQ(arena.bytes_used(), 0u);
     EXPECT_EQ(arena.bytes_remaining(), 4096u);
@@ -92,12 +92,12 @@ TEST(ArenaTest, CapacityIntrospection) {
 
 TEST(ArenaTest, TypedAllocation) {
     basalt::MemoryArena arena(4096);
-    
+
     // Allocate an array of 16 floats (64 bytes = 1 cache line)
     float* floats = arena.allocate_array<float>(16);
     EXPECT_NE(floats, nullptr);
     EXPECT_EQ(reinterpret_cast<uintptr_t>(floats) % 64, 0);
-    
+
     // Write and read back to verify memory is usable
     for (int i = 0; i < 16; ++i) {
         floats[i] = static_cast<float>(i) * 1.5f;
@@ -113,7 +113,7 @@ TEST(ArenaTest, StressMultipleAlignedAllocations) {
     constexpr size_t ALLOC_SIZE = 100;
     // Account for padding in total size
     basalt::MemoryArena arena(NUM_ALLOCS * (256 + basalt::MemoryArena::kAliasPadding));
-    
+
     void* ptrs[NUM_ALLOCS];
     for (size_t i = 0; i < NUM_ALLOCS; ++i) {
         ptrs[i] = arena.allocate(ALLOC_SIZE);
@@ -121,30 +121,29 @@ TEST(ArenaTest, StressMultipleAlignedAllocations) {
         EXPECT_EQ(reinterpret_cast<uintptr_t>(ptrs[i]) % 64, 0)
             << "Allocation " << i << " is not 64-byte aligned";
     }
-    
+
     // Verify all pointers are distinct
     for (size_t i = 0; i < NUM_ALLOCS; ++i) {
         for (size_t j = i + 1; j < NUM_ALLOCS; ++j) {
-            EXPECT_NE(ptrs[i], ptrs[j])
-                << "Pointers " << i << " and " << j << " are identical";
+            EXPECT_NE(ptrs[i], ptrs[j]) << "Pointers " << i << " and " << j << " are identical";
         }
     }
 }
 
 TEST(ArenaTest, ResetAndReuseAlignment) {
     basalt::MemoryArena arena(4096);
-    
+
     void* ptr_before = arena.allocate(128);
     EXPECT_NE(ptr_before, nullptr);
     EXPECT_EQ(reinterpret_cast<uintptr_t>(ptr_before) % 64, 0);
-    
+
     arena.reset();
-    
+
     // After reset, first allocation should return same base (or at least be aligned)
     void* ptr_after = arena.allocate(128);
     EXPECT_NE(ptr_after, nullptr);
     EXPECT_EQ(reinterpret_cast<uintptr_t>(ptr_after) % 64, 0);
-    EXPECT_EQ(ptr_before, ptr_after);  // Should reuse same memory
+    EXPECT_EQ(ptr_before, ptr_after); // Should reuse same memory
 }
 
 // --- mark / rewind / ArenaScope ---
@@ -197,7 +196,7 @@ TEST(ArenaTest, RewindWithInvalidMarkThrows) {
     // Beyond the current offset: not a previous mark.
     EXPECT_THROW(arena.rewind(used + 1), std::invalid_argument);
     EXPECT_THROW(arena.rewind(std::numeric_limits<size_t>::max()), std::invalid_argument);
-    EXPECT_EQ(arena.bytes_used(), used);  // failed rewind changes nothing
+    EXPECT_EQ(arena.bytes_used(), used); // failed rewind changes nothing
 
     // A mark taken before reset() is invalid after it.
     const size_t high = arena.mark();
@@ -278,9 +277,7 @@ TEST(ArenaTest, ArenaScopeWithNoAllocationsIsNoOp) {
     basalt::MemoryArena arena(1024);
     ASSERT_NE(arena.allocate(32), nullptr);
     const size_t used = arena.bytes_used();
-    {
-        basalt::ArenaScope scope(arena);
-    }
+    { basalt::ArenaScope scope(arena); }
     EXPECT_EQ(arena.bytes_used(), used);
 }
 
@@ -303,7 +300,6 @@ TEST(ArenaTest, ArenaScopeSurvivesResetInsideScope) {
     }
     EXPECT_EQ(arena.bytes_used(), 0u);
 }
-
 
 // --- Overflow / validation regressions ---
 
@@ -447,7 +443,7 @@ void counting_free(void* p) {
     g_last_freed = p;
     std::free(p);
 }
-}
+} // namespace
 
 TEST(ArenaTest, MoveConstructorTransfersOwnership) {
     basalt::MemoryArena a(4096);
@@ -478,12 +474,12 @@ TEST(ArenaTest, MoveAssignmentFreesOldBlockAndTransfers) {
         basalt::MemoryArena a(raw1, 1024, &counting_free);
         basalt::MemoryArena b(raw2, 2048, &counting_free);
         a = std::move(b);
-        EXPECT_EQ(g_dealloc_calls, 1);           // a's previous block released
+        EXPECT_EQ(g_dealloc_calls, 1); // a's previous block released
         EXPECT_EQ(g_last_freed, raw1);
         EXPECT_EQ(a.total_size(), 2048u);
         EXPECT_EQ(b.total_size(), 0u);
     }
-    EXPECT_EQ(g_dealloc_calls, 2);               // raw2 freed exactly once by a
+    EXPECT_EQ(g_dealloc_calls, 2); // raw2 freed exactly once by a
     EXPECT_EQ(g_last_freed, raw2);
 }
 
@@ -507,7 +503,7 @@ TEST(ArenaTest, ExternalNullBlockThrowsAndNullDeallocatorIsAllowed) {
     EXPECT_THROW(basalt::MemoryArena(nullptr, 1024, &counting_free), std::bad_alloc);
 
     alignas(64) static unsigned char storage[1024];
-    basalt::MemoryArena arena(storage, sizeof(storage), nullptr);  // not owned
+    basalt::MemoryArena arena(storage, sizeof(storage), nullptr); // not owned
     EXPECT_NE(arena.allocate(64), nullptr);
 }
 

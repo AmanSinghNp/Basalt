@@ -5,8 +5,8 @@
 #include "basalt/kernel/simd_mode.hpp"
 #include "basalt/utils/fast_math.hpp"
 
-#include <immintrin.h>
 #include <cstddef>
+#include <immintrin.h>
 
 namespace basalt::filter::detail {
 
@@ -25,22 +25,17 @@ void validate_buffer(const basalt::kernel::ComplexSoA& data, size_t rows, size_t
 /// Portable scalar f-k filter (float arithmetic, SSE2 baseline). Same weight
 /// formula as the AVX paths but evaluated with std::exp instead of the
 /// polynomial approximation, so weights agree with the AVX paths to ~1e-5.
-void apply_fk_filter_scalar(basalt::kernel::ComplexSoA& data,
-                            size_t rows, size_t cols,
+void apply_fk_filter_scalar(basalt::kernel::ComplexSoA& data, size_t rows, size_t cols,
                             const FKParams& params);
 
 // The AVX2 / AVX-512 entry points below require AVX2+FMA (and AVX-512F/DQ for
 // the latter). apply_fk_filter dispatches on cpu_features(); never call them
 // directly without that check.
-void apply_fk_filter_avx2(basalt::kernel::ComplexSoA& data,
-                          size_t rows, size_t cols,
-                          const FKParams& params,
-                          const FKFilterExecutionPlan& plan);
+void apply_fk_filter_avx2(basalt::kernel::ComplexSoA& data, size_t rows, size_t cols,
+                          const FKParams& params, const FKFilterExecutionPlan& plan);
 
-void apply_fk_filter_avx512(basalt::kernel::ComplexSoA& data,
-                            size_t rows, size_t cols,
-                            const FKParams& params,
-                            const FKFilterExecutionPlan& plan);
+void apply_fk_filter_avx512(basalt::kernel::ComplexSoA& data, size_t rows, size_t cols,
+                            const FKParams& params, const FKFilterExecutionPlan& plan);
 
 // Signed FFT-order index to frequency/wavenumber. Indices 0..size/2 are
 // non-negative; the rest wrap to negative values. For even `size` the
@@ -49,9 +44,7 @@ inline float wrapped_frequency(size_t index, size_t size, double step) {
     if (index <= size / 2) {
         return static_cast<float>(static_cast<double>(index) * step);
     }
-    return static_cast<float>(
-        (static_cast<double>(index) - static_cast<double>(size)) * step
-    );
+    return static_cast<float>((static_cast<double>(index) - static_cast<double>(size)) * step);
 }
 
 inline float wrapped_wavenumber(size_t index, size_t size, double step) {
@@ -67,7 +60,7 @@ inline bool is_nyquist_index(size_t index, size_t size) {
 
 /// Per-call constants of the signed velocity band [vmin, vmax].
 struct FKBandConsts {
-    __m256 steep;  // 10 / taper_width
+    __m256 steep; // 10 / taper_width
     __m256 vmin;
     __m256 vmax;
 };
@@ -83,10 +76,10 @@ BASALT_TARGET_AVX2 inline FKBandConsts make_band_consts(const FKParams& params) 
 /// Pass weight for signed apparent velocity v: 1 - S((v-min)s) * S((max-v)s),
 /// i.e. ~0 inside [min, max] and ~1 outside, with sigmoid tapers at both edges.
 BASALT_TARGET_AVX2 inline __m256 band_weight_ps(__m256 vel, const FKBandConsts& c) {
-    const __m256 lo = basalt::utils::fast_sigmoid_avx(
-        _mm256_mul_ps(_mm256_sub_ps(vel, c.vmin), c.steep));
-    const __m256 hi = basalt::utils::fast_sigmoid_avx(
-        _mm256_mul_ps(_mm256_sub_ps(c.vmax, vel), c.steep));
+    const __m256 lo =
+        basalt::utils::fast_sigmoid_avx(_mm256_mul_ps(_mm256_sub_ps(vel, c.vmin), c.steep));
+    const __m256 hi =
+        basalt::utils::fast_sigmoid_avx(_mm256_mul_ps(_mm256_sub_ps(c.vmax, vel), c.steep));
     return _mm256_sub_ps(_mm256_set1_ps(1.0f), _mm256_mul_ps(lo, hi));
 }
 
@@ -96,7 +89,7 @@ BASALT_TARGET_AVX2 inline __m256 band_weight_ps(__m256 vel, const FKBandConsts& 
 /// k == 0 means infinite apparent velocity, which always passes (weight 1);
 /// this includes DC (f == 0, k == 0).
 BASALT_TARGET_AVX2 inline __m256 fk_weight_ps(__m256 vf, __m256 vk, __m256 sym_mask, bool any_sym,
-                                             const FKBandConsts& c) {
+                                              const FKBandConsts& c) {
     const __m256 vel = _mm256_div_ps(vf, vk);
     __m256 w = band_weight_ps(vel, c);
     if (any_sym) {

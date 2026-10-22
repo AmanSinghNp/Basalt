@@ -19,7 +19,8 @@ size_t arena_bytes_for_elements(size_t elements) {
 }
 
 // Largest element count for which arena_bytes_for_elements cannot overflow.
-constexpr size_t kMaxArenaElements = (std::numeric_limits<size_t>::max() - 8192) / (sizeof(float) * 2);
+constexpr size_t kMaxArenaElements =
+    (std::numeric_limits<size_t>::max() - 8192) / (sizeof(float) * 2);
 
 size_t checked_max_elements(size_t rows, size_t cols) {
     if (rows != 0 && cols > std::numeric_limits<size_t>::max() / rows) {
@@ -34,33 +35,19 @@ size_t checked_max_elements(size_t rows, size_t cols) {
 
 } // namespace
 
-BatchExecutor::WorkerBuffers::WorkerBuffers(size_t max_elements_in,
-                                           size_t home_node_in,
-                                           bool numa_enabled,
-                                           MemoryPolicy memory_policy)
-    : data_block(allocate_numa_local(
-          arena_bytes_for_elements(max_elements_in),
-          home_node_in,
-          numa_enabled,
-          memory_policy
-      )),
-      scratch_block(allocate_numa_local(
-          arena_bytes_for_elements(max_elements_in),
-          home_node_in,
-          numa_enabled,
-          memory_policy
-      )),
+BatchExecutor::WorkerBuffers::WorkerBuffers(size_t max_elements_in, size_t home_node_in,
+                                            bool numa_enabled, MemoryPolicy memory_policy)
+    : data_block(allocate_numa_local(arena_bytes_for_elements(max_elements_in), home_node_in,
+                                     numa_enabled, memory_policy)),
+      scratch_block(allocate_numa_local(arena_bytes_for_elements(max_elements_in), home_node_in,
+                                        numa_enabled, memory_policy)),
       // The blocks keep ownership of the memory, so the arenas get no deallocator.
       data_arena(data_block.ptr, data_block.size, nullptr),
       scratch_arena(scratch_block.ptr, scratch_block.size, nullptr),
-      data(data_arena, max_elements_in),
-      max_elements(max_elements_in),
-      home_node(home_node_in) {
-}
+      data(data_arena, max_elements_in), max_elements(max_elements_in), home_node(home_node_in) {}
 
 BatchExecutor::BatchExecutor(const ExecutionOptions& options)
-    : m_options(options),
-      m_topology(NumaTopology::detect()) {
+    : m_options(options), m_topology(NumaTopology::detect()) {
     m_numa_active = m_options.enable_numa && m_topology.available() && !m_topology.is_uma();
 
     const size_t max_elements = checked_max_elements(m_options.max_rows, m_options.max_cols);
@@ -78,17 +65,15 @@ BatchExecutor::BatchExecutor(const ExecutionOptions& options)
     // initializer, which publishes the slots to the thread that later calls run().
     pool_options.worker_initializer = [this, max_elements](size_t worker, size_t home_node) {
         const size_t node_id = m_numa_active ? m_topology.node_id_for_index(home_node) : 0;
-        m_buffers[worker] = std::make_unique<WorkerBuffers>(
-            max_elements, node_id, m_numa_active, m_options.memory_policy
-        );
+        m_buffers[worker] = std::make_unique<WorkerBuffers>(max_elements, node_id, m_numa_active,
+                                                            m_options.memory_policy);
     };
     m_pool = std::make_unique<ThreadPool>(pool_options);
 
     if (m_pool->inline_mode()) {
         const size_t node_id = m_numa_active ? m_topology.node_id_for_index(0) : 0;
-        m_buffers[0] = std::make_unique<WorkerBuffers>(
-            max_elements, node_id, m_numa_active, m_options.memory_policy
-        );
+        m_buffers[0] = std::make_unique<WorkerBuffers>(max_elements, node_id, m_numa_active,
+                                                       m_options.memory_policy);
     }
 }
 
@@ -118,29 +103,27 @@ BatchExecutionStats BatchExecutor::run(const std::vector<BatchJob>& jobs,
         for (size_t job_index = 0; job_index < jobs.size(); ++job_index) {
             const BatchJob& job = jobs[job_index];
             // Dense node index (modulo the pool's node count), and the kernel id behind it.
-            const size_t preferred_node =
-                job.preferred_node != std::numeric_limits<size_t>::max()
-                    ? (job.preferred_node % node_count)
-                    : (job_index % node_count);
-            const size_t preferred_node_id = m_numa_active ? m_topology.node_id_for_index(preferred_node) : 0;
+            const size_t preferred_node = job.preferred_node != std::numeric_limits<size_t>::max()
+                                              ? (job.preferred_node % node_count)
+                                              : (job_index % node_count);
+            const size_t preferred_node_id =
+                m_numa_active ? m_topology.node_id_for_index(preferred_node) : 0;
             preferred_node_counts[preferred_node] += 1;
 
             auto task = [&, job, job_index, preferred_node_id]() {
                 if (failed.load(std::memory_order_relaxed)) {
-                    return;  // an earlier job already failed; do not waste time on the rest
+                    return; // an earlier job already failed; do not waste time on the rest
                 }
                 try {
                     const auto start = std::chrono::steady_clock::now();
                     WorkerBuffers& buffers = buffers_for_current_thread();
                     const size_t total = validate_job(job, buffers.max_elements);
                     const size_t bytes = total * sizeof(float);
-                    (void)bind_existing_range_to_node(
-                        job.input_real, bytes, preferred_node_id, m_numa_active, m_options.memory_policy
-                    );
+                    (void)bind_existing_range_to_node(job.input_real, bytes, preferred_node_id,
+                                                      m_numa_active, m_options.memory_policy);
                     if (job.input_imag != nullptr) {
-                        (void)bind_existing_range_to_node(
-                            job.input_imag, bytes, preferred_node_id, m_numa_active, m_options.memory_policy
-                        );
+                        (void)bind_existing_range_to_node(job.input_imag, bytes, preferred_node_id,
+                                                          m_numa_active, m_options.memory_policy);
                     }
                     process_job(job, buffers, m_options.simd_mode);
                     if (latencies_ms != nullptr) {
@@ -199,8 +182,7 @@ size_t BatchExecutor::validate_job(const BatchJob& job, size_t max_elements) {
     return total;
 }
 
-void BatchExecutor::process_job(const BatchJob& job,
-                                WorkerBuffers& buffers,
+void BatchExecutor::process_job(const BatchJob& job, WorkerBuffers& buffers,
                                 basalt::kernel::SimdMode simd_mode) {
     const size_t total = validate_job(job, buffers.max_elements);
 
@@ -212,24 +194,14 @@ void BatchExecutor::process_job(const BatchJob& job,
     }
 
     buffers.scratch_arena.reset();
-    basalt::kernel::fft2d_forward(
-        buffers.data.real, buffers.data.imag,
-        job.rows, job.cols,
-        buffers.scratch_arena,
-        job.fft_config
-    );
+    basalt::kernel::fft2d_forward(buffers.data.real, buffers.data.imag, job.rows, job.cols,
+                                  buffers.scratch_arena, job.fft_config);
 
-    basalt::filter::apply_fk_filter(
-        buffers.data, job.rows, job.cols, job.params, simd_mode
-    );
+    basalt::filter::apply_fk_filter(buffers.data, job.rows, job.cols, job.params, simd_mode);
 
     buffers.scratch_arena.reset();
-    basalt::kernel::fft2d_inverse(
-        buffers.data.real, buffers.data.imag,
-        job.rows, job.cols,
-        buffers.scratch_arena,
-        job.fft_config
-    );
+    basalt::kernel::fft2d_inverse(buffers.data.real, buffers.data.imag, job.rows, job.cols,
+                                  buffers.scratch_arena, job.fft_config);
 
     std::memcpy(job.output_real, buffers.data.real, total * sizeof(float));
     if (job.output_imag != nullptr) {

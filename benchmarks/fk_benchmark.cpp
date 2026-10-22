@@ -1,11 +1,11 @@
-#include <iostream>
-#include <vector>
-#include <chrono>
-#include <cmath>
-#include <cstring>
 #include "basalt/filter/fk_filter.hpp"
 #include "basalt/kernel/complex_soa.hpp"
 #include "basalt/kernel/cpu_state.hpp"
+#include <chrono>
+#include <cmath>
+#include <cstring>
+#include <iostream>
+#include <vector>
 
 using namespace basalt::filter;
 using namespace basalt::kernel;
@@ -41,7 +41,8 @@ static bool benchmark_fk(size_t rows, size_t cols) {
 
     // Measure
     int iterations = 1000;
-    if (total > 1024 * 1024) iterations = 100;
+    if (total > 1024 * 1024)
+        iterations = 100;
 
     Clock::duration measured{};
     for (int i = 0; i < iterations; ++i) {
@@ -64,9 +65,9 @@ static bool benchmark_fk(size_t rows, size_t cols) {
     const double throughput_mcells = (cells * iterations) / elapsed_sec / 1e6;
     const double throughput_gcells = throughput_mcells / 1000.0;
 
-    std::cout << "FK Grid " << rows << "x" << cols << " (" << cells/1e6 << " MCells): "
-              << avg_time_sec * 1000.0 << " ms/op, "
-              << throughput_gcells << " GCells/s" << std::endl;
+    std::cout << "FK Grid " << rows << "x" << cols << " (" << cells / 1e6
+              << " MCells): " << avg_time_sec * 1000.0 << " ms/op, " << throughput_gcells
+              << " GCells/s" << std::endl;
     return true;
 }
 

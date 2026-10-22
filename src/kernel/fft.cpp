@@ -63,7 +63,8 @@ std::unique_ptr<FFTPlan> build_plan(size_t n) {
     }
     size_t count = 0;
     for (size_t i = 0; i < n; ++i) {
-        if (i < rev[i]) ++count;
+        if (i < rev[i])
+            ++count;
     }
     plan->swaps.reserve(count * 2);
     for (size_t i = 0; i < n; ++i) {
@@ -82,7 +83,7 @@ static_assert(kPlanCacheMaxN == (size_t{1} << kMaxCachedLog2), "cache cap mismat
 
 void validate_fft_args(const float* real, const float* imag, size_t n, const char* who) {
     if (n == 0) {
-        return;  // Empty transform: documented no-op, pointers are not inspected.
+        return; // Empty transform: documented no-op, pointers are not inspected.
     }
     if ((n & (n - 1)) != 0) {
         throw std::invalid_argument(std::string(who) + ": n=" + std::to_string(n) +
@@ -165,7 +166,7 @@ namespace {
 void fft_impl(float* real, float* imag, size_t n, bool inverse, const char* who) {
     internal::validate_fft_args(real, imag, n, who);
     if (n < 2) {
-        return;  // n == 0: empty; n == 1: identity (1/N scaling is 1)
+        return; // n == 0: empty; n == 1: identity (1/N scaling is 1)
     }
 
     const internal::FFTPlanRef plan = internal::fft_plan_for(n);

@@ -32,7 +32,7 @@ namespace basalt {
 /// required_bytes() (or ComplexSoA::required_arena_bytes()) to size arenas.
 class MemoryArena {
 public:
-    using DeallocatorFn = void(*)(void*);
+    using DeallocatorFn = void (*)(void*);
 
     /// Owns a new 64-byte aligned block of `size` bytes. `size == 0` is
     /// allowed and yields an empty arena for which every allocation fails.
@@ -77,7 +77,7 @@ public:
     [[nodiscard]] size_t bytes_used() const noexcept { return m_offset; }
     [[nodiscard]] size_t bytes_remaining() const noexcept { return m_total_size - m_offset; }
     [[nodiscard]] size_t total_size() const noexcept { return m_total_size; }
-    
+
     // Padding added after each allocation to avoid 4K aliasing
     static constexpr size_t kAliasPadding = 128;
 
@@ -95,11 +95,14 @@ public:
         size_t offset = 0;
         for (size_t size : sizes) {
             const size_t pad = (alignment - (offset & (alignment - 1))) & (alignment - 1);
-            if (pad > kMax - offset) return kMax;
+            if (pad > kMax - offset)
+                return kMax;
             offset += pad;
-            if (size > kMax - offset) return kMax;
+            if (size > kMax - offset)
+                return kMax;
             offset += size;
-            if (kAliasPadding > kMax - offset) return kMax;
+            if (kAliasPadding > kMax - offset)
+                return kMax;
             offset += kAliasPadding;
         }
         return offset;
@@ -107,8 +110,7 @@ public:
 
     // Typed allocation helper. Returns nullptr on exhaustion or when
     // count * sizeof(T) would overflow size_t.
-    template<typename T>
-    [[nodiscard]] T* allocate_array(size_t count, size_t alignment = 64) {
+    template <typename T> [[nodiscard]] T* allocate_array(size_t count, size_t alignment = 64) {
         if (count > std::numeric_limits<size_t>::max() / sizeof(T)) {
             return nullptr;
         }
@@ -130,8 +132,7 @@ private:
 /// active; if the arena was reset, the destructor leaves the offset unchanged.
 class ArenaScope {
 public:
-    explicit ArenaScope(MemoryArena& arena) noexcept
-        : m_arena(arena), m_mark(arena.mark()) {}
+    explicit ArenaScope(MemoryArena& arena) noexcept : m_arena(arena), m_mark(arena.mark()) {}
     ~ArenaScope() {
         if (m_mark <= m_arena.bytes_used()) {
             m_arena.rewind(m_mark);

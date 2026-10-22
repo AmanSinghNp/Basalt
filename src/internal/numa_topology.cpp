@@ -30,12 +30,12 @@ bool parse_long(std::string_view text, long& out) {
 }
 
 std::string_view trim(std::string_view text) {
-    while (!text.empty() && (text.front() == ' ' || text.front() == '\t' ||
-                             text.front() == '\n' || text.front() == '\r')) {
+    while (!text.empty() && (text.front() == ' ' || text.front() == '\t' || text.front() == '\n' ||
+                             text.front() == '\r')) {
         text.remove_prefix(1);
     }
-    while (!text.empty() && (text.back() == ' ' || text.back() == '\t' ||
-                             text.back() == '\n' || text.back() == '\r')) {
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\t' || text.back() == '\n' ||
+                             text.back() == '\r')) {
         text.remove_suffix(1);
     }
     return text;
@@ -236,9 +236,9 @@ NumaTopology NumaTopology::detect(const std::filesystem::path& root) {
 }
 
 size_t NumaTopology::index_for_node_id(size_t id) const noexcept {
-    const auto it = std::lower_bound(
-        m_nodes.begin(), m_nodes.end(), id,
-        [](const NumaNodeInfo& node, size_t value) { return node.id < value; });
+    const auto it =
+        std::lower_bound(m_nodes.begin(), m_nodes.end(), id,
+                         [](const NumaNodeInfo& node, size_t value) { return node.id < value; });
     if (it == m_nodes.end() || it->id != id) {
         return npos;
     }

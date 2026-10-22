@@ -1,9 +1,9 @@
 #include "basalt/utils/ibm_float.hpp"
-#include <gtest/gtest.h>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <gtest/gtest.h>
 #include <limits>
-#include <cmath>
 
 using namespace basalt::utils;
 
@@ -12,7 +12,7 @@ using namespace basalt::utils;
 TEST(IbmFloatTest, ZeroConversion) {
     // All bits zero should produce 0.0
     EXPECT_FLOAT_EQ(ibm_to_ieee(0x00000000), 0.0f);
-    
+
     // Zero fraction with non-zero exponent is still 0.0
     EXPECT_FLOAT_EQ(ibm_to_ieee(0x40000000), 0.0f);
 }
@@ -68,8 +68,7 @@ TEST(IbmFloatTest, RoundTripPositive) {
     for (float v : values) {
         uint32_t ibm = ieee_to_ibm(v);
         float back = ibm_to_ieee(ibm);
-        EXPECT_NEAR(back, v, std::fabs(v) * 1e-5f)
-            << "Round-trip failed for value: " << v;
+        EXPECT_NEAR(back, v, std::fabs(v) * 1e-5f) << "Round-trip failed for value: " << v;
     }
 }
 
@@ -78,8 +77,7 @@ TEST(IbmFloatTest, RoundTripNegative) {
     for (float v : values) {
         uint32_t ibm = ieee_to_ibm(v);
         float back = ibm_to_ieee(ibm);
-        EXPECT_NEAR(back, v, std::fabs(v) * 1e-5f)
-            << "Round-trip failed for value: " << v;
+        EXPECT_NEAR(back, v, std::fabs(v) * 1e-5f) << "Round-trip failed for value: " << v;
     }
 }
 
@@ -184,7 +182,7 @@ TEST(IbmFloatTest, InfAndNanSaturateToIbmMax) {
     EXPECT_EQ(ieee_to_ibm(-inf), kIbmMaxNeg);
     EXPECT_EQ(ieee_to_ibm(std::numeric_limits<float>::quiet_NaN()), kIbmMaxPos);
     EXPECT_EQ(ieee_to_ibm(-std::numeric_limits<float>::quiet_NaN()), kIbmMaxNeg);
-    EXPECT_EQ(ieee_to_ibm(bits_to_float(0x7F800001u)), kIbmMaxPos);  // signalling NaN
+    EXPECT_EQ(ieee_to_ibm(bits_to_float(0x7F800001u)), kIbmMaxPos); // signalling NaN
 
     // Saturated IBM max exceeds FLT_MAX, so it reads back as +-Inf
     EXPECT_EQ(ibm_to_ieee(kIbmMaxPos), inf);
@@ -210,11 +208,12 @@ TEST(IbmFloatTest, ExtremeFiniteValues) {
 TEST(IbmFloatTest, RoundsToNearestNotTruncates) {
     // 1.0 + 2^-23 needs 24 bits: IBM exp 65 fraction 0x100000 keeps only 21
     // bits after the leading hex digit, so the low 3 bits are rounded.
-    const float one_plus = bits_to_float(0x3F800001u);   // 1 + 2^-23 -> rounds down to 1.0
+    const float one_plus = bits_to_float(0x3F800001u); // 1 + 2^-23 -> rounds down to 1.0
     EXPECT_EQ(ieee_to_ibm(one_plus), 0x41100000u);
-    const float three_quarters = bits_to_float(0x3F800004u);  // 1 + 4*2^-23, exactly half unit -> ties to even
+    const float three_quarters =
+        bits_to_float(0x3F800004u); // 1 + 4*2^-23, exactly half unit -> ties to even
     EXPECT_EQ(ieee_to_ibm(three_quarters), 0x41100000u);
-    const float above_half = bits_to_float(0x3F800005u);  // just above half -> rounds up
+    const float above_half = bits_to_float(0x3F800005u); // just above half -> rounds up
     EXPECT_EQ(ieee_to_ibm(above_half), 0x41100001u);
     // 0.99999994 (0x3F7FFFFF) needs all 24 bits and is exact at IBM exponent 64
     EXPECT_EQ(ieee_to_ibm(bits_to_float(0x3F7FFFFFu)), 0x40FFFFFFu);
@@ -225,13 +224,16 @@ TEST(IbmFloatTest, RoundsToNearestNotTruncates) {
 TEST(IbmFloatTest, SweepIeeeToIbmAgainstLdexpReference) {
     uint32_t state = 0x9E3779B9u;
     auto next = [&state]() {
-        state ^= state << 13; state ^= state >> 17; state ^= state << 5;
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
         return state;
     };
     for (int n = 0; n < 200000; ++n) {
         const uint32_t bits = next();
         const float v = bits_to_float(bits);
-        if (!std::isfinite(v)) continue;
+        if (!std::isfinite(v))
+            continue;
         const uint32_t ibm = ieee_to_ibm(v);
         const double got = ibm_reference(ibm);
         const double want = static_cast<double>(v);
@@ -252,7 +254,9 @@ TEST(IbmFloatTest, SweepIeeeToIbmAgainstLdexpReference) {
 TEST(IbmFloatTest, SweepIbmToIeeeAgainstLdexpReference) {
     uint32_t state = 0x1234567u;
     auto next = [&state]() {
-        state ^= state << 13; state ^= state >> 17; state ^= state << 5;
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
         return state;
     };
     const double fmax = static_cast<double>(std::numeric_limits<float>::max());
@@ -278,14 +282,17 @@ TEST(IbmFloatTest, IbmRoundTripIsLosslessThroughIeee) {
     // IBM -> IEEE is exact for in-range normals, so IEEE -> IBM restores the word.
     uint32_t state = 0xCAFEBABEu;
     auto next = [&state]() {
-        state ^= state << 13; state ^= state >> 17; state ^= state << 5;
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
         return state;
     };
     int checked = 0;
     for (int n = 0; n < 200000; ++n) {
         uint32_t ibm = next();
-        ibm = (ibm & 0x80FFFFFFu) | ((40u + (ibm >> 24) % 48u) << 24);  // exponent 40..87
-        if ((ibm & 0x00F00000u) == 0) continue;  // only normalised words
+        ibm = (ibm & 0x80FFFFFFu) | ((40u + (ibm >> 24) % 48u) << 24); // exponent 40..87
+        if ((ibm & 0x00F00000u) == 0)
+            continue; // only normalised words
         const float f = ibm_to_ieee(ibm);
         ASSERT_TRUE(std::isfinite(f));
         ASSERT_EQ(ieee_to_ibm(f), ibm) << std::hex << ibm;

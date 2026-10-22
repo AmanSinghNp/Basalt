@@ -1,8 +1,8 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <cmath>
 
 namespace basalt::utils {
 
@@ -27,7 +27,7 @@ namespace basalt::utils {
 ///
 inline float ibm_to_ieee(uint32_t ibm) {
     const uint32_t sign = ibm >> 31;
-    const int32_t  ibm_exp = static_cast<int32_t>((ibm >> 24) & 0x7F);
+    const int32_t ibm_exp = static_cast<int32_t>((ibm >> 24) & 0x7F);
     const uint32_t fraction = ibm & 0x00FFFFFF;
 
     static_assert(sizeof(float) == sizeof(uint32_t), "float must be 32-bit");
@@ -109,7 +109,7 @@ inline uint32_t ieee_to_ibm(float value) {
     std::memcpy(&ieee_bits, &value, sizeof(uint32_t));
 
     const uint32_t sign = ieee_bits >> 31;
-    const int32_t  ieee_exp = static_cast<int32_t>((ieee_bits >> 23) & 0xFF);
+    const int32_t ieee_exp = static_cast<int32_t>((ieee_bits >> 23) & 0xFF);
     uint32_t mantissa = ieee_bits & 0x007FFFFF;
 
     if (ieee_exp == 0xFF) {
@@ -121,7 +121,7 @@ inline uint32_t ieee_to_ibm(float value) {
     int32_t binary_exp;
     if (ieee_exp == 0) {
         if (mantissa == 0) {
-            return 0u;  // +-0
+            return 0u; // +-0
         }
         // Subnormal: no implicit 1; normalise.
         binary_exp = -149;
@@ -130,16 +130,16 @@ inline uint32_t ieee_to_ibm(float value) {
             binary_exp--;
         }
     } else {
-        mantissa |= 0x00800000;  // implicit leading 1
+        mantissa |= 0x00800000; // implicit leading 1
         binary_exp = ieee_exp - 150;
     }
 
     // IBM: value = fraction * 2^(4*ibm_exp - 280). Pick the smallest ibm_exp
     // such that the fraction needs a right shift r in [0, 3] only.
     // For all finite floats ibm_exp lies in [27, 96], well inside [0, 127].
-    const int32_t temp = binary_exp + 280;          // always > 0 here
-    int32_t ibm_exp = (temp + 3) / 4;                // ceiling division
-    const int32_t r = 4 * ibm_exp - temp;            // 0..3
+    const int32_t temp = binary_exp + 280; // always > 0 here
+    int32_t ibm_exp = (temp + 3) / 4;      // ceiling division
+    const int32_t r = 4 * ibm_exp - temp;  // 0..3
 
     uint32_t fraction = mantissa >> r;
     if (r > 0) {
@@ -152,9 +152,7 @@ inline uint32_t ieee_to_ibm(float value) {
         }
     }
 
-    return (sign << 31)
-         | (static_cast<uint32_t>(ibm_exp) << 24)
-         | fraction;
+    return (sign << 31) | (static_cast<uint32_t>(ibm_exp) << 24) | fraction;
 }
 
 } // namespace basalt::utils

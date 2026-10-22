@@ -34,7 +34,8 @@ std::vector<int> build_default_affinity(const NumaTopology& topology, size_t wor
     std::vector<size_t> node_offsets(topology.node_count(), 0);
     while (affinity.size() < worker_count) {
         bool progressed = false;
-        for (size_t node = 0; node < topology.node_count() && affinity.size() < worker_count; ++node) {
+        for (size_t node = 0; node < topology.node_count() && affinity.size() < worker_count;
+             ++node) {
             const auto& cpus = topology.nodes()[node].cpus;
             if (cpus.empty()) {
                 continue;
@@ -253,8 +254,10 @@ ThreadPoolStats ThreadPool::stats() const {
     for (size_t node = 0; node < m_nodes.size(); ++node) {
         result.submitted_per_node[node] = m_nodes[node]->submitted.load(std::memory_order_relaxed);
         result.executed_per_node[node] = m_nodes[node]->executed.load(std::memory_order_relaxed);
-        result.local_queue_executions_per_node[node] = m_nodes[node]->local_executed.load(std::memory_order_relaxed);
-        result.remote_steals_from_node[node] = m_nodes[node]->remote_steals.load(std::memory_order_relaxed);
+        result.local_queue_executions_per_node[node] =
+            m_nodes[node]->local_executed.load(std::memory_order_relaxed);
+        result.remote_steals_from_node[node] =
+            m_nodes[node]->remote_steals.load(std::memory_order_relaxed);
     }
     result.affinity_failures = m_affinity_failures.load(std::memory_order_relaxed);
 
@@ -342,7 +345,8 @@ void ThreadPool::worker_loop(const WorkerInfo& info) {
     }
 }
 
-bool ThreadPool::try_pop_for_worker(const WorkerInfo& info, std::function<void()>& task, size_t& source_node) {
+bool ThreadPool::try_pop_for_worker(const WorkerInfo& info, std::function<void()>& task,
+                                    size_t& source_node) {
     source_node = info.home_node;
     if (m_nodes[info.home_node]->queue.try_pop(task)) {
         return true;

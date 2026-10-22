@@ -69,11 +69,11 @@ CpuFeatures detect_hardware() {
     const bool avx = ((l1.ecx >> 28) & 1u) != 0;
     const bool fma = ((l1.ecx >> 12) & 1u) != 0;
     if (!osxsave || !avx) {
-        return f;  // No OS-managed AVX state: nothing wider than SSE is usable.
+        return f; // No OS-managed AVX state: nothing wider than SSE is usable.
     }
     const unsigned long long xcr0 = xgetbv0();
-    const bool ymm_ok = (xcr0 & 0x6u) == 0x6u;      // XMM and YMM state enabled
-    const bool zmm_ok = (xcr0 & 0xE6u) == 0xE6u;    // + opmask, ZMM_Hi256, Hi16_ZMM
+    const bool ymm_ok = (xcr0 & 0x6u) == 0x6u;   // XMM and YMM state enabled
+    const bool zmm_ok = (xcr0 & 0xE6u) == 0xE6u; // + opmask, ZMM_Hi256, Hi16_ZMM
     if (!ymm_ok) {
         return f;
     }
@@ -109,7 +109,7 @@ CpuFeatures detect_hardware() {
 #else
 
 CpuFeatures detect_hardware() {
-    return CpuFeatures{};  // Unknown target: scalar only.
+    return CpuFeatures{}; // Unknown target: scalar only.
 }
 
 #endif
@@ -123,9 +123,12 @@ SimdMode env_cap() {
     std::string v(raw);
     std::transform(v.begin(), v.end(), v.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (v == "scalar") return SimdMode::Scalar;
-    if (v == "avx2") return SimdMode::AVX2;
-    if (v == "avx512") return SimdMode::AVX512;
+    if (v == "scalar")
+        return SimdMode::Scalar;
+    if (v == "avx2")
+        return SimdMode::AVX2;
+    if (v == "avx512")
+        return SimdMode::AVX512;
     return SimdMode::Auto;
 }
 
@@ -146,17 +149,22 @@ CpuFeatures apply_cap(CpuFeatures f, SimdMode cap) {
 std::atomic<int> g_test_cap{static_cast<int>(SimdMode::Auto)};
 
 detail::SimdLevel level_of(const CpuFeatures& f) {
-    if (f.can_use_avx512()) return detail::SimdLevel::AVX512;
-    if (f.can_use_avx2()) return detail::SimdLevel::AVX2;
+    if (f.can_use_avx512())
+        return detail::SimdLevel::AVX512;
+    if (f.can_use_avx2())
+        return detail::SimdLevel::AVX2;
     return detail::SimdLevel::Scalar;
 }
 
 detail::SimdLevel level_of_mode(SimdMode m) {
     switch (m) {
-    case SimdMode::Scalar: return detail::SimdLevel::Scalar;
-    case SimdMode::AVX2: return detail::SimdLevel::AVX2;
+    case SimdMode::Scalar:
+        return detail::SimdLevel::Scalar;
+    case SimdMode::AVX2:
+        return detail::SimdLevel::AVX2;
     case SimdMode::AVX512:
-    case SimdMode::Auto: return detail::SimdLevel::AVX512;
+    case SimdMode::Auto:
+        return detail::SimdLevel::AVX512;
     }
     return detail::SimdLevel::AVX512;
 }

@@ -57,8 +57,8 @@ BASALT_TARGET_AVX2 inline void transpose8x8_regs(__m256 (&r)[8]) {
 }
 
 /// Radix-2 butterfly on register pairs: (a, b) -> (a + t, a - t).
-BASALT_TARGET_AVX2 inline void butterfly(__m256& ar, __m256& ai, __m256& br, __m256& bi,
-                                         __m256 tr, __m256 ti) {
+BASALT_TARGET_AVX2 inline void butterfly(__m256& ar, __m256& ai, __m256& br, __m256& bi, __m256 tr,
+                                         __m256 ti) {
     const __m256 nar = _mm256_add_ps(ar, tr);
     const __m256 nai = _mm256_add_ps(ai, ti);
     br = _mm256_sub_ps(ar, tr);
@@ -102,8 +102,8 @@ BASALT_TARGET_AVX2 void first_three_stages_avx(float* real, float* imag, size_t 
                 butterfly(re[e + 1], im[e + 1], re[e + 3], im[e + 3],
                           _mm256_sub_ps(_mm256_setzero_ps(), xi), xr);
             } else {
-                butterfly(re[e + 1], im[e + 1], re[e + 3], im[e + 3],
-                          xi, _mm256_sub_ps(_mm256_setzero_ps(), xr));
+                butterfly(re[e + 1], im[e + 1], re[e + 3], im[e + 3], xi,
+                          _mm256_sub_ps(_mm256_setzero_ps(), xr));
             }
         }
 
@@ -114,23 +114,20 @@ BASALT_TARGET_AVX2 void first_three_stages_avx(float* real, float* imag, size_t 
             const __m256 xi = im[5];
             const __m256 sum = _mm256_add_ps(xr, xi);
             const __m256 dif = _mm256_sub_ps(xr, xi);
-            if constexpr (Inverse) {   // W8 = c + c*i
-                butterfly(re[1], im[1], re[5], im[5],
-                          _mm256_mul_ps(c, dif), _mm256_mul_ps(c, sum));
-            } else {                   // W8 = c - c*i
-                butterfly(re[1], im[1], re[5], im[5],
-                          _mm256_mul_ps(c, sum), _mm256_mul_ps(c, _mm256_sub_ps(_mm256_setzero_ps(), dif)));
+            if constexpr (Inverse) { // W8 = c + c*i
+                butterfly(re[1], im[1], re[5], im[5], _mm256_mul_ps(c, dif), _mm256_mul_ps(c, sum));
+            } else { // W8 = c - c*i
+                butterfly(re[1], im[1], re[5], im[5], _mm256_mul_ps(c, sum),
+                          _mm256_mul_ps(c, _mm256_sub_ps(_mm256_setzero_ps(), dif)));
             }
         }
         {
             const __m256 xr = re[6];
             const __m256 xi = im[6];
             if constexpr (Inverse) {
-                butterfly(re[2], im[2], re[6], im[6],
-                          _mm256_sub_ps(_mm256_setzero_ps(), xi), xr);
+                butterfly(re[2], im[2], re[6], im[6], _mm256_sub_ps(_mm256_setzero_ps(), xi), xr);
             } else {
-                butterfly(re[2], im[2], re[6], im[6],
-                          xi, _mm256_sub_ps(_mm256_setzero_ps(), xr));
+                butterfly(re[2], im[2], re[6], im[6], xi, _mm256_sub_ps(_mm256_setzero_ps(), xr));
             }
         }
         {
@@ -138,11 +135,11 @@ BASALT_TARGET_AVX2 void first_three_stages_avx(float* real, float* imag, size_t 
             const __m256 xi = im[7];
             const __m256 sum = _mm256_add_ps(xr, xi);
             const __m256 dif = _mm256_sub_ps(xr, xi);
-            if constexpr (Inverse) {   // W8^3 = -c + c*i
+            if constexpr (Inverse) { // W8^3 = -c + c*i
                 butterfly(re[3], im[3], re[7], im[7],
                           _mm256_sub_ps(_mm256_setzero_ps(), _mm256_mul_ps(c, sum)),
                           _mm256_mul_ps(c, dif));
-            } else {                   // W8^3 = -c - c*i
+            } else { // W8^3 = -c - c*i
                 butterfly(re[3], im[3], re[7], im[7],
                           _mm256_mul_ps(c, _mm256_sub_ps(_mm256_setzero_ps(), dif)),
                           _mm256_sub_ps(_mm256_setzero_ps(), _mm256_mul_ps(c, sum)));
@@ -213,11 +210,11 @@ BASALT_TARGET_AVX2 void fft_avx_core(float* real, float* imag, const FFTPlan& pl
                 __m256 tr = _mm256_mul_ps(wr, or_);
                 __m256 ti = _mm256_mul_ps(wr, oi);
                 if constexpr (Inverse) {
-                    tr = _mm256_fmadd_ps(wi, oi, tr);    // wr*or + wi*oi
-                    ti = _mm256_fnmadd_ps(wi, or_, ti);  // wr*oi - wi*or
+                    tr = _mm256_fmadd_ps(wi, oi, tr);   // wr*or + wi*oi
+                    ti = _mm256_fnmadd_ps(wi, or_, ti); // wr*oi - wi*or
                 } else {
-                    tr = _mm256_fnmadd_ps(wi, oi, tr);   // wr*or - wi*oi
-                    ti = _mm256_fmadd_ps(wi, or_, ti);   // wr*oi + wi*or
+                    tr = _mm256_fnmadd_ps(wi, oi, tr); // wr*or - wi*oi
+                    ti = _mm256_fmadd_ps(wi, or_, ti); // wr*oi + wi*or
                 }
 
                 _mm256_storeu_ps(real + even_idx, _mm256_add_ps(er, tr));
@@ -278,8 +275,8 @@ BASALT_TARGET_AVX2 void fft_rows_avx2_impl(float* real, float* imag, size_t rows
 }
 
 /// Row loop of the portable path (CPUs without AVX2/FMA, or SimdMode capped).
-void fft_rows_scalar_impl(float* real, float* imag, size_t rows, size_t cols,
-                          bool inverse, float scale, const FFTPlan& plan) {
+void fft_rows_scalar_impl(float* real, float* imag, size_t rows, size_t cols, bool inverse,
+                          float scale, const FFTPlan& plan) {
     for (size_t r = 0; r < rows; ++r) {
         float* row_real = real + r * cols;
         float* row_imag = imag + r * cols;
@@ -289,7 +286,6 @@ void fft_rows_scalar_impl(float* real, float* imag, size_t rows, size_t cols,
         }
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Column FFTs without transposes.
@@ -308,16 +304,16 @@ void fft_rows_scalar_impl(float* real, float* imag, size_t rows, size_t cols,
 
 /// t = w * x, with w conjugated for the inverse transform.
 template <bool Inverse>
-BASALT_TARGET_AVX2 inline void cmul(__m256 wr, __m256 wi, __m256 xr, __m256 xi,
-                                    __m256& tr, __m256& ti) {
+BASALT_TARGET_AVX2 inline void cmul(__m256 wr, __m256 wi, __m256 xr, __m256 xi, __m256& tr,
+                                    __m256& ti) {
     tr = _mm256_mul_ps(wr, xr);
     ti = _mm256_mul_ps(wr, xi);
     if constexpr (Inverse) {
-        tr = _mm256_fmadd_ps(wi, xi, tr);    // wr*xr + wi*xi
-        ti = _mm256_fnmadd_ps(wi, xr, ti);   // wr*xi - wi*xr
+        tr = _mm256_fmadd_ps(wi, xi, tr);  // wr*xr + wi*xi
+        ti = _mm256_fnmadd_ps(wi, xr, ti); // wr*xi - wi*xr
     } else {
-        tr = _mm256_fnmadd_ps(wi, xi, tr);   // wr*xr - wi*xi
-        ti = _mm256_fmadd_ps(wi, xr, ti);    // wr*xi + wi*xr
+        tr = _mm256_fnmadd_ps(wi, xi, tr); // wr*xr - wi*xi
+        ti = _mm256_fmadd_ps(wi, xr, ti);  // wr*xi + wi*xr
     }
 }
 
@@ -345,7 +341,7 @@ BASALT_TARGET_AVX2 void col_stages_12(float* br, float* bi, size_t nrows) {
             const __m256 b3r = _mm256_sub_ps(a2r, a3r), b3i = _mm256_sub_ps(a2i, a3i);
 
             // Stage 2 twiddles: 1 for (b0, b2); W4 = -i (forward) / +i (inverse) for (b1, b3).
-            __m256 rr, ri;   // W4 * b3
+            __m256 rr, ri; // W4 * b3
             if constexpr (Inverse) {
                 rr = _mm256_sub_ps(_mm256_setzero_ps(), b3i);
                 ri = b3r;
@@ -387,7 +383,8 @@ BASALT_TARGET_AVX2 void col_stage_r2(float* br, float* bi, size_t nrows, size_t 
                 const __m256 xr = _mm256_loadu_ps(er + 8 * v);
                 const __m256 xi = _mm256_loadu_ps(ei + 8 * v);
                 __m256 tr, ti;
-                cmul<Inverse>(wr, wi, _mm256_loadu_ps(odr + 8 * v), _mm256_loadu_ps(odi + 8 * v), tr, ti);
+                cmul<Inverse>(wr, wi, _mm256_loadu_ps(odr + 8 * v), _mm256_loadu_ps(odi + 8 * v),
+                              tr, ti);
                 _mm256_storeu_ps(er + 8 * v, _mm256_add_ps(xr, tr));
                 _mm256_storeu_ps(ei + 8 * v, _mm256_add_ps(xi, ti));
                 _mm256_storeu_ps(odr + 8 * v, _mm256_sub_ps(xr, tr));
@@ -404,10 +401,10 @@ template <bool Inverse, size_t V>
 BASALT_TARGET_AVX2 void col_stages_r4(float* br, float* bi, size_t nrows, size_t s,
                                       const FFTPlan& plan) {
     constexpr size_t W = 8 * V;
-    const size_t h = size_t{1} << (s - 1);   // half of stage s
+    const size_t h = size_t{1} << (s - 1); // half of stage s
     const float* w_real = plan.tw_real.data() + (h - 1);
     const float* w_imag = plan.tw_imag.data() + (h - 1);
-    const float* u_real = plan.tw_real.data() + (2 * h - 1);   // stage s+1, entries 0..h-1
+    const float* u_real = plan.tw_real.data() + (2 * h - 1); // stage s+1, entries 0..h-1
     const float* u_imag = plan.tw_imag.data() + (2 * h - 1);
 
     for (size_t k = 0; k < nrows; k += 4 * h) {
@@ -437,7 +434,7 @@ BASALT_TARGET_AVX2 void col_stages_r4(float* br, float* bi, size_t nrows, size_t
                 const __m256 b3r = _mm256_sub_ps(a2r, t3r), b3i = _mm256_sub_ps(a2i, t3i);
 
                 // Stage s+1: (b0, b2) with u, (b1, b3) with u * W4.
-                __m256 rr, ri;   // W4 * b3
+                __m256 rr, ri; // W4 * b3
                 if constexpr (Inverse) {
                     rr = _mm256_sub_ps(_mm256_setzero_ps(), b3i);
                     ri = b3r;
@@ -506,9 +503,9 @@ BASALT_TARGET_AVX2 void col_fft_substrip_avx(float* br, float* bi, const FFTPlan
 /// Strip driver of the AVX2 path: all cols/width strips of the matrix. The
 /// buffer holds width/(8*V) sub-strips of rows * 8*V floats each.
 template <bool Inverse, size_t V>
-BASALT_TARGET_AVX2 void fft_cols_strips_avx2_impl(float* real, float* imag, size_t rows, size_t cols,
-                                                  size_t width, float scale, float* buf_r,
-                                                  float* buf_i, const FFTPlan& plan) {
+BASALT_TARGET_AVX2 void fft_cols_strips_avx2_impl(float* real, float* imag, size_t rows,
+                                                  size_t cols, size_t width, float scale,
+                                                  float* buf_r, float* buf_i, const FFTPlan& plan) {
     constexpr size_t SW = 8 * V;
     const size_t nsub = width / SW;
     const __m256 vscale = _mm256_set1_ps(scale);
@@ -574,11 +571,14 @@ void fft_cols_strips_avx2_dispatch(float* real, float* imag, size_t rows, size_t
                                    float scale, float* buf_r, float* buf_i, const FFTPlan& plan) {
     // Sub-strip of 32 lanes when the strip allows it (measured fastest), else 16 or 8.
     if (width >= 32) {
-        fft_cols_strips_avx2_impl<Inverse, 4>(real, imag, rows, cols, width, scale, buf_r, buf_i, plan);
+        fft_cols_strips_avx2_impl<Inverse, 4>(real, imag, rows, cols, width, scale, buf_r, buf_i,
+                                              plan);
     } else if (width >= 16) {
-        fft_cols_strips_avx2_impl<Inverse, 2>(real, imag, rows, cols, width, scale, buf_r, buf_i, plan);
+        fft_cols_strips_avx2_impl<Inverse, 2>(real, imag, rows, cols, width, scale, buf_r, buf_i,
+                                              plan);
     } else {
-        fft_cols_strips_avx2_impl<Inverse, 1>(real, imag, rows, cols, width, scale, buf_r, buf_i, plan);
+        fft_cols_strips_avx2_impl<Inverse, 1>(real, imag, rows, cols, width, scale, buf_r, buf_i,
+                                              plan);
     }
 }
 
@@ -638,8 +638,7 @@ void fft_cols_strips_scalar_impl(float* real, float* imag, size_t rows, size_t c
 
 } // anonymous namespace
 
-void fft_rows_avx(float* real, float* imag, size_t rows, size_t cols,
-                  bool inverse, float scale) {
+void fft_rows_avx(float* real, float* imag, size_t rows, size_t cols, bool inverse, float scale) {
     // One dispatch decision per call (not per row).
     const bool avx2 = kernel::detail::use_avx2();
 
@@ -673,8 +672,7 @@ size_t fft_cols_strip_width(size_t rows, size_t cols) {
     return cols < kStripWidth ? cols : kStripWidth;
 }
 
-void fft_cols_strips(float* real, float* imag, size_t rows, size_t cols,
-                     bool inverse, float scale,
+void fft_cols_strips(float* real, float* imag, size_t rows, size_t cols, bool inverse, float scale,
                      float* buf_real, float* buf_imag, size_t width) {
     if (rows < 2) {
         // Length-1 column transform is the identity; only the scale remains.
@@ -690,18 +688,18 @@ void fft_cols_strips(float* real, float* imag, size_t rows, size_t cols,
     // One dispatch decision per call. The vector path needs whole 8-lane groups.
     if (kernel::detail::use_avx2() && width >= 8 && width % 8 == 0) {
         if (inverse) {
-            fft_cols_strips_avx2_dispatch<true>(real, imag, rows, cols, width, scale,
-                                                buf_real, buf_imag, *plan);
+            fft_cols_strips_avx2_dispatch<true>(real, imag, rows, cols, width, scale, buf_real,
+                                                buf_imag, *plan);
         } else {
-            fft_cols_strips_avx2_dispatch<false>(real, imag, rows, cols, width, scale,
-                                                 buf_real, buf_imag, *plan);
+            fft_cols_strips_avx2_dispatch<false>(real, imag, rows, cols, width, scale, buf_real,
+                                                 buf_imag, *plan);
         }
     } else if (inverse) {
-        fft_cols_strips_scalar_impl<true>(real, imag, rows, cols, width, scale,
-                                          buf_real, buf_imag, *plan);
+        fft_cols_strips_scalar_impl<true>(real, imag, rows, cols, width, scale, buf_real, buf_imag,
+                                          *plan);
     } else {
-        fft_cols_strips_scalar_impl<false>(real, imag, rows, cols, width, scale,
-                                           buf_real, buf_imag, *plan);
+        fft_cols_strips_scalar_impl<false>(real, imag, rows, cols, width, scale, buf_real, buf_imag,
+                                           *plan);
     }
 }
 

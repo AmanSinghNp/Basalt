@@ -1,8 +1,8 @@
 #include "basalt/kernel/transpose_avx.hpp"
-#include "basalt/kernel/transpose.hpp"
 #include "basalt/internal/fft_plan.hpp"
 #include "basalt/internal/simd_dispatch.hpp"
 #include "basalt/kernel/cpu_features.hpp"
+#include "basalt/kernel/transpose.hpp"
 
 #include <algorithm>
 #include <immintrin.h>
@@ -67,8 +67,7 @@ BASALT_TARGET_AVX2 inline void transpose_8x8_avx_impl(const float* src, float* d
 }
 
 /// Portable 8x8 block transpose.
-void transpose_8x8_scalar(const float* src, float* dst,
-                          size_t src_stride, size_t dst_stride) {
+void transpose_8x8_scalar(const float* src, float* dst, size_t src_stride, size_t dst_stride) {
     for (size_t i = 0; i < 8; ++i) {
         for (size_t j = 0; j < 8; ++j) {
             dst[j * dst_stride + i] = src[i * src_stride + j];
@@ -77,9 +76,8 @@ void transpose_8x8_scalar(const float* src, float* dst,
 }
 
 /// Tiled transpose driver of the AVX2 path (arguments already validated).
-BASALT_TARGET_AVX2 void transpose_tiled_avx2_impl(const float* src, float* dst,
-                                                  size_t rows, size_t cols,
-                                                  size_t block_size) {
+BASALT_TARGET_AVX2 void transpose_tiled_avx2_impl(const float* src, float* dst, size_t rows,
+                                                  size_t cols, size_t block_size) {
     // Clamp huge tiles so block_i + block_size cannot wrap around.
     block_size = std::min(block_size, std::max(rows, cols));
 
@@ -96,12 +94,7 @@ BASALT_TARGET_AVX2 void transpose_tiled_avx2_impl(const float* src, float* dst,
             // AVX core for full 8x8 regions inside current cache tile.
             for (size_t bi = block_i; bi < i_avx_end; bi += 8) {
                 for (size_t bj = block_j; bj < j_avx_end; bj += 8) {
-                    transpose_8x8_avx_impl(
-                        src + bi * cols + bj,
-                        dst + bj * rows + bi,
-                        cols,
-                        rows
-                    );
+                    transpose_8x8_avx_impl(src + bi * cols + bj, dst + bj * rows + bi, cols, rows);
                 }
             }
 
@@ -124,8 +117,7 @@ BASALT_TARGET_AVX2 void transpose_tiled_avx2_impl(const float* src, float* dst,
 
 } // anonymous namespace
 
-void transpose_8x8_avx(const float* src, float* dst,
-                       size_t src_stride, size_t dst_stride) {
+void transpose_8x8_avx(const float* src, float* dst, size_t src_stride, size_t dst_stride) {
     if (detail::use_avx2()) {
         transpose_8x8_avx_impl(src, dst, src_stride, dst_stride);
     } else {
@@ -133,8 +125,7 @@ void transpose_8x8_avx(const float* src, float* dst,
     }
 }
 
-void transpose_tiled_avx(const float* src, float* dst,
-                         size_t rows, size_t cols,
+void transpose_tiled_avx(const float* src, float* dst, size_t rows, size_t cols,
                          size_t block_size) {
     if (!internal::validate_transpose_args(src, dst, rows, cols, "transpose_tiled_avx")) {
         return;

@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -25,7 +26,6 @@
 #include <memory>
 #include <mutex>
 #include <random>
-#include <chrono>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -33,8 +33,7 @@
 
 namespace {
 
-basalt::internal::ThreadPoolOptions make_pool_options(size_t threads,
-                                                      size_t queue_capacity,
+basalt::internal::ThreadPoolOptions make_pool_options(size_t threads, size_t queue_capacity,
                                                       bool enable_affinity = true,
                                                       bool enable_numa = true) {
     basalt::internal::ThreadPoolOptions options;
@@ -61,8 +60,9 @@ public:
     FakeSysfs() {
         static std::atomic<unsigned> counter{0};
         const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-        m_root = std::filesystem::temp_directory_path() /
-                 ("basalt_fake_sysfs_" + std::to_string(stamp) + "_" + std::to_string(counter.fetch_add(1)));
+        m_root =
+            std::filesystem::temp_directory_path() / ("basalt_fake_sysfs_" + std::to_string(stamp) +
+                                                      "_" + std::to_string(counter.fetch_add(1)));
         std::filesystem::create_directories(m_root);
     }
     ~FakeSysfs() {
@@ -74,7 +74,8 @@ public:
 
     const std::filesystem::path& root() const { return m_root; }
 
-    void add_node(const std::string& dir_name, const std::string& cpulist, const std::string& distance = "10") {
+    void add_node(const std::string& dir_name, const std::string& cpulist,
+                  const std::string& distance = "10") {
         const std::filesystem::path dir = m_root / dir_name;
         std::filesystem::create_directories(dir);
         std::ofstream(dir / "cpulist") << cpulist << "\n";
@@ -112,9 +113,7 @@ bool runtime_supports_avx512_filter() {
     return basalt::kernel::cpu_features().can_use_avx512();
 }
 
-void run_direct_pipeline_safe(std::vector<float>& real,
-                              std::vector<float>& imag,
-                              size_t rows,
+void run_direct_pipeline_safe(std::vector<float>& real, std::vector<float>& imag, size_t rows,
                               size_t cols) {
     basalt::filter::FKParams params;
     params.dt = 0.004;
@@ -129,9 +128,8 @@ void run_direct_pipeline_safe(std::vector<float>& real,
     std::memcpy(data.imag, imag.data(), rows * cols * sizeof(float));
 
     basalt::MemoryArena scratch(rows * cols * sizeof(float) * 2 + 8192);
-    const basalt::kernel::FFT2DConfig fft_config = basalt::internal::resolved_fft2d_config(
-        basalt::kernel::FFT2DConfig{}, rows, cols
-    );
+    const basalt::kernel::FFT2DConfig fft_config =
+        basalt::internal::resolved_fft2d_config(basalt::kernel::FFT2DConfig{}, rows, cols);
     basalt::kernel::fft2d_forward(data.real, data.imag, rows, cols, scratch, fft_config);
     basalt::filter::apply_fk_filter(data, rows, cols, params, basalt::kernel::SimdMode::AVX2);
     scratch.reset();
@@ -260,23 +258,11 @@ TEST(BatchExecutorTest, SingleThreadMatchesDirectPath) {
     params.mute_vel_max = 1500.0;
     params.taper_width = 200.0;
 
-    basalt::internal::BatchExecutor executor({
-        1, true, false, basalt::internal::MemoryPolicy::BindWorkerBuffers,
-        rows, cols, 64, basalt::kernel::SimdMode::AVX2
-    });
-    executor.run({
-        {
-            input_real.data(),
-            input_imag.data(),
-            out_real.data(),
-            out_imag.data(),
-            rows,
-            cols,
-            static_cast<size_t>(-1),
-            params,
-            basalt::kernel::FFT2DConfig{}
-        }
-    });
+    basalt::internal::BatchExecutor executor({1, true, false,
+                                              basalt::internal::MemoryPolicy::BindWorkerBuffers,
+                                              rows, cols, 64, basalt::kernel::SimdMode::AVX2});
+    executor.run({{input_real.data(), input_imag.data(), out_real.data(), out_imag.data(), rows,
+                   cols, static_cast<size_t>(-1), params, basalt::kernel::FFT2DConfig{}}});
 
     // Compare against the direct path computed in this same binary with a relative tolerance,
     // so the test does not depend on the optimisation level or instruction selection.
@@ -316,48 +302,32 @@ TEST(BatchExecutorTest, MultiThreadMatchesSingleThreadOutputs) {
     std::vector<basalt::internal::BatchJob> jobs;
     jobs.reserve(shots);
     for (size_t shot = 0; shot < shots; ++shot) {
-        jobs.push_back({
-            input_real.data(),
-            input_imag.data(),
-            single_real.data() + shot * total,
-            single_imag.data() + shot * total,
-            rows,
-            cols,
-            static_cast<size_t>(-1),
-            params,
-            basalt::kernel::FFT2DConfig{}
-        });
+        jobs.push_back({input_real.data(), input_imag.data(), single_real.data() + shot * total,
+                        single_imag.data() + shot * total, rows, cols, static_cast<size_t>(-1),
+                        params, basalt::kernel::FFT2DConfig{}});
     }
 
-    basalt::internal::BatchExecutor single({
-        1, true, false, basalt::internal::MemoryPolicy::BindWorkerBuffers,
-        rows, cols, 64, basalt::kernel::SimdMode::AVX2
-    });
+    basalt::internal::BatchExecutor single({1, true, false,
+                                            basalt::internal::MemoryPolicy::BindWorkerBuffers, rows,
+                                            cols, 64, basalt::kernel::SimdMode::AVX2});
     single.run(jobs);
 
     jobs.clear();
     for (size_t shot = 0; shot < shots; ++shot) {
-        jobs.push_back({
-            input_real.data(),
-            input_imag.data(),
-            multi_real.data() + shot * total,
-            multi_imag.data() + shot * total,
-            rows,
-            cols,
-            static_cast<size_t>(-1),
-            params,
-            basalt::kernel::FFT2DConfig{}
-        });
+        jobs.push_back({input_real.data(), input_imag.data(), multi_real.data() + shot * total,
+                        multi_imag.data() + shot * total, rows, cols, static_cast<size_t>(-1),
+                        params, basalt::kernel::FFT2DConfig{}});
     }
 
-    basalt::internal::BatchExecutor multi({
-        4, true, false, basalt::internal::MemoryPolicy::BindWorkerBuffers,
-        rows, cols, 128, basalt::kernel::SimdMode::AVX2
-    });
+    basalt::internal::BatchExecutor multi({4, true, false,
+                                           basalt::internal::MemoryPolicy::BindWorkerBuffers, rows,
+                                           cols, 128, basalt::kernel::SimdMode::AVX2});
     multi.run(jobs);
 
-    EXPECT_EQ(hash_floats(single_real.data(), shots * total), hash_floats(multi_real.data(), shots * total));
-    EXPECT_EQ(hash_floats(single_imag.data(), shots * total), hash_floats(multi_imag.data(), shots * total));
+    EXPECT_EQ(hash_floats(single_real.data(), shots * total),
+              hash_floats(multi_real.data(), shots * total));
+    EXPECT_EQ(hash_floats(single_imag.data(), shots * total),
+              hash_floats(multi_imag.data(), shots * total));
 }
 
 TEST(BatchExecutorPreferredNodeTest, PreferredNodeCountsAreTracked) {
@@ -374,24 +344,15 @@ TEST(BatchExecutorPreferredNodeTest, PreferredNodeCountsAreTracked) {
     params.dx = 5.0;
     params.taper_width = 100.0;
 
-    basalt::internal::BatchExecutor executor({
-        4, true, true, basalt::internal::MemoryPolicy::BindWorkerBuffers,
-        rows, cols, 64, basalt::kernel::SimdMode::AVX2
-    });
+    basalt::internal::BatchExecutor executor({4, true, true,
+                                              basalt::internal::MemoryPolicy::BindWorkerBuffers,
+                                              rows, cols, 64, basalt::kernel::SimdMode::AVX2});
 
     std::vector<basalt::internal::BatchJob> jobs;
     for (size_t i = 0; i < 4; ++i) {
-        jobs.push_back({
-            input_real.data(),
-            input_imag.data(),
-            out_real.data() + i * total,
-            out_imag.data() + i * total,
-            rows,
-            cols,
-            i % 2,
-            params,
-            basalt::kernel::FFT2DConfig{}
-        });
+        jobs.push_back({input_real.data(), input_imag.data(), out_real.data() + i * total,
+                        out_imag.data() + i * total, rows, cols, i % 2, params,
+                        basalt::kernel::FFT2DConfig{}});
     }
 
     const auto stats = executor.run(jobs);
@@ -414,9 +375,7 @@ TEST(BatchExecutorRemoteStealTest, RemoteStealsAppearOnlyWhenTopologyAllowsIt) {
     basalt::internal::ThreadPool pool(make_pool_options(4, 128));
     constexpr size_t task_count = 24;
     for (size_t i = 0; i < task_count; ++i) {
-        pool.enqueue([]() {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }, 0);
+        pool.enqueue([]() { std::this_thread::sleep_for(std::chrono::milliseconds(1)); }, 0);
     }
     pool.wait_idle();
 
@@ -642,7 +601,7 @@ TEST(ThreadPoolTest, CurrentWorkerIndexIsOnlySetOnWorkers) {
 #if defined(__linux__)
 TEST(ThreadPoolTest, AffinityFailuresAreCounted) {
     auto options = make_pool_options(2, 16, true, false);
-    options.affinity_cpus = {100000, 100000};  // far beyond CPU_SETSIZE
+    options.affinity_cpus = {100000, 100000}; // far beyond CPU_SETSIZE
     basalt::internal::ThreadPool pool(options);
     EXPECT_EQ(pool.affinity_failures(), 2u);
     EXPECT_EQ(pool.stats().affinity_failures, 2u);
@@ -723,7 +682,7 @@ TEST(NumaTopologyFakeSysfsTest, SparseIdsKeepRealIdsAndDenseIndices) {
     EXPECT_EQ(topology.index_for_node_id(2), 1u);
     EXPECT_EQ(topology.index_for_node_id(1), basalt::internal::NumaTopology::npos);
     EXPECT_EQ(topology.node_id_for_index(1), 2u);
-    EXPECT_EQ(topology.node_id_for_index(3), 2u);  // taken modulo the node count
+    EXPECT_EQ(topology.node_id_for_index(3), 2u); // taken modulo the node count
     // Unknown cpus fall back to the first node.
     EXPECT_EQ(topology.node_for_cpu(99), 0u);
     EXPECT_EQ(topology.node_index_for_cpu(-1), 0u);
@@ -771,14 +730,13 @@ TEST(NumaTopologyFakeSysfsTest, MalformedCpuListFallsBackToUma) {
 TEST(NumaTopologyFakeSysfsTest, MissingOrUnusableRootFallsBackToUma) {
     FakeSysfs sysfs;
     sysfs.add_file("not_a_dir", "x");
-    sysfs.add_node("nodeX", "0");       // non-numeric suffix is ignored
-    sysfs.add_node("power", "0");       // unrelated directory
-    sysfs.add_file("node5", "0");       // a file, not a directory
+    sysfs.add_node("nodeX", "0"); // non-numeric suffix is ignored
+    sysfs.add_node("power", "0"); // unrelated directory
+    sysfs.add_file("node5", "0"); // a file, not a directory
 
     const std::vector<std::filesystem::path> roots{
-        sysfs.root() / "does_not_exist",
-        sysfs.root() / "not_a_dir",
-        sysfs.root(),  // no usable nodeN directory
+        sysfs.root() / "does_not_exist", sysfs.root() / "not_a_dir",
+        sysfs.root(), // no usable nodeN directory
     };
     for (const auto& root : roots) {
         SCOPED_TRACE(root.string());
@@ -814,17 +772,20 @@ TEST(NumaMemoryTest, MappedBlocksAreUnmappedWithTheirRealSize) {
     constexpr int kRounds = 200;
     constexpr size_t kSize = (1u << 20) + 123;
     for (int i = 0; i < kRounds; ++i) {
-        NumaMemoryBlock block = allocate_numa_local(kSize, 0, true, MemoryPolicy::BindWorkerBuffers);
+        NumaMemoryBlock block =
+            allocate_numa_local(kSize, 0, true, MemoryPolicy::BindWorkerBuffers);
         ASSERT_NE(block.ptr, nullptr);
         ASSERT_EQ(reinterpret_cast<uintptr_t>(block.ptr) % 64, 0u);
         EXPECT_TRUE(block.numa_requested);
-        std::memset(block.ptr, 0xA5, block.size);  // the whole request must be usable
+        std::memset(block.ptr, 0xA5, block.size); // the whole request must be usable
     }
 
     const NumaMemoryDebugStats after = numa_memory_debug_stats();
 #if defined(__linux__)
-    EXPECT_EQ(after.mapped_blocks_allocated - before.mapped_blocks_allocated, static_cast<uint64_t>(kRounds));
-    EXPECT_EQ(after.mapped_blocks_released - before.mapped_blocks_released, static_cast<uint64_t>(kRounds));
+    EXPECT_EQ(after.mapped_blocks_allocated - before.mapped_blocks_allocated,
+              static_cast<uint64_t>(kRounds));
+    EXPECT_EQ(after.mapped_blocks_released - before.mapped_blocks_released,
+              static_cast<uint64_t>(kRounds));
     EXPECT_EQ(after.munmap_failures, before.munmap_failures);
     EXPECT_EQ(after.mapped_bytes_live, before.mapped_bytes_live);
 #else
@@ -868,9 +829,11 @@ TEST(NumaMemoryTest, DefaultPolicyUsesPlainAlignedMemory) {
 
 TEST(NumaMemoryTest, LargeAndOutOfRangeNodeIdsDoNotCrash) {
     using namespace basalt::internal;
-    for (size_t node : {size_t{63}, size_t{64}, size_t{100}, size_t{1023}, size_t{1024}, size_t{100000}}) {
+    for (size_t node :
+         {size_t{63}, size_t{64}, size_t{100}, size_t{1023}, size_t{1024}, size_t{100000}}) {
         SCOPED_TRACE(node);
-        NumaMemoryBlock block = allocate_numa_local(8192, node, true, MemoryPolicy::BindWorkerBuffers);
+        NumaMemoryBlock block =
+            allocate_numa_local(8192, node, true, MemoryPolicy::BindWorkerBuffers);
         ASSERT_NE(block.ptr, nullptr);
         std::memset(block.ptr, 0, block.size);
         if (node >= 1024) {
@@ -883,13 +846,19 @@ TEST(NumaMemoryTest, BindingNeverTouchesPartialPages) {
     using namespace basalt::internal;
     std::vector<unsigned char> buffer(64 * 1024, 0);
     // No whole page lies inside a 100 byte range: nothing may be bound.
-    EXPECT_FALSE(bind_existing_range_to_node(buffer.data() + 1, 100, 0, true, MemoryPolicy::BindInputsIfPossible));
-    EXPECT_FALSE(bind_existing_range_to_node(buffer.data() + 1, 4000, 0, true, MemoryPolicy::BindInputsIfPossible));
+    EXPECT_FALSE(bind_existing_range_to_node(buffer.data() + 1, 100, 0, true,
+                                             MemoryPolicy::BindInputsIfPossible));
+    EXPECT_FALSE(bind_existing_range_to_node(buffer.data() + 1, 4000, 0, true,
+                                             MemoryPolicy::BindInputsIfPossible));
     // Other policies and empty ranges are no-ops.
-    EXPECT_FALSE(bind_existing_range_to_node(buffer.data(), buffer.size(), 0, true, MemoryPolicy::Default));
-    EXPECT_FALSE(bind_existing_range_to_node(buffer.data(), buffer.size(), 0, false, MemoryPolicy::BindInputsIfPossible));
-    EXPECT_FALSE(bind_existing_range_to_node(nullptr, 100, 0, true, MemoryPolicy::BindInputsIfPossible));
-    EXPECT_FALSE(bind_existing_range_to_node(buffer.data(), 0, 0, true, MemoryPolicy::BindInputsIfPossible));
+    EXPECT_FALSE(
+        bind_existing_range_to_node(buffer.data(), buffer.size(), 0, true, MemoryPolicy::Default));
+    EXPECT_FALSE(bind_existing_range_to_node(buffer.data(), buffer.size(), 0, false,
+                                             MemoryPolicy::BindInputsIfPossible));
+    EXPECT_FALSE(
+        bind_existing_range_to_node(nullptr, 100, 0, true, MemoryPolicy::BindInputsIfPossible));
+    EXPECT_FALSE(
+        bind_existing_range_to_node(buffer.data(), 0, 0, true, MemoryPolicy::BindInputsIfPossible));
 }
 
 // ---------------------------------------------------------------------------
@@ -898,17 +867,21 @@ TEST(NumaMemoryTest, BindingNeverTouchesPartialPages) {
 
 namespace {
 
-basalt::internal::BatchJob make_job(const float* in_real,
-                                    const float* in_imag,
-                                    float* out_real,
-                                    float* out_imag,
-                                    size_t rows,
-                                    size_t cols) {
-    return {in_real, in_imag, out_real, out_imag, rows, cols,
-            static_cast<size_t>(-1), default_fk_params(), basalt::kernel::FFT2DConfig{}};
+basalt::internal::BatchJob make_job(const float* in_real, const float* in_imag, float* out_real,
+                                    float* out_imag, size_t rows, size_t cols) {
+    return {in_real,
+            in_imag,
+            out_real,
+            out_imag,
+            rows,
+            cols,
+            static_cast<size_t>(-1),
+            default_fk_params(),
+            basalt::kernel::FFT2DConfig{}};
 }
 
-basalt::internal::ExecutionOptions make_exec_options(size_t threads, size_t max_dim, size_t queue_capacity) {
+basalt::internal::ExecutionOptions make_exec_options(size_t threads, size_t max_dim,
+                                                     size_t queue_capacity) {
     basalt::internal::ExecutionOptions options;
     options.thread_count = threads;
     options.enable_affinity = false;
@@ -934,7 +907,8 @@ TEST(BatchExecutorTest, ManyJobsThroughTinyQueueMatchSingleThread) {
     std::vector<float> expected_imag(total);
     {
         basalt::internal::BatchExecutor single(make_exec_options(1, dim, 64));
-        single.run({make_job(input_real.data(), input_imag.data(), expected_real.data(), expected_imag.data(), dim, dim)});
+        single.run({make_job(input_real.data(), input_imag.data(), expected_real.data(),
+                             expected_imag.data(), dim, dim)});
     }
 
     std::vector<float> out_real(shots * total, -1.0f);
@@ -942,15 +916,20 @@ TEST(BatchExecutorTest, ManyJobsThroughTinyQueueMatchSingleThread) {
     std::vector<basalt::internal::BatchJob> jobs;
     for (size_t shot = 0; shot < shots; ++shot) {
         jobs.push_back(make_job(input_real.data(), input_imag.data(),
-                                out_real.data() + shot * total, out_imag.data() + shot * total, dim, dim));
+                                out_real.data() + shot * total, out_imag.data() + shot * total, dim,
+                                dim));
     }
     basalt::internal::BatchExecutor multi(make_exec_options(4, dim, 2));
     const auto stats = multi.run(jobs);
     EXPECT_EQ(stats.shot_count, shots);
     for (size_t shot = 0; shot < shots; ++shot) {
-        ASSERT_EQ(std::memcmp(out_real.data() + shot * total, expected_real.data(), total * sizeof(float)), 0)
+        ASSERT_EQ(std::memcmp(out_real.data() + shot * total, expected_real.data(),
+                              total * sizeof(float)),
+                  0)
             << "shot " << shot;
-        ASSERT_EQ(std::memcmp(out_imag.data() + shot * total, expected_imag.data(), total * sizeof(float)), 0)
+        ASSERT_EQ(std::memcmp(out_imag.data() + shot * total, expected_imag.data(),
+                              total * sizeof(float)),
+                  0)
             << "shot " << shot;
     }
 }
@@ -964,7 +943,7 @@ TEST(BatchExecutorTest, ThreeThousandJobsWithDefaultQueueCapacity) {
     std::vector<float> out_real(shots * total);
     std::vector<float> out_imag(shots * total);
 
-    basalt::internal::ExecutionOptions options;  // default queue capacity (1024)
+    basalt::internal::ExecutionOptions options; // default queue capacity (1024)
     options.thread_count = 2;
     options.enable_numa = false;
     options.enable_affinity = false;
@@ -977,7 +956,8 @@ TEST(BatchExecutorTest, ThreeThousandJobsWithDefaultQueueCapacity) {
     jobs.reserve(shots);
     for (size_t shot = 0; shot < shots; ++shot) {
         jobs.push_back(make_job(input_real.data(), input_imag.data(),
-                                out_real.data() + shot * total, out_imag.data() + shot * total, dim, dim));
+                                out_real.data() + shot * total, out_imag.data() + shot * total, dim,
+                                dim));
     }
     EXPECT_NO_THROW(executor.run(jobs));
 }
@@ -1006,7 +986,8 @@ TEST(BatchExecutorTest, InlineExecutorsDoNotShareStaleBuffers) {
 
     std::vector<float> out_real(total);
     std::vector<float> out_imag(total);
-    ASSERT_NO_THROW(big.run({make_job(input_real.data(), input_imag.data(), out_real.data(), out_imag.data(), dim, dim)}));
+    ASSERT_NO_THROW(big.run({make_job(input_real.data(), input_imag.data(), out_real.data(),
+                                      out_imag.data(), dim, dim)}));
     for (size_t i = 0; i < total; ++i) {
         ASSERT_NEAR(out_real[i], expected_real[i], 1e-3f) << i;
         ASSERT_NEAR(out_imag[i], expected_imag[i], 1e-3f) << i;
@@ -1023,7 +1004,8 @@ TEST(BatchExecutorTest, SequentialInlineExecutorsEachUseTheirOwnBuffers) {
     for (int round = 0; round < 3; ++round) {
         {
             basalt::internal::BatchExecutor a(make_exec_options(1, dim, 8));
-            a.run({make_job(input_real.data(), input_imag.data(), out_a.data(), nullptr, dim, dim)});
+            a.run(
+                {make_job(input_real.data(), input_imag.data(), out_a.data(), nullptr, dim, dim)});
         }
         basalt::internal::BatchExecutor b(make_exec_options(1, dim, 8));
         b.run({make_job(input_real.data(), input_imag.data(), out_b.data(), nullptr, dim, dim)});
@@ -1044,8 +1026,10 @@ TEST(BatchExecutorTest, NullOutputImagIsOptional) {
         std::vector<float> with_imag(total);
         std::vector<float> without_real(total);
         basalt::internal::BatchExecutor executor(make_exec_options(threads, dim, 16));
-        executor.run({make_job(input_real.data(), input_imag.data(), with_real.data(), with_imag.data(), dim, dim)});
-        ASSERT_NO_THROW(executor.run({make_job(input_real.data(), input_imag.data(), without_real.data(), nullptr, dim, dim)}));
+        executor.run({make_job(input_real.data(), input_imag.data(), with_real.data(),
+                               with_imag.data(), dim, dim)});
+        ASSERT_NO_THROW(executor.run({make_job(input_real.data(), input_imag.data(),
+                                               without_real.data(), nullptr, dim, dim)}));
         EXPECT_EQ(std::memcmp(with_real.data(), without_real.data(), total * sizeof(float)), 0);
     }
 }
@@ -1056,14 +1040,20 @@ TEST(BatchExecutorTest, InvalidJobsAreReportedNotCrashed) {
     std::vector<float> out(dim * dim);
     basalt::internal::BatchExecutor executor(make_exec_options(1, dim, 8));
 
-    EXPECT_THROW(executor.run({make_job(nullptr, nullptr, out.data(), nullptr, dim, dim)}), std::invalid_argument);
-    EXPECT_THROW(executor.run({make_job(in.data(), nullptr, nullptr, nullptr, dim, dim)}), std::invalid_argument);
-    EXPECT_THROW(executor.run({make_job(in.data(), nullptr, out.data(), nullptr, 0, dim)}), std::invalid_argument);
-    EXPECT_THROW(executor.run({make_job(in.data(), nullptr, out.data(), nullptr, dim, 0)}), std::invalid_argument);
+    EXPECT_THROW(executor.run({make_job(nullptr, nullptr, out.data(), nullptr, dim, dim)}),
+                 std::invalid_argument);
+    EXPECT_THROW(executor.run({make_job(in.data(), nullptr, nullptr, nullptr, dim, dim)}),
+                 std::invalid_argument);
+    EXPECT_THROW(executor.run({make_job(in.data(), nullptr, out.data(), nullptr, 0, dim)}),
+                 std::invalid_argument);
+    EXPECT_THROW(executor.run({make_job(in.data(), nullptr, out.data(), nullptr, dim, 0)}),
+                 std::invalid_argument);
     // rows * cols wraps around to a tiny number if it is not checked.
     const size_t huge = (std::numeric_limits<size_t>::max() / 2) + 2;
-    EXPECT_THROW(executor.run({make_job(in.data(), nullptr, out.data(), nullptr, huge, 2)}), std::invalid_argument);
-    EXPECT_THROW(executor.run({make_job(in.data(), nullptr, out.data(), nullptr, dim * 2, dim)}), std::runtime_error);
+    EXPECT_THROW(executor.run({make_job(in.data(), nullptr, out.data(), nullptr, huge, 2)}),
+                 std::invalid_argument);
+    EXPECT_THROW(executor.run({make_job(in.data(), nullptr, out.data(), nullptr, dim * 2, dim)}),
+                 std::runtime_error);
 
     // Still usable afterwards.
     EXPECT_NO_THROW(executor.run({make_job(in.data(), nullptr, out.data(), nullptr, dim, dim)}));
@@ -1086,7 +1076,7 @@ TEST(BatchExecutorTest, RemainingJobsAreSkippedAfterFirstFailure) {
     basalt::internal::BatchExecutor executor(make_exec_options(1, dim, 8));
 
     std::vector<basalt::internal::BatchJob> jobs;
-    jobs.push_back(make_job(in.data(), nullptr, out.data(), nullptr, 0, dim));  // invalid
+    jobs.push_back(make_job(in.data(), nullptr, out.data(), nullptr, 0, dim)); // invalid
     jobs.push_back(make_job(in.data(), nullptr, out.data() + total, nullptr, dim, dim));
     EXPECT_THROW(executor.run(jobs), std::invalid_argument);
     for (size_t i = 0; i < total; ++i) {
@@ -1104,13 +1094,15 @@ TEST(BatchExecutorTest, FailureInThreadedRunPropagatesAndExecutorStaysUsable) {
 
     std::vector<basalt::internal::BatchJob> bad_jobs;
     for (size_t shot = 0; shot < shots; ++shot) {
-        bad_jobs.push_back(make_job(in.data(), nullptr, out.data() + shot * total, nullptr, dim * 4, dim));
+        bad_jobs.push_back(
+            make_job(in.data(), nullptr, out.data() + shot * total, nullptr, dim * 4, dim));
     }
     EXPECT_THROW(executor.run(bad_jobs), std::runtime_error);
 
     std::vector<basalt::internal::BatchJob> good_jobs;
     for (size_t shot = 0; shot < shots; ++shot) {
-        good_jobs.push_back(make_job(in.data(), nullptr, out.data() + shot * total, nullptr, dim, dim));
+        good_jobs.push_back(
+            make_job(in.data(), nullptr, out.data() + shot * total, nullptr, dim, dim));
     }
     EXPECT_NO_THROW(executor.run(good_jobs));
 }
@@ -1170,7 +1162,8 @@ TEST(FKFilterSimdModeTest, ExplicitAvx512MatchesAvx2) {
     params.mute_vel_max = 1500.0;
     params.taper_width = 150.0;
 
-    basalt::filter::apply_fk_filter(avx512_data, rows, cols, params, basalt::kernel::SimdMode::AVX512);
+    basalt::filter::apply_fk_filter(avx512_data, rows, cols, params,
+                                    basalt::kernel::SimdMode::AVX512);
     basalt::filter::apply_fk_filter(avx2_data, rows, cols, params, basalt::kernel::SimdMode::AVX2);
 
     for (size_t i = 0; i < total; ++i) {
@@ -1204,7 +1197,8 @@ TEST(FKFilterSimdModeTest, ExplicitAvx512FallsBackWhenUnsupported) {
     params.dx = 5.0;
     params.taper_width = 120.0;
 
-    basalt::filter::apply_fk_filter(avx512_data, rows, cols, params, basalt::kernel::SimdMode::AVX512);
+    basalt::filter::apply_fk_filter(avx512_data, rows, cols, params,
+                                    basalt::kernel::SimdMode::AVX512);
     basalt::filter::apply_fk_filter(avx2_data, rows, cols, params, basalt::kernel::SimdMode::AVX2);
 
     EXPECT_EQ(hash_floats(avx512_data.real, total), hash_floats(avx2_data.real, total));

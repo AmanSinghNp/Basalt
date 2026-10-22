@@ -1,22 +1,22 @@
-#include "basalt/kernel/fft_avx.hpp"
+#include "basalt/arena.hpp"
 #include "basalt/internal/fft_plan.hpp"
 #include "basalt/internal/simd_dispatch.hpp"
-#include "basalt/kernel/cpu_features.hpp"
-#include "basalt/kernel/fft.hpp"
-#include "basalt/kernel/cpu_state.hpp"
 #include "basalt/kernel/complex_soa.hpp"
-#include "basalt/kernel/transpose_avx.hpp"
+#include "basalt/kernel/cpu_features.hpp"
+#include "basalt/kernel/cpu_state.hpp"
+#include "basalt/kernel/fft.hpp"
+#include "basalt/kernel/fft_avx.hpp"
 #include "basalt/kernel/transpose.hpp"
-#include "basalt/arena.hpp"
-#include <gtest/gtest.h>
+#include "basalt/kernel/transpose_avx.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <gtest/gtest.h>
 #include <immintrin.h>
 #include <limits>
-#include <cstdlib>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -67,15 +67,16 @@ void reference_dft(const std::vector<float>& in_re, const std::vector<float>& in
             sr += xr * cs[idx] - xi * sn[idx];
             si += xr * sn[idx] + xi * cs[idx];
             idx += k;
-            if (idx >= n) idx -= n;
+            if (idx >= n)
+                idx -= n;
         }
         out_re[k] = sr;
         out_im[k] = si;
     }
 }
 
-double rel_l2_error(const float* got_re, const float* got_im,
-                    const std::vector<double>& ref_re, const std::vector<double>& ref_im) {
+double rel_l2_error(const float* got_re, const float* got_im, const std::vector<double>& ref_re,
+                    const std::vector<double>& ref_im) {
     double num = 0.0, den = 0.0;
     for (size_t i = 0; i < ref_re.size(); ++i) {
         const double dr = got_re[i] - ref_re[i];
@@ -86,8 +87,8 @@ double rel_l2_error(const float* got_re, const float* got_im,
     return den > 0.0 ? std::sqrt(num / den) : std::sqrt(num);
 }
 
-double rel_l2_error(const float* got_re, const float* got_im,
-                    const float* ref_re, const float* ref_im, size_t n) {
+double rel_l2_error(const float* got_re, const float* got_im, const float* ref_re,
+                    const float* ref_im, size_t n) {
     std::vector<double> rr(ref_re, ref_re + n), ri(ref_im, ref_im + n);
     return rel_l2_error(got_re, got_im, rr, ri);
 }
@@ -101,8 +102,10 @@ double fft_error_bound(size_t n) {
 void fill_random(std::vector<float>& re, std::vector<float>& im, uint32_t seed) {
     std::mt19937 rng(seed);
     std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-    for (auto& v : re) v = dist(rng);
-    for (auto& v : im) v = dist(rng);
+    for (auto& v : re)
+        v = dist(rng);
+    for (auto& v : im)
+        v = dist(rng);
 }
 
 } // namespace
@@ -110,7 +113,7 @@ void fill_random(std::vector<float>& re, std::vector<float>& im, uint32_t seed) 
 // ---------- FTZ/DAZ test ----------
 
 TEST(CPUStateTest, FlushToZeroWorks) {
-    MxcsrGuard guard;  // restores the caller's MXCSR even if an assertion fails
+    MxcsrGuard guard; // restores the caller's MXCSR even if an assertion fails
     set_flush_to_zero();
     EXPECT_TRUE(check_ftz_daz());
 }
@@ -140,8 +143,8 @@ TEST_P(FFTAvxCrossValidation, MatchesScalarForward) {
     // Fill with same pattern
     for (size_t i = 0; i < n; ++i) {
         double t = static_cast<double>(i) / static_cast<double>(n);
-        float val = static_cast<float>(
-            std::sin(2.0 * M_PI * 5.0 * t) + 0.3 * std::cos(2.0 * M_PI * 13.0 * t));
+        float val = static_cast<float>(std::sin(2.0 * M_PI * 5.0 * t) +
+                                       0.3 * std::cos(2.0 * M_PI * 13.0 * t));
         scalar_data.real[i] = val;
         scalar_data.imag[i] = 0.0f;
         avx_data.real[i] = val;
@@ -151,8 +154,8 @@ TEST_P(FFTAvxCrossValidation, MatchesScalarForward) {
     fft_forward(scalar_data.real, scalar_data.imag, n);
     fft_forward_avx(avx_data.real, avx_data.imag, n);
 
-    const double err = rel_l2_error(avx_data.real, avx_data.imag,
-                                    scalar_data.real, scalar_data.imag, n);
+    const double err =
+        rel_l2_error(avx_data.real, avx_data.imag, scalar_data.real, scalar_data.imag, n);
     EXPECT_LE(err, fft_error_bound(n)) << "AVX vs scalar rel L2 error for n=" << n;
 }
 
@@ -164,8 +167,8 @@ TEST_P(FFTAvxCrossValidation, RoundTripPreservesData) {
 
     for (size_t i = 0; i < n; ++i) {
         double t = static_cast<double>(i) / static_cast<double>(n);
-        data.real[i] = static_cast<float>(
-            std::sin(2.0 * M_PI * 3.0 * t) + 0.5 * std::cos(2.0 * M_PI * 7.0 * t));
+        data.real[i] = static_cast<float>(std::sin(2.0 * M_PI * 3.0 * t) +
+                                          0.5 * std::cos(2.0 * M_PI * 7.0 * t));
         data.imag[i] = 0.0f;
     }
 
@@ -179,10 +182,8 @@ TEST_P(FFTAvxCrossValidation, RoundTripPreservesData) {
     EXPECT_LE(err, 2.0 * fft_error_bound(n)) << "AVX round-trip rel L2 error for n=" << n;
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    AvxFFTSizes, FFTAvxCrossValidation,
-    ::testing::Values(1, 2, 4, 8, 16, 32, 64, 128, 256, 1024, 4096, 16384)
-);
+INSTANTIATE_TEST_SUITE_P(AvxFFTSizes, FFTAvxCrossValidation,
+                         ::testing::Values(1, 2, 4, 8, 16, 32, 64, 128, 256, 1024, 4096, 16384));
 
 // ---------- AVX vs double-precision reference (also pins sign convention) ----------
 
@@ -220,10 +221,8 @@ TEST_P(FFTAvxReferenceTest, InverseMatchesDoubleReference) {
     EXPECT_LE(err, fft_error_bound(n)) << "n=" << n << " rel L2 error " << err;
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    AvxRefSizes, FFTAvxReferenceTest,
-    ::testing::Values(1, 2, 4, 8, 16, 32, 64, 128, 256, 1024, 4096, 16384)
-);
+INSTANTIATE_TEST_SUITE_P(AvxRefSizes, FFTAvxReferenceTest,
+                         ::testing::Values(1, 2, 4, 8, 16, 32, 64, 128, 256, 1024, 4096, 16384));
 
 TEST(FFTAvxTest, ForwardOfPositiveExponentialLandsInBinK0) {
     // x[n] = exp(+2*pi*i*k0*n/N) -> energy in bin k0 (not N - k0).
@@ -242,7 +241,8 @@ TEST(FFTAvxTest, ForwardOfPositiveExponentialLandsInBinK0) {
         EXPECT_NEAR(re[k0], static_cast<float>(n), tol) << "n=" << n;
         EXPECT_NEAR(im[k0], 0.0f, tol) << "n=" << n;
         for (size_t k = 0; k < n; ++k) {
-            if (k == k0) continue;
+            if (k == k0)
+                continue;
             EXPECT_LE(std::hypot(re[k], im[k]), tol) << "leakage at bin " << k << " for n=" << n;
         }
     }
@@ -282,7 +282,8 @@ TEST(FFTAvxValidationTest, NonPowerOfTwoThrowsAndLeavesDataUntouched) {
 TEST(FFTAvxValidationTest, HugeNullAndAliasedArgumentsThrow) {
     float a = 0.0f, b = 0.0f;
     EXPECT_THROW(fft_forward_avx(&a, &b, size_t{1} << 40), std::invalid_argument);
-    EXPECT_THROW(fft_inverse_avx(&a, &b, std::numeric_limits<size_t>::max()), std::invalid_argument);
+    EXPECT_THROW(fft_inverse_avx(&a, &b, std::numeric_limits<size_t>::max()),
+                 std::invalid_argument);
 
     std::vector<float> buf(32, 0.0f);
     EXPECT_THROW(fft_forward_avx(nullptr, buf.data(), 32), std::invalid_argument);
@@ -327,7 +328,8 @@ TEST(TransposeAvxValidationTest, EmptyAndOverflowingShapes) {
 TEST(TransposeAvxValidationTest, ExtremeTileSizesStillCorrect) {
     constexpr size_t rows = 24, cols = 40;
     std::vector<float> src(rows * cols);
-    for (size_t i = 0; i < src.size(); ++i) src[i] = static_cast<float>(i);
+    for (size_t i = 0; i < src.size(); ++i)
+        src[i] = static_cast<float>(i);
     std::vector<float> expect(rows * cols);
     transpose_tiled(src.data(), expect.data(), rows, cols);
     for (const size_t tile : {size_t{0}, size_t{1}, std::numeric_limits<size_t>::max()}) {
@@ -353,8 +355,7 @@ TEST(TransposeAvxTest, MatchesScalar) {
     transpose_tiled_avx(src.data(), dst_avx.data(), rows, cols);
 
     for (size_t i = 0; i < dst_scalar.size(); ++i) {
-        EXPECT_FLOAT_EQ(dst_avx[i], dst_scalar[i])
-            << "Mismatch at flat index " << i;
+        EXPECT_FLOAT_EQ(dst_avx[i], dst_scalar[i]) << "Mismatch at flat index " << i;
     }
 }
 
@@ -438,9 +439,8 @@ TEST(FFTAvxTest, EnergyPreservation) {
     ComplexSoA data(arena, n);
 
     for (size_t i = 0; i < n; ++i) {
-        data.real[i] = static_cast<float>(
-            std::sin(0.1 * static_cast<double>(i)) * 
-            std::cos(0.03 * static_cast<double>(i)));
+        data.real[i] = static_cast<float>(std::sin(0.1 * static_cast<double>(i)) *
+                                          std::cos(0.03 * static_cast<double>(i)));
         data.imag[i] = 0.0f;
     }
 
@@ -475,10 +475,14 @@ std::string lower_env(const char* name) {
 
 const char* cap_name(SimdMode m) {
     switch (m) {
-    case SimdMode::Auto: return "auto";
-    case SimdMode::AVX2: return "avx2";
-    case SimdMode::AVX512: return "avx512";
-    case SimdMode::Scalar: return "scalar";
+    case SimdMode::Auto:
+        return "auto";
+    case SimdMode::AVX2:
+        return "avx2";
+    case SimdMode::AVX512:
+        return "avx512";
+    case SimdMode::Scalar:
+        return "scalar";
     }
     return "?";
 }
@@ -493,7 +497,8 @@ TEST(CpuFeaturesTest, IsStableAndThreadSafe) {
     for (size_t t = 0; t < seen.size(); ++t) {
         threads.emplace_back([&seen, t] { seen[t] = &cpu_features(); });
     }
-    for (auto& th : threads) th.join();
+    for (auto& th : threads)
+        th.join();
     for (const CpuFeatures* p : seen) {
         EXPECT_EQ(p, first);
     }
@@ -520,12 +525,24 @@ TEST(CpuFeaturesTest, EnvOverrideRespected) {
     }
 #if (defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
     // Whatever is reported must really be supported by the CPU: the cap only removes features.
-    if (f.avx2) { EXPECT_TRUE(__builtin_cpu_supports("avx2")); }
-    if (f.fma) { EXPECT_TRUE(__builtin_cpu_supports("fma")); }
-    if (f.avx512f) { EXPECT_TRUE(__builtin_cpu_supports("avx512f")); }
-    if (f.avx512dq) { EXPECT_TRUE(__builtin_cpu_supports("avx512dq")); }
-    if (f.avx512bw) { EXPECT_TRUE(__builtin_cpu_supports("avx512bw")); }
-    if (f.avx512vl) { EXPECT_TRUE(__builtin_cpu_supports("avx512vl")); }
+    if (f.avx2) {
+        EXPECT_TRUE(__builtin_cpu_supports("avx2"));
+    }
+    if (f.fma) {
+        EXPECT_TRUE(__builtin_cpu_supports("fma"));
+    }
+    if (f.avx512f) {
+        EXPECT_TRUE(__builtin_cpu_supports("avx512f"));
+    }
+    if (f.avx512dq) {
+        EXPECT_TRUE(__builtin_cpu_supports("avx512dq"));
+    }
+    if (f.avx512bw) {
+        EXPECT_TRUE(__builtin_cpu_supports("avx512bw"));
+    }
+    if (f.avx512vl) {
+        EXPECT_TRUE(__builtin_cpu_supports("avx512vl"));
+    }
     if (cap != "scalar" && cap != "avx2") {
         // No effective cap: detection equals the compiler's own answer.
         EXPECT_EQ(f.avx2, static_cast<bool>(__builtin_cpu_supports("avx2")));
@@ -549,7 +566,8 @@ TEST(CpuFeaturesTest, EnvVariableIsParsedByChildProcess) {
     const ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
     ASSERT_GT(len, 0);
     for (const char* value : {"scalar", "SCALAR", "avx2", "Avx2", "avx512", "bogus", ""}) {
-        const std::string cmd = std::string("BASALT_SIMD_MAX='") + value + "' '" + exe +
+        const std::string cmd =
+            std::string("BASALT_SIMD_MAX='") + value + "' '" + exe +
             "' --gtest_filter=CpuFeaturesTest.EnvOverrideRespected >/dev/null 2>&1";
         EXPECT_EQ(std::system(cmd.c_str()), 0) << "BASALT_SIMD_MAX=" << value;
     }
@@ -573,7 +591,7 @@ TEST(CpuFeaturesTest, DispatchLevelsHonourCaps) {
         EXPECT_EQ(resolve_simd_level(SimdMode::AVX512), resolve_simd_level(SimdMode::AVX2));
         EXPECT_EQ(resolve_simd_level(SimdMode::Scalar), SimdLevel::Scalar);
     }
-    EXPECT_EQ(max_simd_level(), hardware);  // scoped caps restore the previous state
+    EXPECT_EQ(max_simd_level(), hardware); // scoped caps restore the previous state
     EXPECT_EQ(simd_cap_for_testing(), SimdMode::Auto);
     // Explicit requests never exceed the hardware level; Scalar is always honoured.
     EXPECT_LE(resolve_simd_level(SimdMode::AVX2), SimdLevel::AVX2);
@@ -594,10 +612,11 @@ TEST(CpuFeaturesTest, DispatchLevelsHonourCaps) {
 
 class SimdCapParamTest : public ::testing::TestWithParam<SimdMode> {};
 
-INSTANTIATE_TEST_SUITE_P(
-    Caps, SimdCapParamTest,
-    ::testing::Values(SimdMode::Scalar, SimdMode::AVX2, SimdMode::AVX512),
-    [](const ::testing::TestParamInfo<SimdMode>& param_info) { return std::string(cap_name(param_info.param)); });
+INSTANTIATE_TEST_SUITE_P(Caps, SimdCapParamTest,
+                         ::testing::Values(SimdMode::Scalar, SimdMode::AVX2, SimdMode::AVX512),
+                         [](const ::testing::TestParamInfo<SimdMode>& param_info) {
+                             return std::string(cap_name(param_info.param));
+                         });
 
 TEST_P(SimdCapParamTest, ExplicitFftMatchesReferenceAndRoundTrips) {
     basalt::kernel::detail::ScopedSimdCap cap(GetParam());
@@ -631,7 +650,8 @@ TEST_P(SimdCapParamTest, LargeFftAgreesWithScalarKernel) {
         std::vector<float> re = in_re, im = in_im;
         fft_forward_avx(re.data(), im.data(), n);
         EXPECT_LE(rel_l2_error(re.data(), im.data(), ref_re.data(), ref_im.data(), n),
-                  2.0 * fft_error_bound(n)) << "n=" << n;
+                  2.0 * fft_error_bound(n))
+            << "n=" << n;
 
         if (GetParam() == SimdMode::Scalar) {
             // The capped "AVX" entry point runs the very same scalar kernel.
@@ -646,11 +666,13 @@ TEST_P(SimdCapParamTest, ColumnStripsMatchPerColumnFft) {
     // scalar kernel applied to each extracted column, for every strip width the
     // AVX2 path dispatches on, both directions and a non-trivial scale.
     basalt::kernel::detail::ScopedSimdCap cap(GetParam());
-    struct Case { size_t rows, cols, width; };
+    struct Case {
+        size_t rows, cols, width;
+    };
     const Case cases[] = {
-        {2, 4, 4}, {8, 2, 2}, {16, 1, 1}, {4, 8, 8}, {64, 8, 8}, {64, 16, 16}, {128, 32, 32},
-        {256, 64, 64}, {32, 128, 64}, {512, 64, 32}, {1024, 64, 16}, {4096, 64, 64},
-        {2048, 128, 8}, {1, 16, 16},
+        {2, 4, 4},      {8, 2, 2},      {16, 1, 1},     {4, 8, 8},     {64, 8, 8},
+        {64, 16, 16},   {128, 32, 32},  {256, 64, 64},  {32, 128, 64}, {512, 64, 32},
+        {1024, 64, 16}, {4096, 64, 64}, {2048, 128, 8}, {1, 16, 16},
     };
     for (const Case& c : cases) {
         for (const bool inverse : {false, true}) {
@@ -698,19 +720,21 @@ TEST_P(SimdCapParamTest, ColumnStripsMatchPerColumnFft) {
 
 TEST_P(SimdCapParamTest, ExplicitTransposeMatchesScalar) {
     basalt::kernel::detail::ScopedSimdCap cap(GetParam());
-    const std::pair<size_t, size_t> shapes[] = {{1, 1}, {1, 9}, {9, 1}, {7, 13}, {8, 8}, {16, 24},
-                                                {33, 65}, {100, 37}, {128, 64}, {257, 129}};
+    const std::pair<size_t, size_t> shapes[] = {{1, 1},    {1, 9},    {9, 1},   {7, 13},
+                                                {8, 8},    {16, 24},  {33, 65}, {100, 37},
+                                                {128, 64}, {257, 129}};
     for (const auto& shape : shapes) {
         const size_t rows = shape.first, cols = shape.second;
         std::vector<float> src(rows * cols);
-        for (size_t i = 0; i < src.size(); ++i) src[i] = static_cast<float>(i) * 0.25f;
+        for (size_t i = 0; i < src.size(); ++i)
+            src[i] = static_cast<float>(i) * 0.25f;
         std::vector<float> expect(rows * cols);
         transpose_tiled(src.data(), expect.data(), rows, cols);
         for (const size_t tile : {size_t{0}, size_t{8}, size_t{17}, size_t{128}}) {
             std::vector<float> dst(rows * cols, -1.0f);
             transpose_tiled_avx(src.data(), dst.data(), rows, cols, tile);
-            EXPECT_EQ(dst, expect) << rows << "x" << cols << " tile " << tile
-                                   << " cap=" << cap_name(GetParam());
+            EXPECT_EQ(dst, expect)
+                << rows << "x" << cols << " tile " << tile << " cap=" << cap_name(GetParam());
         }
     }
 }
@@ -719,7 +743,8 @@ TEST_P(SimdCapParamTest, Explicit8x8BlockTranspose) {
     basalt::kernel::detail::ScopedSimdCap cap(GetParam());
     constexpr size_t src_stride = 13, dst_stride = 11;
     std::vector<float> src(8 * src_stride);
-    for (size_t i = 0; i < src.size(); ++i) src[i] = static_cast<float>(i);
+    for (size_t i = 0; i < src.size(); ++i)
+        src[i] = static_cast<float>(i);
     std::vector<float> dst(8 * dst_stride, -1.0f);
     transpose_8x8_avx(src.data(), dst.data(), src_stride, dst_stride);
     for (size_t i = 0; i < 8; ++i) {

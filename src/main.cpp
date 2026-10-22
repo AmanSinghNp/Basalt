@@ -90,9 +90,7 @@ void print_cpu_capabilities() {
     std::cout << "  fma:      " << yn(cpu.fma) << "\n";
     std::cout << "  avx512f:  " << yn(cpu.avx512f) << "\n";
     std::cout << "  avx512dq: " << yn(cpu.avx512dq) << "\n";
-    const char* path = cpu.can_use_avx512() ? "avx512"
-                       : cpu.can_use_avx2() ? "avx2"
-                                            : "scalar";
+    const char* path = cpu.can_use_avx512() ? "avx512" : cpu.can_use_avx2() ? "avx2" : "scalar";
     std::cout << "Kernel path: " << path << "\n";
 }
 
@@ -102,8 +100,7 @@ int cmd_info(const std::vector<std::string>& args) {
     }
     std::cout << "basalt " << BASALT_VERSION << "\n";
     print_cpu_capabilities();
-    std::cout << "FTZ/DAZ: "
-              << (basalt::kernel::check_ftz_daz() ? "enabled" : "disabled") << "\n";
+    std::cout << "FTZ/DAZ: " << (basalt::kernel::check_ftz_daz() ? "enabled" : "disabled") << "\n";
     return kExitOk;
 }
 
@@ -113,20 +110,34 @@ int cmd_info(const std::vector<std::string>& args) {
 
 const char* format_name(uint16_t code) {
     switch (code) {
-        case 1: return "IBM float, 32 bit";
-        case 2: return "int32";
-        case 3: return "int16";
-        case 5: return "IEEE float, 32 bit";
-        case 6: return "IEEE float, 64 bit";
-        case 7: return "int24";
-        case 8: return "int8";
-        case 9: return "int64";
-        case 10: return "uint32";
-        case 11: return "uint16";
-        case 12: return "uint64";
-        case 15: return "uint24";
-        case 16: return "uint8";
-        default: return "unknown";
+    case 1:
+        return "IBM float, 32 bit";
+    case 2:
+        return "int32";
+    case 3:
+        return "int16";
+    case 5:
+        return "IEEE float, 32 bit";
+    case 6:
+        return "IEEE float, 64 bit";
+    case 7:
+        return "int24";
+    case 8:
+        return "int8";
+    case 9:
+        return "int64";
+    case 10:
+        return "uint32";
+    case 11:
+        return "uint16";
+    case 12:
+        return "uint64";
+    case 15:
+        return "uint24";
+    case 16:
+        return "uint8";
+    default:
+        return "unknown";
     }
 }
 
@@ -238,13 +249,20 @@ FilterArgs parse_filter_args(const std::vector<std::string>& args) {
             value = arg.substr(eq + 1);
         }
         std::optional<double>* target = nullptr;
-        if (name == "--dx") target = &fa.dx;
-        else if (name == "--dt") target = &fa.dt;
-        else if (name == "--vmin") target = &fa.vmin;
-        else if (name == "--vmax") target = &fa.vmax;
-        else if (name == "--taper") target = &fa.taper;
-        else if (name == "--max-memory") target = &fa.max_memory_mb;
-        else throw UsageError("unknown option '" + name + "'");
+        if (name == "--dx")
+            target = &fa.dx;
+        else if (name == "--dt")
+            target = &fa.dt;
+        else if (name == "--vmin")
+            target = &fa.vmin;
+        else if (name == "--vmax")
+            target = &fa.vmax;
+        else if (name == "--taper")
+            target = &fa.taper;
+        else if (name == "--max-memory")
+            target = &fa.max_memory_mb;
+        else
+            throw UsageError("unknown option '" + name + "'");
 
         if (!value) {
             if (i + 1 >= args.size()) {
@@ -361,19 +379,21 @@ int cmd_filter(const std::vector<std::string>& args) {
 
     const size_t soa_bytes = basalt::kernel::ComplexSoA::required_arena_bytes(total);
     const size_t scratch_bytes = basalt::kernel::fft2d_scratch_bytes(rows, cols);
-    const uint64_t budget = fa.max_memory_mb
-                                ? static_cast<uint64_t>(std::min(*fa.max_memory_mb, 1e9) * 1048576.0)
-                                : default_memory_budget();
+    const uint64_t budget =
+        fa.max_memory_mb ? static_cast<uint64_t>(std::min(*fa.max_memory_mb, 1e9) * 1048576.0)
+                         : default_memory_budget();
     const uint64_t kMax = std::numeric_limits<size_t>::max();
-    const bool overflow = soa_bytes == kMax || scratch_bytes == kMax || soa_bytes > kMax - scratch_bytes;
+    const bool overflow =
+        soa_bytes == kMax || scratch_bytes == kMax || soa_bytes > kMax - scratch_bytes;
     if (overflow || static_cast<uint64_t>(soa_bytes) + scratch_bytes > budget) {
-        const std::string need = overflow ? std::string("more than the address space")
-                                          : megabytes(static_cast<uint64_t>(soa_bytes) + scratch_bytes);
+        const std::string need = overflow
+                                     ? std::string("more than the address space")
+                                     : megabytes(static_cast<uint64_t>(soa_bytes) + scratch_bytes);
         throw std::runtime_error("gather of " + std::to_string(ns) + " samples x " +
-                                 std::to_string(nt) + " traces (padded to " +
-                                 std::to_string(rows) + " x " + std::to_string(cols) +
-                                 ") needs " + need + " of working memory, above the limit of " +
-                                 megabytes(budget) + "; use --max-memory to raise the limit");
+                                 std::to_string(nt) + " traces (padded to " + std::to_string(rows) +
+                                 " x " + std::to_string(cols) + ") needs " + need +
+                                 " of working memory, above the limit of " + megabytes(budget) +
+                                 "; use --max-memory to raise the limit");
     }
 
     basalt::MemoryArena data_arena(soa_bytes);
@@ -435,9 +455,10 @@ int main(int argc, char* argv[]) {
         }
         const std::string& cmd = argv_all[0];
         const std::vector<std::string> rest(argv_all.begin() + 1, argv_all.end());
-        if (std::find_if(rest.begin(), rest.end(), [](const std::string& a) {
-                return a == "-h" || a == "--help";
-            }) != rest.end() && (cmd == "info" || cmd == "inspect" || cmd == "filter")) {
+        if (std::find_if(rest.begin(), rest.end(),
+                         [](const std::string& a) { return a == "-h" || a == "--help"; }) !=
+                rest.end() &&
+            (cmd == "info" || cmd == "inspect" || cmd == "filter")) {
             print_usage(std::cout);
             return kExitOk;
         }
@@ -450,9 +471,12 @@ int main(int argc, char* argv[]) {
             std::cout << "basalt " << BASALT_VERSION << "\n";
             return kExitOk;
         }
-        if (cmd == "info") return cmd_info(rest);
-        if (cmd == "inspect") return cmd_inspect(rest);
-        if (cmd == "filter") return cmd_filter(rest);
+        if (cmd == "info")
+            return cmd_info(rest);
+        if (cmd == "inspect")
+            return cmd_inspect(rest);
+        if (cmd == "filter")
+            return cmd_filter(rest);
         throw UsageError("unknown command '" + cmd + "'");
     } catch (const UsageError& e) {
         std::cerr << "basalt: error: " << e.what() << "\n\n";

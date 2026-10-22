@@ -36,9 +36,11 @@ struct ComplexSoA {
     /// the arena may keep the space taken by the first array until reset().
     ComplexSoA(MemoryArena& arena, size_t n) {
         float* r = arena.allocate_array<float>(n);
-        if (!r) throw std::bad_alloc();
+        if (!r)
+            throw std::bad_alloc();
         float* im = arena.allocate_array<float>(n);
-        if (!im) throw std::bad_alloc();
+        if (!im)
+            throw std::bad_alloc();
         real = r;
         imag = im;
         count = n;
@@ -59,8 +61,10 @@ struct ComplexSoA {
 
     /// Zero all data
     void clear() {
-        if (real) std::memset(real, 0, count * sizeof(float));
-        if (imag) std::memset(imag, 0, count * sizeof(float));
+        if (real)
+            std::memset(real, 0, count * sizeof(float));
+        if (imag)
+            std::memset(imag, 0, count * sizeof(float));
     }
 };
 

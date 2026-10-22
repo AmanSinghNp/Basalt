@@ -9,9 +9,9 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <immintrin.h>
 #include <limits>
 #include <stdexcept>
-#include <immintrin.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -87,8 +87,7 @@ float band_weight_scalar(float vel, float steep, float vmin, float vmax) {
 
 } // namespace
 
-void apply_fk_filter_scalar(basalt::kernel::ComplexSoA& data,
-                            size_t rows, size_t cols,
+void apply_fk_filter_scalar(basalt::kernel::ComplexSoA& data, size_t rows, size_t cols,
                             const FKParams& params) {
     const double df = 1.0 / (static_cast<double>(rows) * params.dt);
     const double dk = 1.0 / (static_cast<double>(cols) * params.dx);
@@ -108,7 +107,7 @@ void apply_fk_filter_scalar(basalt::kernel::ComplexSoA& data,
             const float k = wrapped_wavenumber(j, cols, dk);
             float w;
             if (k == 0.0f) {
-                w = 1.0f;  // infinite apparent velocity (includes DC) always passes
+                w = 1.0f; // infinite apparent velocity (includes DC) always passes
             } else {
                 const float vel = f / k;
                 w = band_weight_scalar(vel, steep, vmin, vmax);
@@ -125,10 +124,8 @@ void apply_fk_filter_scalar(basalt::kernel::ComplexSoA& data,
 }
 
 BASALT_TARGET_AVX2
-void apply_fk_filter_avx2(basalt::kernel::ComplexSoA& data,
-                          size_t rows, size_t cols,
-                          const FKParams& params,
-                          const FKFilterExecutionPlan& plan) {
+void apply_fk_filter_avx2(basalt::kernel::ComplexSoA& data, size_t rows, size_t cols,
+                          const FKParams& params, const FKFilterExecutionPlan& plan) {
     const double df = 1.0 / (static_cast<double>(rows) * params.dt);
     const double dk = 1.0 / (static_cast<double>(cols) * params.dx);
 
@@ -149,21 +146,17 @@ void apply_fk_filter_avx2(basalt::kernel::ComplexSoA& data,
                     if (next_prefetch < cols) {
                         _mm_prefetch(
                             reinterpret_cast<const char*>(data.real + i * cols + next_prefetch),
-                            _MM_HINT_T0
-                        );
+                            _MM_HINT_T0);
                         _mm_prefetch(
                             reinterpret_cast<const char*>(data.imag + i * cols + next_prefetch),
-                            _MM_HINT_T0
-                        );
+                            _MM_HINT_T0);
                     } else if (i + 1 < row_end) {
                         _mm_prefetch(
                             reinterpret_cast<const char*>(data.real + (i + 1) * cols + tile_col),
-                            _MM_HINT_T0
-                        );
+                            _MM_HINT_T0);
                         _mm_prefetch(
                             reinterpret_cast<const char*>(data.imag + (i + 1) * cols + tile_col),
-                            _MM_HINT_T0
-                        );
+                            _MM_HINT_T0);
                     }
 
                     alignas(32) std::array<float, 8> k_vals{};
@@ -171,18 +164,17 @@ void apply_fk_filter_avx2(basalt::kernel::ComplexSoA& data,
                     bool any_sym = false;
                     for (size_t lane = 0; lane < 8; ++lane) {
                         const size_t index = j + lane;
-                        k_vals[lane] = index < cols
-                            ? detail::wrapped_wavenumber(index, cols, dk)
-                            : 1.0f;
-                        const bool sym = index < cols &&
-                            (row_nyquist || detail::is_nyquist_index(index, cols));
+                        k_vals[lane] =
+                            index < cols ? detail::wrapped_wavenumber(index, cols, dk) : 1.0f;
+                        const bool sym =
+                            index < cols && (row_nyquist || detail::is_nyquist_index(index, cols));
                         sym_vals[lane] = sym ? 0xFFFFFFFFu : 0u;
                         any_sym = any_sym || sym;
                     }
 
                     const __m256 vk = _mm256_load_ps(k_vals.data());
-                    const __m256 sym_mask = _mm256_castsi256_ps(_mm256_load_si256(
-                        reinterpret_cast<const __m256i*>(sym_vals.data())));
+                    const __m256 sym_mask = _mm256_castsi256_ps(
+                        _mm256_load_si256(reinterpret_cast<const __m256i*>(sym_vals.data())));
                     const __m256 weight = detail::fk_weight_ps(vf, vk, sym_mask, any_sym, band);
 
                     const size_t remaining = col_end - j;
@@ -211,16 +203,13 @@ void apply_fk_filter_avx2(basalt::kernel::ComplexSoA& data,
 
 } // namespace detail
 
-void apply_fk_filter(basalt::kernel::ComplexSoA& data,
-                     size_t rows, size_t cols,
+void apply_fk_filter(basalt::kernel::ComplexSoA& data, size_t rows, size_t cols,
                      const FKParams& params) {
     apply_fk_filter(data, rows, cols, params, basalt::kernel::SimdMode::Auto);
 }
 
-void apply_fk_filter(basalt::kernel::ComplexSoA& data,
-                     size_t rows, size_t cols,
-                     const FKParams& params,
-                     basalt::kernel::SimdMode simd_mode) {
+void apply_fk_filter(basalt::kernel::ComplexSoA& data, size_t rows, size_t cols,
+                     const FKParams& params, basalt::kernel::SimdMode simd_mode) {
     detail::validate_params(params);
     if (rows == 0 || cols == 0) {
         return;

@@ -1,13 +1,13 @@
-#include "basalt/utils/trace_utils.hpp"
 #include "basalt/segy_format.hpp"
 #include "basalt/utils/ebcdic.hpp"
-#include <gtest/gtest.h>
+#include "basalt/utils/trace_utils.hpp"
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
+#include <gtest/gtest.h>
 #include <limits>
 #include <string>
 #include <vector>
-#include <cstring>
 
 using namespace basalt;
 using namespace basalt::utils;
@@ -17,7 +17,7 @@ using namespace basalt::utils;
 TEST(TraceUtilsTest, DeadTraceByHeader) {
     SegyTraceHeader hdr;
     std::memset(&hdr, 0, sizeof(hdr));
-    
+
     // trace_id_code == 2 means dead trace (SEG-Y Rev 1)
     hdr.trace_id_code = 2;
     EXPECT_TRUE(is_dead_trace(hdr));
@@ -26,7 +26,7 @@ TEST(TraceUtilsTest, DeadTraceByHeader) {
 TEST(TraceUtilsTest, LiveTraceByHeader) {
     SegyTraceHeader hdr;
     std::memset(&hdr, 0, sizeof(hdr));
-    
+
     // trace_id_code == 1 means production (live) data
     hdr.trace_id_code = 1;
     EXPECT_FALSE(is_dead_trace(hdr));
@@ -35,7 +35,7 @@ TEST(TraceUtilsTest, LiveTraceByHeader) {
 TEST(TraceUtilsTest, OtherTraceCodesNotDead) {
     SegyTraceHeader hdr;
     std::memset(&hdr, 0, sizeof(hdr));
-    
+
     // Various other codes should not be detected as dead
     int16_t codes[] = {0, 1, 3, 4, 5, 6, 7};
     for (int16_t code : codes) {
@@ -94,7 +94,6 @@ TEST(TraceUtilsTest, NegativeZeroSamplesAreZero) {
     EXPECT_TRUE(is_zero_trace(samples.data(), samples.size()));
 }
 
-
 // --- EBCDIC (cp037) decoding ---
 
 namespace {
@@ -107,11 +106,12 @@ constexpr uint8_t kCp037Printable[95] = {
     0xD7, 0xD8, 0xD9, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xBA, 0xE0, 0xBB, 0xB0, 0x6D,
     0x79, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96,
     0x97, 0x98, 0x99, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xC0, 0x4F, 0xD0, 0xA1};
-}
+} // namespace
 
 TEST(EbcdicTest, AllPrintableAsciiRoundTripsFromCp037) {
     std::string expected;
-    for (int c = 0x20; c <= 0x7E; ++c) expected.push_back(static_cast<char>(c));
+    for (int c = 0x20; c <= 0x7E; ++c)
+        expected.push_back(static_cast<char>(c));
     EXPECT_EQ(EbcdicConverter::to_ascii(kCp037Printable, sizeof(kCp037Printable)), expected);
 }
 
@@ -122,16 +122,16 @@ TEST(EbcdicTest, KnownCp037Mappings) {
     EXPECT_EQ(one(0x81), 'a');
     EXPECT_EQ(one(0xF0), '0');
     // These differ between cp037 and the table that used to be in the code
-    EXPECT_EQ(one(0xB0), '^');   // was NUL
-    EXPECT_EQ(one(0xBA), '[');   // was NUL
-    EXPECT_EQ(one(0xBB), ']');   // was NUL
+    EXPECT_EQ(one(0xB0), '^'); // was NUL
+    EXPECT_EQ(one(0xBA), '['); // was NUL
+    EXPECT_EQ(one(0xBB), ']'); // was NUL
     EXPECT_EQ(one(0x4F), '|');
     EXPECT_EQ(one(0x5A), '!');
-    EXPECT_EQ(one(0x5F), '?');   // NOT sign U+00AC, not '^'
-    EXPECT_EQ(one(0x4A), '?');   // cent sign U+00A2, not '['
-    EXPECT_EQ(one(0x6A), '?');   // broken bar U+00A6, not '|'
-    EXPECT_EQ(one(0xAD), '?');   // Y-acute in cp037, not '['
-    EXPECT_EQ(one(0xBD), '?');   // diaeresis in cp037, not ']'
+    EXPECT_EQ(one(0x5F), '?'); // NOT sign U+00AC, not '^'
+    EXPECT_EQ(one(0x4A), '?'); // cent sign U+00A2, not '['
+    EXPECT_EQ(one(0x6A), '?'); // broken bar U+00A6, not '|'
+    EXPECT_EQ(one(0xAD), '?'); // Y-acute in cp037, not '['
+    EXPECT_EQ(one(0xBD), '?'); // diaeresis in cp037, not ']'
     EXPECT_EQ(one(0xC0), '{');
     EXPECT_EQ(one(0xD0), '}');
     EXPECT_EQ(one(0xE0), '\\');
@@ -162,7 +162,7 @@ TEST(EbcdicTest, NoNulForPrintableCharacters) {
 }
 
 TEST(EbcdicTest, Latin1KeepsAccentedLetters) {
-    const uint8_t input[] = {0x51, 0x59, 0xC1, 0x5F};  // e-acute, sharp s, 'A', not-sign
+    const uint8_t input[] = {0x51, 0x59, 0xC1, 0x5F}; // e-acute, sharp s, 'A', not-sign
     const std::string out = EbcdicConverter::to_latin1(input, sizeof(input));
     ASSERT_EQ(out.size(), 4u);
     EXPECT_EQ(static_cast<unsigned char>(out[0]), 0xE9u);
@@ -189,12 +189,16 @@ TEST(EbcdicTest, DetectsAsciiVersusEbcdicTextHeaders) {
     const std::string ascii_text =
         "C 1 CLIENT: ACME OIL            COMPANY: BASALT SURVEYS               DATE: 2024-01-01\n"
         "C 2 AREA: NORTH SEA BLOCK 22/4  CREW NO: 17                           LINE: 4711\n";
-    EXPECT_TRUE(is_probably_ascii(reinterpret_cast<const uint8_t*>(ascii_text.data()), ascii_text.size()));
+    EXPECT_TRUE(
+        is_probably_ascii(reinterpret_cast<const uint8_t*>(ascii_text.data()), ascii_text.size()));
 
     // Same text encoded as EBCDIC (cp037)
     std::vector<uint8_t> ebcdic;
     for (char c : ascii_text) {
-        if (c == '\n') { ebcdic.push_back(0x25); continue; }
+        if (c == '\n') {
+            ebcdic.push_back(0x25);
+            continue;
+        }
         ebcdic.push_back(kCp037Printable[static_cast<size_t>(c - 0x20)]);
     }
     EXPECT_FALSE(is_probably_ascii(ebcdic.data(), ebcdic.size()));

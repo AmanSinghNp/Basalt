@@ -88,8 +88,7 @@ private:
     };
 
     struct NodeState {
-        explicit NodeState(size_t queue_capacity)
-            : queue(queue_capacity) {}
+        explicit NodeState(size_t queue_capacity) : queue(queue_capacity) {}
 
         TaskQueue<std::function<void()>> queue;
         alignas(64) std::atomic<uint64_t> submitted{0};
@@ -100,7 +99,8 @@ private:
 
     void worker_main(WorkerInfo info);
     void worker_loop(const WorkerInfo& info);
-    bool try_pop_for_worker(const WorkerInfo& info, std::function<void()>& task, size_t& source_node);
+    bool try_pop_for_worker(const WorkerInfo& info, std::function<void()>& task,
+                            size_t& source_node);
     void pin_thread_if_requested(const WorkerInfo& info);
     void record_error(std::exception_ptr error);
     void notify_work();

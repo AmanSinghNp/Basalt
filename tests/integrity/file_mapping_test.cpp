@@ -1,11 +1,11 @@
 #include "basalt/io/file_mapping.hpp"
-#include <gtest/gtest.h>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <gtest/gtest.h>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -31,9 +31,9 @@ public:
 #else
         const unsigned long pid = static_cast<unsigned long>(::getpid());
 #endif
-        m_path = fs::temp_directory_path() /
-                 ("basalt_filemap_" + std::to_string(pid) + "_" + std::to_string(stamp) + "_" +
-                  std::to_string(counter++));
+        m_path =
+            fs::temp_directory_path() / ("basalt_filemap_" + std::to_string(pid) + "_" +
+                                         std::to_string(stamp) + "_" + std::to_string(counter++));
         fs::create_directories(m_path);
     }
     ~TempDir() {
@@ -152,9 +152,7 @@ TEST_F(FileMappingTest, ZeroLengthFile) {
 }
 
 TEST_F(FileMappingTest, FileNotFound) {
-    EXPECT_THROW({
-        FileMapping mapping(dir.file("non_existent_file.bin"));
-    }, std::exception);
+    EXPECT_THROW({ FileMapping mapping(dir.file("non_existent_file.bin")); }, std::exception);
 }
 
 TEST_F(FileMappingTest, MissingFileMessageHasPathAndOsError) {

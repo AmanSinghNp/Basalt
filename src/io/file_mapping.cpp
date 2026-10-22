@@ -7,16 +7,16 @@
 #include <utility>
 
 #ifdef _WIN32
-    #ifndef NOMINMAX
-        #define NOMINMAX
-    #endif
-    #define WIN32_LEAN_AND_MEAN
-    #include <windows.h>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #else
-    #include <sys/mman.h>
-    #include <sys/stat.h>
-    #include <fcntl.h>
-    #include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace basalt::io {
@@ -78,25 +78,20 @@ struct HandleGuard {
 void FileMapping::open_file(const std::string& path) {
     // 1. Open File. Allow other processes to read and write while mapped.
     HandleGuard file(CreateFileA(
-        path.c_str(),
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        nullptr,
-        OPEN_EXISTING,
+        path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, // Hint for sequential access
-        nullptr
-    ));
+        nullptr));
 
     if (file.h == INVALID_HANDLE_VALUE) {
-        throw std::runtime_error(describe_error("Failed to open file", path,
-                                                static_cast<int>(GetLastError())));
+        throw std::runtime_error(
+            describe_error("Failed to open file", path, static_cast<int>(GetLastError())));
     }
 
     // Get File Size
     LARGE_INTEGER size;
     if (!GetFileSizeEx(file.h, &size)) {
-        throw std::runtime_error(describe_error("Failed to get file size", path,
-                                                static_cast<int>(GetLastError())));
+        throw std::runtime_error(
+            describe_error("Failed to get file size", path, static_cast<int>(GetLastError())));
     }
     if (size.QuadPart < 0 ||
         static_cast<unsigned long long>(size.QuadPart) > std::numeric_limits<size_t>::max()) {
@@ -112,14 +107,9 @@ void FileMapping::open_file(const std::string& path) {
     }
 
     // 2. Create File Mapping Object
-    HandleGuard mapping(CreateFileMappingA(
-        file.h,
-        nullptr,
-        PAGE_READONLY,
-        0,
-        0, // 0 here means "map whole file"
-        nullptr
-    ));
+    HandleGuard mapping(CreateFileMappingA(file.h, nullptr, PAGE_READONLY, 0,
+                                           0, // 0 here means "map whole file"
+                                           nullptr));
 
     if (mapping.h == nullptr) {
         throw std::runtime_error(describe_error("Failed to create file mapping", path,
@@ -130,8 +120,8 @@ void FileMapping::open_file(const std::string& path) {
     // handles are closed by the guards when this function returns.
     void* view = MapViewOfFile(mapping.h, FILE_MAP_READ, 0, 0, 0);
     if (view == nullptr) {
-        throw std::runtime_error(describe_error("Failed to map view of file", path,
-                                                static_cast<int>(GetLastError())));
+        throw std::runtime_error(
+            describe_error("Failed to map view of file", path, static_cast<int>(GetLastError())));
     }
     m_data = view;
     m_size = file_size;
@@ -187,8 +177,7 @@ void FileMapping::open_file(const std::string& path) {
     if (!S_ISREG(sb.st_mode)) {
         throw std::runtime_error("Failed to map file: " + path + ": not a regular file");
     }
-    if (sb.st_size < 0 ||
-        static_cast<uint64_t>(sb.st_size) > std::numeric_limits<size_t>::max()) {
+    if (sb.st_size < 0 || static_cast<uint64_t>(sb.st_size) > std::numeric_limits<size_t>::max()) {
         throw std::runtime_error("File too large to map on this platform: " + path);
     }
     const size_t file_size = static_cast<size_t>(sb.st_size);

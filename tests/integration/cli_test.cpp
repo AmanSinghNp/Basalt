@@ -33,7 +33,7 @@ using Bytes = std::vector<uint8_t>;
 
 struct RunResult {
     int exit_code = -1;
-    std::string output;  // stdout and stderr combined
+    std::string output; // stdout and stderr combined
 };
 
 std::string quote(const std::string& s) {
@@ -48,7 +48,8 @@ RunResult run_cli(const std::string& args) {
 #else
     FILE* pipe = popen(cmd.c_str(), "r");
 #endif
-    if (!pipe) return r;
+    if (!pipe)
+        return r;
     char buf[512];
     size_t n;
     while ((n = std::fread(buf, 1, sizeof buf, pipe)) > 0) {
@@ -68,8 +69,8 @@ public:
     TempDir() {
         static int counter = 0;
         m_path = fs::temp_directory_path() /
-                 ("basalt_cli_test_" + std::to_string(static_cast<long>(BASALT_TEST_GETPID())) + "_" +
-                  std::to_string(counter++));
+                 ("basalt_cli_test_" + std::to_string(static_cast<long>(BASALT_TEST_GETPID())) +
+                  "_" + std::to_string(counter++));
         fs::remove_all(m_path);
         fs::create_directories(m_path);
     }
@@ -77,7 +78,9 @@ public:
         std::error_code ec;
         fs::remove_all(m_path, ec);
     }
-    [[nodiscard]] std::string file(const std::string& name) const { return (m_path / name).string(); }
+    [[nodiscard]] std::string file(const std::string& name) const {
+        return (m_path / name).string();
+    }
 
 private:
     fs::path m_path;
@@ -106,7 +109,7 @@ struct Gather {
     size_t nt = 64;
     double dt = 0.002;
     double dx = 5.0;
-    std::vector<float> samples;  // trace-major: samples[trace * ns + sample]
+    std::vector<float> samples; // trace-major: samples[trace * ns + sample]
 };
 
 // Slow dipping event (500 m/s from t0 = 0.05 s) plus a flat event at 0.9 s.
@@ -117,8 +120,7 @@ Gather make_gather() {
         const double arrival = 0.05 + static_cast<double>(j) * g.dx / 500.0;
         for (size_t i = 0; i < g.ns; ++i) {
             const double t = static_cast<double>(i) * g.dt;
-            g.samples[j * g.ns + i] =
-                static_cast<float>(ricker(t - arrival) + ricker(t - 0.9));
+            g.samples[j * g.ns + i] = static_cast<float>(ricker(t - arrival) + ricker(t - 0.9));
         }
     }
     return g;
@@ -127,20 +129,20 @@ Gather make_gather() {
 Bytes build_segy(const Gather& g) {
     const size_t stride = 240 + g.ns * 4;
     Bytes b(3600 + g.nt * stride, 0);
-    std::fill(b.begin(), b.begin() + 3200, uint8_t{0x40});  // EBCDIC blanks
+    std::fill(b.begin(), b.begin() + 3200, uint8_t{0x40}); // EBCDIC blanks
     put(b, 3200 + 16, static_cast<uint64_t>(std::lround(g.dt * 1e6)), 2);
     put(b, 3200 + 20, g.ns, 2);
-    put(b, 3200 + 24, 5, 2);  // IEEE float
-    b[3200 + 300] = 1;  // revision 1.0
+    put(b, 3200 + 24, 5, 2); // IEEE float
+    b[3200 + 300] = 1;       // revision 1.0
     put(b, 3200 + 302, 1, 2);
     for (size_t j = 0; j < g.nt; ++j) {
         const size_t off = 3600 + j * stride;
-        put(b, off + 0, j + 1, 4);          // trace_seq_line
-        put(b, off + 20, 1000 + j, 4);      // cdp_ensemble_number
+        put(b, off + 0, j + 1, 4);     // trace_seq_line
+        put(b, off + 20, 1000 + j, 4); // cdp_ensemble_number
         put(b, off + 114, g.ns, 2);
         put(b, off + 116, static_cast<uint64_t>(std::lround(g.dt * 1e6)), 2);
-        put(b, off + 188, 100, 4);          // inline
-        put(b, off + 192, 200 + j, 4);      // crossline
+        put(b, off + 188, 100, 4);     // inline
+        put(b, off + 192, 200 + j, 4); // crossline
         for (size_t i = 0; i < g.ns; ++i) {
             uint32_t bits;
             std::memcpy(&bits, &g.samples[j * g.ns + i], 4);
@@ -194,7 +196,8 @@ TEST(CliTest, BadArgumentsExitTwo) {
     EXPECT_EQ(run_cli("inspect").exit_code, 2);
     EXPECT_EQ(run_cli("inspect a b").exit_code, 2);
     EXPECT_EQ(run_cli("filter in.segy").exit_code, 2);
-    const RunResult missing_dx = run_cli("filter " + quote(dir.file("a")) + " " + quote(dir.file("b")));
+    const RunResult missing_dx =
+        run_cli("filter " + quote(dir.file("a")) + " " + quote(dir.file("b")));
     EXPECT_EQ(missing_dx.exit_code, 2);
     EXPECT_NE(missing_dx.output.find("--dx"), std::string::npos);
     EXPECT_EQ(run_cli("filter a b --dx").exit_code, 2);
@@ -248,7 +251,8 @@ TEST(CliTest, InspectReportsBadFilesWithExitOne) {
     const std::string cut = dir.file("cut.segy");
     write_file(cut, b);
     EXPECT_EQ(run_cli("inspect " + quote(cut)).exit_code, 1);
-    EXPECT_EQ(run_cli("filter " + quote(cut) + " " + quote(dir.file("o.segy")) + " --dx 5").exit_code, 1);
+    EXPECT_EQ(
+        run_cli("filter " + quote(cut) + " " + quote(dir.file("o.segy")) + " --dx 5").exit_code, 1);
     EXPECT_FALSE(fs::exists(dir.file("o.segy")));
 }
 
@@ -312,7 +316,8 @@ TEST(CliTest, FilterPadsNonPowerOfTwoGathersAndTakesDtOverride) {
     g.samples.assign(g.ns * g.nt, 0.0f);
     for (size_t j = 0; j < g.nt; ++j) {
         for (size_t i = 0; i < g.ns; ++i) {
-            g.samples[j * g.ns + i] = static_cast<float>(ricker((static_cast<double>(i) - 150.0) * g.dt));
+            g.samples[j * g.ns + i] =
+                static_cast<float>(ricker((static_cast<double>(i) - 150.0) * g.dt));
         }
     }
     const std::string in_path = dir.file("in.segy");
