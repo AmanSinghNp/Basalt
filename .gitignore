@@ -1,7 +1,9 @@
 # Build Artifacts
 build/
-bin/
-lib/
+build-*/
+/out/
+/bin/
+/lib/
 *.o
 *.so
 *.dylib
@@ -51,7 +53,8 @@ _deps/
 *.segy
 *.sgy
 *.dat
-data/
+!tests/**/*.dat
+/data/
 
 # Python Tools
 *.pyc
@@ -61,7 +64,6 @@ env/
 .env/
 
 # Benchmarks / Logs
-!CMakePresets.json
 *.log
 benchmark.json
 benchmark.csv
@@ -73,5 +75,4 @@ tools/profiling/output/
 # Local Developer Notes
 Full unrefinednotes.md
 BuildingNotes.md
-*notes.md
 optimisation*.md
