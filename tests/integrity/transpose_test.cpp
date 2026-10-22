@@ -1,5 +1,7 @@
 #include "basalt/kernel/transpose.hpp"
 #include <gtest/gtest.h>
+#include <limits>
+#include <stdexcept>
 #include <vector>
 #include <numeric>
 
@@ -110,4 +112,57 @@ TEST(TransposeTest, LargeRectangular) {
     for (size_t i = 0; i < src.size(); ++i) {
         EXPECT_FLOAT_EQ(restored[i], src[i]) << "at flat index " << i;
     }
+}
+
+// ---------- Validation / robustness ----------
+
+TEST(TransposeValidationTest, ZeroTileSizeDoesNotHang) {
+    // tile_size == 0 used to loop forever (bi += 0).
+    constexpr size_t rows = 5, cols = 7;
+    std::vector<float> src(rows * cols);
+    std::iota(src.begin(), src.end(), 1.0f);
+    std::vector<float> dst(rows * cols, 0.0f);
+
+    transpose_tiled(src.data(), dst.data(), rows, cols, 0);
+
+    for (size_t i = 0; i < rows; ++i) {
+        for (size_t j = 0; j < cols; ++j) {
+            EXPECT_FLOAT_EQ(dst[j * rows + i], src[i * cols + j]);
+        }
+    }
+}
+
+TEST(TransposeValidationTest, HugeTileSizeIsClamped) {
+    constexpr size_t rows = 9, cols = 4;
+    std::vector<float> src(rows * cols);
+    std::iota(src.begin(), src.end(), 1.0f);
+    std::vector<float> expected(rows * cols);
+    transpose_tiled(src.data(), expected.data(), rows, cols, 1);
+
+    std::vector<float> dst(rows * cols, 0.0f);
+    transpose_tiled(src.data(), dst.data(), rows, cols, std::numeric_limits<size_t>::max());
+    EXPECT_EQ(dst, expected);
+}
+
+TEST(TransposeValidationTest, NullPointersThrow) {
+    std::vector<float> buf(16, 0.0f);
+    EXPECT_THROW(transpose_tiled(nullptr, buf.data(), 4, 4), std::invalid_argument);
+    EXPECT_THROW(transpose_tiled(buf.data(), nullptr, 4, 4), std::invalid_argument);
+}
+
+TEST(TransposeValidationTest, OverlappingBuffersThrow) {
+    std::vector<float> buf(64, 0.0f);
+    EXPECT_THROW(transpose_tiled(buf.data(), buf.data(), 4, 4), std::invalid_argument);
+    EXPECT_THROW(transpose_tiled(buf.data(), buf.data() + 8, 4, 4), std::invalid_argument);
+    EXPECT_THROW(transpose_tiled(buf.data() + 8, buf.data(), 4, 4), std::invalid_argument);
+    // Adjacent ranges do not overlap.
+    EXPECT_NO_THROW(transpose_tiled(buf.data(), buf.data() + 16, 4, 4));
+}
+
+TEST(TransposeValidationTest, EmptyMatrixIsNoOpAndOverflowThrows) {
+    EXPECT_NO_THROW(transpose_tiled(nullptr, nullptr, 0, 5));
+    EXPECT_NO_THROW(transpose_tiled(nullptr, nullptr, 5, 0));
+    float x = 0.0f, y = 0.0f;
+    EXPECT_THROW(transpose_tiled(&x, &y, std::numeric_limits<size_t>::max() / 2, 4),
+                 std::invalid_argument);
 }
