@@ -1,20 +1,20 @@
 #include <gtest/gtest.h>
 
+#ifdef BASALT_BENCH_PATH
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
 
+#if !defined(_WIN32)
+#include <sys/wait.h>
+#endif
+
 namespace {
 
 std::filesystem::path benchmark_executable_path() {
-#if defined(BASALT_BENCH_PATH)
     return std::filesystem::path(BASALT_BENCH_PATH);
-#elif defined(_WIN32)
-    return std::filesystem::current_path() / "basalt_bench.exe";
-#else
-    return std::filesystem::current_path() / "basalt_bench";
-#endif
 }
 
 std::string load_text(const std::filesystem::path& path) {
@@ -63,3 +63,44 @@ TEST(BenchmarkContractTest, JsonStatsUseArrays) {
     EXPECT_TRUE(contains_array_field(json, "local_queue_executions_per_node"));
     EXPECT_TRUE(contains_array_field(json, "remote_steals_from_node"));
 }
+
+namespace {
+
+// Runs basalt_bench with the given arguments (output discarded) and returns its exit status.
+int run_bench_exit_code(const std::string& args) {
+#if defined(_WIN32)
+    const std::string null_device = "NUL";
+#else
+    const std::string null_device = "/dev/null";
+#endif
+    const std::string command =
+        "\"" + benchmark_executable_path().string() + "\" " + args + " > " + null_device + " 2>&1";
+    const int status = std::system(command.c_str());
+#if defined(_WIN32)
+    return status;
+#else
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+#endif
+}
+
+} // namespace
+
+TEST(BenchmarkContractTest, MalformedArgumentsExitWithCode2) {
+    EXPECT_EQ(run_bench_exit_code("--shots abc"), 2);
+    EXPECT_EQ(run_bench_exit_code("--shots 99999999999999999999999"), 2);
+    EXPECT_EQ(run_bench_exit_code("--seed -1"), 2);
+    EXPECT_EQ(run_bench_exit_code("--sizes 256,x"), 2);
+    EXPECT_EQ(run_bench_exit_code("--bogus"), 2);
+}
+
+TEST(BenchmarkContractTest, HelpExitsZero) {
+    EXPECT_EQ(run_bench_exit_code("--help"), 0);
+}
+
+#else
+
+TEST(BenchmarkContractTest, JsonStatsUseArrays) {
+    GTEST_SKIP() << "basalt_bench is not configured (BASALT_BENCH_PATH is not defined); benchmarks are disabled";
+}
+
+#endif // BASALT_BENCH_PATH
