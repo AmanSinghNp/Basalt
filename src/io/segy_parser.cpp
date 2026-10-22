@@ -84,32 +84,6 @@ float double_to_float(double d) {
     return static_cast<float>(d);
 }
 
-// --- Text header encoding detection ---------------------------------------
-
-// Scores the buffer as ASCII versus EBCDIC. In both encodings a text header is
-// mostly spaces and letters/digits, and those code points are disjoint
-// (ASCII space 0x20 / EBCDIC space 0x40, ASCII letters < 0x80 / EBCDIC letters
-// >= 0x81), so counting them is a robust discriminator. A tie (for example an
-// all-zero header) is treated as EBCDIC, the standard encoding.
-bool looks_like_ascii_text(const uint8_t* p, size_t n) {
-    size_t ascii_hits = 0;
-    size_t ebcdic_hits = 0;
-    for (size_t i = 0; i < n; ++i) {
-        const uint8_t b = p[i];
-        if (b == 0x20 || (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') ||
-            (b >= 'a' && b <= 'z')) {
-            ++ascii_hits;
-        } else if (b == 0x40 ||
-                   (b >= 0x81 && b <= 0x89) || (b >= 0x91 && b <= 0x99) ||
-                   (b >= 0xA2 && b <= 0xA9) || (b >= 0xC1 && b <= 0xC9) ||
-                   (b >= 0xD1 && b <= 0xD9) || (b >= 0xE2 && b <= 0xE9) ||
-                   (b >= 0xF0 && b <= 0xF9)) {
-            ++ebcdic_hits;
-        }
-    }
-    return ascii_hits > ebcdic_hits;
-}
-
 // "((SEG: EndText))" in ASCII and in EBCDIC (code page 037).
 constexpr uint8_t kEndTextAscii[] = {0x28, 0x28, 0x53, 0x45, 0x47, 0x3A, 0x20, 0x45,
                                      0x6E, 0x64, 0x54, 0x65, 0x78, 0x74, 0x29, 0x29};
@@ -164,11 +138,7 @@ size_t segy_bytes_per_sample(uint16_t fmt) {
 
 std::string parse_text_header(const void* buffer, size_t size) {
     require_bytes(buffer, size, SEGY_TEXT_HEADER_SIZE, "textual header");
-    const uint8_t* bytes = static_cast<const uint8_t*>(buffer);
-    if (looks_like_ascii_text(bytes, SEGY_TEXT_HEADER_SIZE)) {
-        return std::string(reinterpret_cast<const char*>(bytes), SEGY_TEXT_HEADER_SIZE);
-    }
-    return utils::EbcdicConverter::to_ascii(bytes, SEGY_TEXT_HEADER_SIZE);
+    return utils::decode_text_header(buffer, SEGY_TEXT_HEADER_SIZE);
 }
 
 SegyBinaryHeader parse_binary_header(const void* buffer, size_t size, bool little_endian) {

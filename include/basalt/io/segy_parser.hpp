@@ -23,9 +23,10 @@ public:
 // 'buffer'; a buffer that is too short throws SegyFormatError.
 // ---------------------------------------------------------------------------
 
-// Reads the 3200-byte textual header and returns it as ASCII text. EBCDIC
-// headers (the standard) are converted; headers that already look like ASCII
-// (common in rev 2 files) are passed through unchanged.
+// Reads the 3200-byte textual header and returns it as 7-bit ASCII text of the
+// same length. EBCDIC headers (the standard) are converted with cp037; headers
+// that already look like ASCII (common in rev 2 files) are passed through, with
+// any byte above 0x7F replaced by '?'. Detection uses utils::is_probably_ascii().
 // Requires size >= 3200.
 std::string parse_text_header(const void* buffer, size_t size);
 
