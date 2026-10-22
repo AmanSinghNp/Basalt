@@ -17,6 +17,12 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 - `BatchExecutor` no longer keeps a thread-local pointer to another executor's buffers (use-after-free with two executors on one thread).
 - NUMA node ids and dense indices are kept separate, so sparse or more than ten nodes no longer index out of bounds.
 
+### Added
+
+- Variable-length SEG-Y traces: `describe_segy` switches to a per-trace index (`SegyLayout::variable_length`, `trace_offsets`, `trace_sample_counts`, `trace_samples(i)`, `trace_offset(i)`, `min_samples_per_trace`) when the binary header's fixed-length flag is 0 (revision >= 1) and the trace headers' sample counts (bytes 115-116) contradict the fixed layout. Fixed-length files that merely leave the flag at 0 keep the fast fixed layout. The walk is overflow and bounds checked; truncated files and per-trace counts pointing past the end of the file throw `SegyFormatError`.
+- `SegyWriter` and `write_segy_like` preserve variable-length layouts (each trace is written with its own sample count).
+- `basalt inspect` prints `Variable-length traces: yes/no` and the minimum and maximum samples per trace; `basalt filter` zero-pads variable-length traces to the longest one for the 2D FFT and crops each trace back to its own length on output.
+
 ### Fixed
 
 - f-k filter honours `mute_vel_min`: the mute band is `[mute_vel_min, mute_vel_max]` in signed apparent velocity `v = f/k`.

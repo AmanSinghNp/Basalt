@@ -196,6 +196,55 @@ Bytes build_segy(const Spec& s) {
     return b;
 }
 
+// Variable-length file: trace t holds counts[t] samples and says so in its header
+// (bytes 115-116). 'binary_ns' goes into the binary header and 'flag' into the
+// fixed-length flag (0 = variable).
+struct VarSpec {
+    std::vector<size_t> counts;
+    uint16_t binary_ns = 4;
+    int16_t flag = 0;
+    uint16_t format = 5;
+    bool le = false;
+    uint8_t rev_major = 1;
+    size_t trailer_records = 0; // rev 2 trailer stanzas appended
+};
+
+Bytes build_variable(const VarSpec& v) {
+    const size_t bps = bps_of(v.format);
+    size_t body = 0;
+    for (size_t c : v.counts) {
+        body += 240 + c * bps;
+    }
+    Bytes b(3600 + body + v.trailer_records * 3200, 0);
+    std::fill(b.begin(), b.begin() + 3200, static_cast<uint8_t>(0x40));
+    put(b, kBin + 16, 2000, 2, v.le);
+    put(b, kBin + 20, v.binary_ns, 2, v.le);
+    put(b, kBin + 24, v.format, 2, v.le);
+    put(b, kBin + 96, v.le ? 0x04030201u : (v.rev_major >= 2 ? 0x01020304u : 0u), 4, false);
+    b[kBin + 300] = v.rev_major;
+    put(b, kBin + 302, static_cast<uint16_t>(v.flag), 2, v.le);
+    put(b, kBin + 328, v.trailer_records, 4, v.le);
+    size_t off = 3600;
+    for (size_t t = 0; t < v.counts.size(); ++t) {
+        put(b, off + 4, t + 1, 4, v.le);
+        put(b, off + 114, v.counts[t], 2, v.le);
+        for (size_t k = 0; k < v.counts[t]; ++k) {
+            encode_sample(b, off + 240 + k * bps, v.format, sample_value(t, k), v.le);
+        }
+        off += 240 + v.counts[t] * bps;
+    }
+    return b;
+}
+
+// Absolute offset of trace t's header in a build_variable() file.
+size_t var_trace_offset(const VarSpec& v, size_t t) {
+    size_t off = 3600;
+    for (size_t i = 0; i < t; ++i) {
+        off += 240 + v.counts[i] * bps_of(v.format);
+    }
+    return off;
+}
+
 } // namespace
 
 TEST(SegyHeaderTest, SwapEndian) {
@@ -976,6 +1025,267 @@ TEST(SegyHeaderTest, TraceAccessorsAreBoundsChecked) {
     EXPECT_THROW(read_trace_header(file.data(), file.size(), forged2, 0), SegyFormatError);
 }
 
+TEST(SegyHeaderTest, VariableLengthTracesParseWithPerTraceSamples) {
+    for (uint16_t fmt : {uint16_t{5}, uint16_t{1}, uint16_t{3}}) {
+        for (bool le : {false, true}) {
+            VarSpec v;
+            v.counts = {3, 7, 0, 5, 1};
+            v.binary_ns = 7;
+            v.format = fmt;
+            v.le = le;
+            v.rev_major = le ? 2 : 1;
+            Bytes file = build_variable(v);
+            SegyLayout lay = describe_segy(file.data(), file.size());
+            ASSERT_TRUE(lay.variable_length) << "fmt " << fmt << " le " << le;
+            ASSERT_EQ(lay.n_traces, 5u);
+            EXPECT_EQ(lay.samples_per_trace, 7u);
+            EXPECT_EQ(lay.min_samples_per_trace, 0u);
+            EXPECT_EQ(lay.trace_stride, 0u);
+            EXPECT_EQ(lay.data_offset, 3600u);
+            for (size_t t = 0; t < v.counts.size(); ++t) {
+                EXPECT_EQ(lay.trace_samples(t), v.counts[t]);
+                EXPECT_EQ(lay.trace_offset(t), var_trace_offset(v, t));
+                EXPECT_EQ(read_trace_header(file.data(), file.size(), lay, t).trace_seq_file,
+                          static_cast<int32_t>(t + 1));
+                const std::vector<float> s = read_trace_samples(file.data(), file.size(), lay, t);
+                ASSERT_EQ(s.size(), v.counts[t]);
+                for (size_t k = 0; k < s.size(); ++k) {
+                    EXPECT_FLOAT_EQ(s[k], sample_value(t, k)) << "t " << t << " k " << k;
+                }
+            }
+            EXPECT_THROW((void)lay.trace_samples(5), std::out_of_range);
+            EXPECT_THROW((void)lay.trace_offset(5), std::out_of_range);
+            // A buffer sized by samples_per_trace holds any trace; a smaller one does not.
+            std::vector<float> big(lay.samples_per_trace);
+            EXPECT_NO_THROW(read_trace_samples(file.data(), file.size(), lay, 1, big.data(), 7));
+            EXPECT_THROW(read_trace_samples(file.data(), file.size(), lay, 1, big.data(), 6),
+                         std::invalid_argument);
+            EXPECT_NO_THROW(read_trace_samples(file.data(), file.size(), lay, 0, big.data(), 3));
+        }
+    }
+}
+
+TEST(SegyHeaderTest, VariableLengthWithTotalSizeDivisibleByFixedStride) {
+    // Traces of 2 and 6 samples: 2 * stride(4 samples), so the file size alone
+    // looks like a valid fixed-length file; the trace headers decide.
+    VarSpec v;
+    v.counts = {2, 6};
+    v.binary_ns = 4;
+    Bytes file = build_variable(v);
+    ASSERT_EQ((file.size() - 3600) % (240 + 4 * 4), 0u);
+    SegyLayout lay = describe_segy(file.data(), file.size());
+    EXPECT_TRUE(lay.variable_length);
+    EXPECT_EQ(lay.n_traces, 2u);
+    EXPECT_EQ(lay.min_samples_per_trace, 2u);
+    EXPECT_EQ(lay.samples_per_trace, 6u);
+    EXPECT_EQ(read_trace_samples(file.data(), file.size(), lay, 1).size(), 6u);
+}
+
+TEST(SegyHeaderTest, VariableLengthWithZeroBinaryNsAndRev2Trailer) {
+    VarSpec v;
+    v.counts = {4, 9, 2};
+    v.binary_ns = 0; // unset in the binary header
+    v.rev_major = 2;
+    v.trailer_records = 2;
+    Bytes file = build_variable(v);
+    SegyLayout lay = describe_segy(file.data(), file.size());
+    ASSERT_TRUE(lay.variable_length);
+    EXPECT_EQ(lay.n_traces, 3u);
+    EXPECT_EQ(lay.trailer_bytes, 2u * 3200);
+    EXPECT_EQ(lay.samples_per_trace, 9u);
+    EXPECT_EQ(lay.trace_samples(2), 2u);
+    // Zero binary ns is still an error for fixed-length (flag 1) files.
+    VarSpec f = v;
+    f.flag = 1;
+    Bytes ff = build_variable(f);
+    EXPECT_THROW(describe_segy(ff.data(), ff.size()), SegyFormatError);
+}
+
+TEST(SegyHeaderTest, FixedLengthFileWithFlagZeroStaysFixed) {
+    Spec s;
+    s.ns = 5;
+    s.traces = 4;
+    Bytes file = build_segy(s);
+    put(file, kBin + 302, 0, 2, false); // many writers leave the flag at 0
+    {
+        SegyLayout lay = describe_segy(file.data(), file.size());
+        EXPECT_FALSE(lay.variable_length);
+        EXPECT_FALSE(lay.fixed_length); // the flag is still reported as written
+        EXPECT_EQ(lay.n_traces, 4u);
+        EXPECT_EQ(lay.trace_stride, 240u + 5 * 4);
+        EXPECT_EQ(lay.min_samples_per_trace, 5u);
+        EXPECT_EQ(lay.trace_samples(3), 5u);
+        EXPECT_TRUE(lay.trace_offsets.empty());
+    }
+    // Trace headers that leave the sample count unset (0) do not matter.
+    Bytes unset = file;
+    for (size_t t = 0; t < 4; ++t) {
+        put(unset, 3600 + t * (240 + 20) + 114, 0, 2, false);
+    }
+    EXPECT_FALSE(describe_segy(unset.data(), unset.size()).variable_length);
+    // A stale constant in every trace header: the walk fails, the fixed layout wins.
+    Bytes stale = file;
+    for (size_t t = 0; t < 4; ++t) {
+        put(stale, 3600 + t * (240 + 20) + 114, 1000, 2, false);
+    }
+    {
+        SegyLayout lay = describe_segy(stale.data(), stale.size());
+        EXPECT_FALSE(lay.variable_length);
+        EXPECT_EQ(lay.n_traces, 4u);
+    }
+    // Differing garbage in the headers of a size-consistent file is reported.
+    Bytes mixed = file;
+    put(mixed, 3600 + 114, 1000, 2, false);
+    put(mixed, 3600 + 260 + 114, 999, 2, false);
+    EXPECT_THROW(describe_segy(mixed.data(), mixed.size()), SegyFormatError);
+    // With flag 1 the headers are never consulted, whatever they say.
+    put(mixed, kBin + 302, 1, 2, false);
+    EXPECT_FALSE(describe_segy(mixed.data(), mixed.size()).variable_length);
+    // Rev 0 files are always fixed-length, even with flag 0 and odd headers.
+    Bytes rev0 = file;
+    rev0[kBin + 300] = 0;
+    put(rev0, 3600 + 114, 2, 2, false);
+    put(rev0, 3600 + 260 + 114, 3, 2, false);
+    EXPECT_FALSE(describe_segy(rev0.data(), rev0.size()).variable_length);
+}
+
+TEST(SegyHeaderTest, FixedLengthFilesAreNeverVariableWhenHeadersAgree) {
+    // The ordinary case: flag 0, binary ns and trace header ns agree.
+    VarSpec v;
+    v.counts = {6, 6, 6};
+    v.binary_ns = 6;
+    Bytes file = build_variable(v);
+    SegyLayout lay = describe_segy(file.data(), file.size());
+    EXPECT_FALSE(lay.variable_length);
+    EXPECT_EQ(lay.n_traces, 3u);
+    EXPECT_EQ(lay.trace_stride, 240u + 6 * 4);
+}
+
+TEST(SegyHeaderTest, VariableLengthAllTracesSameButDifferentFromBinaryNs) {
+    // The binary ns is stale but every trace has 3 samples and the size does
+    // not fit the binary ns: the trace headers define a (uniform) variable layout.
+    VarSpec v;
+    v.counts = {3, 3, 3};
+    v.binary_ns = 4;
+    Bytes file = build_variable(v);
+    ASSERT_NE((file.size() - 3600) % (240 + 16), 0u);
+    SegyLayout lay = describe_segy(file.data(), file.size());
+    EXPECT_TRUE(lay.variable_length);
+    EXPECT_EQ(lay.samples_per_trace, 3u);
+    EXPECT_EQ(lay.min_samples_per_trace, 3u);
+}
+
+TEST(SegyHeaderTest, TruncatedVariableLengthFileThrows) {
+    VarSpec v;
+    v.counts = {3, 7, 0, 5, 1};
+    v.binary_ns = 7;
+    const Bytes full = build_variable(v);
+    // Last trace one byte short (partial samples) and cut into its header.
+    for (size_t cut : {size_t{1}, size_t{2}, size_t{4}, size_t{4 + 1}, size_t{200}}) {
+        EXPECT_THROW(describe_segy(full.data(), full.size() - cut), SegyFormatError)
+            << "cut " << cut;
+    }
+    // Every prefix either throws or ends exactly on a trace boundary and then
+    // reports only whole traces.
+    std::vector<size_t> bounds;
+    for (size_t t = 0; t <= v.counts.size(); ++t) {
+        bounds.push_back(var_trace_offset(v, t == v.counts.size() ? t - 1 : t) +
+                         (t == v.counts.size() ? 240 + v.counts[t - 1] * 4 : 0));
+    }
+    for (size_t n = 0; n <= full.size(); ++n) {
+        const bool at_bound = std::find(bounds.begin(), bounds.end(), n) != bounds.end();
+        if (n >= 3600 && !at_bound && (n - 3600) % (240 + 7 * 4) == 0) {
+            // The cut happens to be a whole number of fixed-length traces and
+            // the headers sampled at that stride report one constant (or 0):
+            // indistinguishable from a fixed file with a stale per-trace
+            // count, so it intentionally falls back to the fixed layout.
+            continue;
+        }
+        if (n < 3600 || !at_bound) {
+            EXPECT_THROW(describe_segy(full.data(), n), SegyFormatError) << "n=" << n;
+        } else {
+            SegyLayout lay = describe_segy(full.data(), n);
+            const size_t idx =
+                static_cast<size_t>(std::find(bounds.begin(), bounds.end(), n) - bounds.begin());
+            EXPECT_EQ(lay.n_traces, idx) << "n=" << n;
+        }
+    }
+}
+
+TEST(SegyHeaderTest, VariableLengthTraceCountPastEndOfFileThrows) {
+    VarSpec v;
+    v.counts = {3, 7, 2, 5};
+    v.binary_ns = 7;
+    const Bytes good = build_variable(v);
+    EXPECT_NO_THROW(describe_segy(good.data(), good.size()));
+    for (size_t t = 0; t < v.counts.size(); ++t) {
+        for (uint16_t evil : {uint16_t{65535}, uint16_t{40000}, uint16_t{1000}}) {
+            Bytes bad = good;
+            put(bad, var_trace_offset(v, t) + 114, evil, 2, false);
+            EXPECT_THROW(describe_segy(bad.data(), bad.size()), SegyFormatError)
+                << "trace " << t << " ns " << evil;
+        }
+    }
+    // Declaring one sample too many in the last trace.
+    Bytes bad = good;
+    put(bad, var_trace_offset(v, 3) + 114, v.counts[3] + 1, 2, false);
+    EXPECT_THROW(describe_segy(bad.data(), bad.size()), SegyFormatError);
+    // Declaring fewer samples leaves stray bytes that cannot form a trace.
+    Bytes shorter = good;
+    put(shorter, var_trace_offset(v, 3) + 114, v.counts[3] - 1, 2, false);
+    EXPECT_THROW(describe_segy(shorter.data(), shorter.size()), SegyFormatError);
+    // A first trace reporting zero samples next to a non-zero binary ns means
+    // the headers carry no counts; a size-inconsistent file is rejected.
+    Bytes zero_first = good;
+    put(zero_first, 3600 + 114, 0, 2, false);
+    EXPECT_THROW(describe_segy(zero_first.data(), zero_first.size()), SegyFormatError);
+}
+
+TEST(SegyHeaderTest, VariableLengthAccessorsAreBoundsChecked) {
+    VarSpec v;
+    v.counts = {3, 7, 2};
+    v.binary_ns = 7;
+    const Bytes file = build_variable(v);
+    const SegyLayout lay = describe_segy(file.data(), file.size());
+    ASSERT_TRUE(lay.variable_length);
+    EXPECT_THROW(read_trace_header(file.data(), file.size(), lay, 3), std::out_of_range);
+    EXPECT_THROW(read_trace_samples(file.data(), file.size(), lay, 3), std::out_of_range);
+    // A shorter buffer than the layout was made for.
+    EXPECT_THROW(read_trace_header(file.data(), file.size() - 1, lay, 2), SegyFormatError);
+    EXPECT_THROW(read_trace_samples(file.data(), file.size() - 1, lay, 2), SegyFormatError);
+    EXPECT_NO_THROW(read_trace_samples(file.data(), file.size() - 1, lay, 1));
+    // Forged layouts: missing index entries and offsets/counts pointing outside.
+    SegyLayout shortidx = lay;
+    shortidx.trace_offsets.pop_back();
+    EXPECT_THROW(read_trace_header(file.data(), file.size(), shortidx, 2), SegyFormatError);
+    SegyLayout shortcnt = lay;
+    shortcnt.trace_sample_counts.pop_back();
+    EXPECT_THROW(read_trace_samples(file.data(), file.size(), shortcnt, 2), SegyFormatError);
+    SegyLayout evil_off = lay;
+    evil_off.trace_offsets[1] = std::numeric_limits<uint64_t>::max() - 10;
+    EXPECT_THROW(read_trace_header(file.data(), file.size(), evil_off, 1), SegyFormatError);
+    SegyLayout evil_cnt = lay;
+    evil_cnt.trace_sample_counts[1] = std::numeric_limits<uint32_t>::max();
+    EXPECT_THROW(read_trace_samples(file.data(), file.size(), evil_cnt, 1), SegyFormatError);
+}
+
+TEST(SegyHeaderTest, VariableLengthLargeFileWalkIsLinear) {
+    // 20000 traces with sample counts cycling 1..40,0: one walk, one index entry per trace.
+    VarSpec v;
+    for (size_t t = 0; t < 20000; ++t) {
+        v.counts.push_back((t + 1) % 41);
+    }
+    v.binary_ns = 40;
+    v.format = 8;
+    Bytes file = build_variable(v);
+    SegyLayout lay = describe_segy(file.data(), file.size());
+    ASSERT_TRUE(lay.variable_length);
+    EXPECT_EQ(lay.n_traces, 20000u);
+    EXPECT_EQ(lay.trace_offsets.size(), 20000u);
+    EXPECT_EQ(lay.trace_samples(19999), 20000u % 41);
+    EXPECT_EQ(lay.trace_offsets.back() + 240 + lay.trace_samples(19999), file.size());
+}
+
 TEST(SegyHeaderTest, FormatErrorIsRuntimeError) {
     try {
         Bytes tiny(10, 0);
@@ -1008,13 +1318,26 @@ TEST(SegyHeaderTest, DeterministicFuzzNeverCrashes) {
         try {
             SegyLayout lay = describe_segy(buf.data(), buf.size());
             // A successful parse must account for every byte.
-            ASSERT_EQ(lay.data_offset + lay.n_traces * lay.trace_stride + lay.trailer_bytes,
-                      buf.size());
+            if (lay.variable_length) {
+                ASSERT_EQ(lay.trace_offsets.size(), lay.n_traces);
+                ASSERT_EQ(lay.trace_sample_counts.size(), lay.n_traces);
+                size_t end = lay.data_offset;
+                for (size_t t = 0; t < lay.n_traces; ++t) {
+                    ASSERT_EQ(lay.trace_offsets[t], end);
+                    ASSERT_LE(lay.trace_sample_counts[t], lay.samples_per_trace);
+                    ASSERT_GE(lay.trace_sample_counts[t], lay.min_samples_per_trace);
+                    end += 240 + lay.trace_sample_counts[t] * lay.bytes_per_sample;
+                }
+                ASSERT_EQ(end + lay.trailer_bytes, buf.size());
+            } else {
+                ASSERT_EQ(lay.data_offset + lay.n_traces * lay.trace_stride + lay.trailer_bytes,
+                          buf.size());
+            }
             std::vector<float> v;
             const size_t limit = std::min<size_t>(lay.n_traces, 8);
             for (size_t t = 0; t < limit; ++t) {
                 (void)read_trace_header(buf.data(), buf.size(), lay, t);
-                v.resize(lay.samples_per_trace);
+                v.resize(lay.trace_samples(t));
                 read_trace_samples(buf.data(), buf.size(), lay, t, v.data(), v.size());
             }
         } catch (const SegyFormatError&) {
@@ -1051,4 +1374,46 @@ TEST(SegyHeaderTest, DeterministicFuzzNeverCrashes) {
         }
         exercise(buf);
     }
+
+    // 3. Variable-length files with mutated per-trace sample counts, mutated
+    //    header bytes and random truncation.
+    size_t variable_parses = 0;
+    for (int iter = 0; iter < 3000; ++iter) {
+        VarSpec v;
+        v.format = kSupportedFormats[rnd(13)];
+        v.binary_ns = static_cast<uint16_t>(rnd(12));
+        v.le = (rng() & 1) != 0;
+        v.rev_major = static_cast<uint8_t>(1 + rnd(2));
+        v.flag = (rnd(8) == 0) ? 1 : 0;
+        v.trailer_records = (v.rev_major == 2) ? rnd(2) : 0;
+        const size_t nt = rnd(7);
+        for (size_t t = 0; t < nt; ++t) {
+            v.counts.push_back(rnd(12));
+        }
+        Bytes buf = build_variable(v);
+        if (rnd(3) != 0 && nt != 0) {
+            // Corrupt the sample count of a random trace: small, huge or random.
+            const size_t t = rnd(nt);
+            const uint16_t evil =
+                (rng() & 1) ? static_cast<uint16_t>(rng()) : static_cast<uint16_t>(rnd(25));
+            put(buf, var_trace_offset(v, t) + 114, evil, 2, v.le);
+        }
+        if (rnd(4) == 0) {
+            const size_t flips = 1 + rnd(4);
+            for (size_t f = 0; f < flips; ++f) {
+                buf[(rng() & 1) ? kBin + rnd(400) : rnd(buf.size())] = static_cast<uint8_t>(rng());
+            }
+        }
+        if (rnd(3) == 0) {
+            buf.resize(rnd(buf.size() + 1));
+        }
+        exercise(buf);
+        try {
+            if (describe_segy(buf.data(), buf.size()).variable_length) {
+                ++variable_parses;
+            }
+        } catch (const SegyFormatError&) {
+        }
+    }
+    EXPECT_GT(variable_parses, 100u); // the loop really exercises the variable path
 }

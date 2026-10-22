@@ -181,7 +181,14 @@ int cmd_inspect(const std::vector<std::string>& args) {
               << format_name(lay.data_sample_format) << ")\n";
     std::cout << "Byte order:         " << (lay.little_endian ? "little-endian" : "big-endian")
               << "\n";
-    std::cout << "Samples per trace:  " << lay.samples_per_trace << "\n";
+    if (lay.variable_length) {
+        std::cout << "Variable-length traces: yes\n";
+        std::cout << "Min samples/trace:  " << lay.min_samples_per_trace << "\n";
+        std::cout << "Max samples/trace:  " << lay.samples_per_trace << "\n";
+    } else {
+        std::cout << "Samples per trace:  " << lay.samples_per_trace << "\n";
+        std::cout << "Variable-length traces: no\n";
+    }
     std::cout << "Sample interval:    " << dt_us << " us";
     if (dt_us != 0) {
         std::cout << " (" << static_cast<double>(dt_us) * 1e-6 << " s)";
@@ -368,8 +375,13 @@ int cmd_filter(const std::vector<std::string>& args) {
     // Gather geometry: rows = time samples (the f axis after the FFT), cols =
     // traces (the k axis). Element (sample i, trace j) lives at i * cols + j,
     // which is the orientation apply_fk_filter expects.
+    // For variable-length files ns is the longest trace: shorter traces are
+    // zero-padded up to it for the transform and cropped back on output.
     const size_t ns = lay.samples_per_trace;
     const size_t nt = lay.n_traces;
+    if (ns == 0) {
+        throw std::runtime_error("input traces contain no samples");
+    }
     const size_t rows = next_pow2(ns, "sample");
     const size_t cols = next_pow2(nt, "trace");
     if (rows > std::numeric_limits<size_t>::max() / cols) {
@@ -404,8 +416,9 @@ int cmd_filter(const std::vector<std::string>& args) {
     // Load and de-interleave: trace j fills column j.
     std::vector<float> trace(ns);
     for (size_t j = 0; j < nt; ++j) {
+        const size_t nj = lay.trace_samples(j);
         basalt::io::read_trace_samples(data, size, lay, j, trace.data(), trace.size());
-        for (size_t i = 0; i < ns; ++i) {
+        for (size_t i = 0; i < nj; ++i) {
             const float v = trace[i];
             if (!std::isfinite(v)) {
                 throw std::runtime_error("trace " + std::to_string(j) + " sample " +
@@ -422,15 +435,22 @@ int cmd_filter(const std::vector<std::string>& args) {
     // Crop and write with the original headers.
     basalt::io::SegyWriter writer(fa.out_path, data, lay.data_offset, lay);
     for (size_t j = 0; j < nt; ++j) {
-        for (size_t i = 0; i < ns; ++i) {
+        const size_t nj = lay.trace_samples(j);
+        for (size_t i = 0; i < nj; ++i) {
             trace[i] = gather.real[i * cols + j];
         }
-        writer.write_trace(data + lay.data_offset + j * lay.trace_stride, trace.data());
+        writer.write_trace(data + lay.trace_offset(j), trace.data());
     }
-    writer.commit(data + lay.data_offset + nt * lay.trace_stride, lay.trailer_bytes);
+    // The traces tile the file up to the trailer stanzas (rev 2), if any.
+    writer.commit(data + size - lay.trailer_bytes, lay.trailer_bytes);
 
     std::cout << "Filtered " << nt << " traces x " << ns << " samples (dt=" << params.dt
               << " s, dx=" << params.dx << " m), padded to " << rows << " x " << cols << "\n";
+    if (lay.variable_length) {
+        std::cout << "Variable-length traces (" << lay.min_samples_per_trace << " to " << ns
+                  << " samples): zero-padded to " << ns
+                  << " samples for the transform, each trace cropped back to its own length\n";
+    }
     std::cout << "Muted apparent velocities " << params.mute_vel_min << " to "
               << params.mute_vel_max << " m/s, taper " << params.taper_width << " m/s\n";
     if (writer.output_format() != lay.data_sample_format) {

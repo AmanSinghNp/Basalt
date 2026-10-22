@@ -361,3 +361,134 @@ TEST(SegyWriterTest, RejectsMisuse) {
                                  make_samples(in.n_traces, in.samples_per_trace).data()),
                  SegyWriteError);
 }
+
+namespace {
+
+// Variable-length file (flag 0): trace t holds counts[t] samples, announced in
+// its header (bytes 115-116); every other trace header byte is random.
+Bytes build_variable(const std::vector<size_t>& counts, uint16_t format, bool le, uint8_t rev_major,
+                     size_t trailer_records) {
+    const size_t bps = segy_bytes_per_sample(format);
+    size_t body = 0;
+    for (size_t c : counts)
+        body += 240 + c * bps;
+    Bytes b(3600 + body + trailer_records * 3200, 0);
+    std::mt19937 rng(4321);
+    for (size_t i = 0; i < 3200; ++i)
+        b[i] = static_cast<uint8_t>(rng());
+    size_t off = 3600;
+    for (size_t t = 0; t < counts.size(); ++t) {
+        for (size_t i = 0; i < 240; ++i)
+            b[off + i] = static_cast<uint8_t>(rng());
+        put(b, off + 114, counts[t], 2, le);
+        off += 240 + counts[t] * bps;
+    }
+    for (size_t i = 0; i < trailer_records * 3200; ++i)
+        b[off + i] = static_cast<uint8_t>(rng());
+
+    const size_t bin = 3200;
+    put(b, bin + 16, 2000, 2, le);
+    put(b, bin + 20, 8, 2, le); // binary ns: the maximum
+    put(b, bin + 24, format, 2, le);
+    put(b, bin + 96, le ? 0x04030201u : (rev_major >= 2 ? 0x01020304u : 0u), 4, false);
+    b[bin + 300] = rev_major;
+    put(b, bin + 302, 0, 2, le); // variable length
+    put(b, bin + 304, 0, 2, le);
+    put(b, bin + 306, 0, 4, le);
+    put(b, bin + 328, trailer_records, 4, le);
+    return b;
+}
+
+} // namespace
+
+TEST(SegyWriterTest, VariableLengthRoundTripKeepsPerTraceLengths) {
+    struct Case {
+        uint16_t format;
+        bool le;
+        uint8_t rev;
+        size_t trailer;
+    };
+    const Case cases[] = {{5, false, 1, 0}, {1, false, 1, 0}, {3, false, 1, 0}, {5, true, 2, 2}};
+    for (const Case& c : cases) {
+        TempDir dir;
+        const std::vector<size_t> counts = {3, 8, 0, 5, 1, 8};
+        const Bytes src = build_variable(counts, c.format, c.le, c.rev, c.trailer);
+        const SegyLayout in = describe_segy(src.data(), src.size());
+        ASSERT_TRUE(in.variable_length) << "format " << c.format;
+        ASSERT_EQ(in.n_traces, counts.size());
+
+        // Row stride is the maximum count (8); only the first counts[t] entries are used.
+        const auto samples = make_samples(counts.size(), in.samples_per_trace);
+        const std::string out_path = dir.file("out.segy");
+        write_segy_like(out_path, src.data(), src.size(), in, samples.data());
+        EXPECT_EQ(dir_entries(dir.path()), 1u) << "temporary file left behind";
+        const Bytes out = slurp(out_path);
+        const SegyLayout lay = describe_segy(out.data(), out.size());
+        ASSERT_TRUE(lay.variable_length) << "format " << c.format;
+        ASSERT_EQ(lay.n_traces, counts.size());
+        EXPECT_EQ(lay.trailer_bytes, in.trailer_bytes);
+        EXPECT_EQ(lay.data_offset, in.data_offset);
+        EXPECT_EQ(lay.data_sample_format, c.format == 1 ? 1 : 5);
+
+        // File header (except a patched format code) and trailer are verbatim.
+        for (size_t i = 0; i < in.data_offset; ++i) {
+            if (c.format != 1 && c.format != 5 && (i == 3224 || i == 3225))
+                continue;
+            ASSERT_EQ(src[i], out[i]) << "file header byte " << i;
+        }
+        ASSERT_EQ(0, std::memcmp(src.data() + src.size() - in.trailer_bytes,
+                                 out.data() + out.size() - lay.trailer_bytes, in.trailer_bytes));
+
+        for (size_t t = 0; t < counts.size(); ++t) {
+            EXPECT_EQ(lay.trace_samples(t), counts[t]) << "trace " << t;
+            ASSERT_EQ(0, std::memcmp(src.data() + in.trace_offset(t),
+                                     out.data() + lay.trace_offset(t), 240))
+                << "trace header " << t;
+            const auto got = read_trace_samples(out.data(), out.size(), lay, t);
+            ASSERT_EQ(got.size(), counts[t]);
+            for (size_t k = 0; k < got.size(); ++k) {
+                const float want = samples[t * in.samples_per_trace + k];
+                if (c.format == 1) {
+                    EXPECT_NEAR(got[k], want, std::fabs(want) * 1e-6f + 1e-30f);
+                } else {
+                    EXPECT_EQ(0, std::memcmp(&got[k], &want, sizeof(float)))
+                        << "trace " << t << " sample " << k;
+                }
+            }
+        }
+    }
+}
+
+TEST(SegyWriterTest, VariableLengthWriterRejectsInconsistentUse) {
+    TempDir dir;
+    const std::vector<size_t> counts = {3, 8, 0};
+    const Bytes src = build_variable(counts, 5, false, 1, 0);
+    const SegyLayout in = describe_segy(src.data(), src.size());
+    ASSERT_TRUE(in.variable_length);
+
+    // A layout whose per-trace index does not match the trace count.
+    SegyLayout bad = in;
+    bad.trace_sample_counts.pop_back();
+    EXPECT_THROW(SegyWriter(dir.file("a.segy"), src.data(), in.data_offset, bad), SegyWriteError);
+    const auto samples = make_samples(counts.size(), in.samples_per_trace);
+    EXPECT_THROW(write_segy_like(dir.file("a.segy"), src.data(), src.size(), bad, samples.data()),
+                 SegyWriteError);
+    // Offsets pointing outside the source buffer.
+    SegyLayout far = in;
+    far.trace_offsets[1] = src.size();
+    EXPECT_THROW(write_segy_like(dir.file("b.segy"), src.data(), src.size(), far, samples.data()),
+                 SegyWriteError);
+    // Source buffer truncated.
+    EXPECT_THROW(
+        write_segy_like(dir.file("c.segy"), src.data(), src.size() - 1, in, samples.data()),
+        SegyWriteError);
+    EXPECT_EQ(dir_entries(dir.path()), 0u);
+
+    // Streaming interface: an empty trace needs no sample pointer, a non-empty one does.
+    SegyWriter w(dir.file("d.segy"), src.data(), in.data_offset, in);
+    EXPECT_THROW(w.write_trace(src.data() + in.trace_offset(0), nullptr), SegyWriteError);
+    w.write_trace(src.data() + in.trace_offset(0), samples.data());
+    w.write_trace(src.data() + in.trace_offset(1), samples.data());
+    EXPECT_NO_THROW(w.write_trace(src.data() + in.trace_offset(2), nullptr));
+    EXPECT_NO_THROW(w.commit());
+}

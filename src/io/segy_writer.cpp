@@ -1,5 +1,6 @@
 #include "basalt/io/segy_writer.hpp"
 #include "basalt/utils/ibm_float.hpp"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -51,13 +52,25 @@ std::string make_temp_path(const std::string& path) {
 SegyWriter::SegyWriter(const std::string& path, const uint8_t* header_block, size_t header_bytes,
                        const SegyLayout& layout)
     : m_path(path), m_le(layout.little_endian), m_ns(layout.samples_per_trace),
-      m_expected_traces(layout.n_traces), m_trailer_bytes(layout.trailer_bytes) {
+      m_variable(layout.variable_length), m_expected_traces(layout.n_traces),
+      m_trailer_bytes(layout.trailer_bytes) {
     if (header_block == nullptr || header_bytes != layout.data_offset ||
         header_bytes < SEGY_TEXT_HEADER_SIZE + SEGY_BINARY_HEADER_SIZE) {
         throw SegyWriteError("SEG-Y writer: header block must hold exactly layout.data_offset (" +
                              std::to_string(layout.data_offset) + ") bytes");
     }
-    if (m_ns == 0) {
+    if (m_variable) {
+        if (layout.trace_sample_counts.size() != layout.n_traces) {
+            throw SegyWriteError("SEG-Y writer: variable-length layout has " +
+                                 std::to_string(layout.trace_sample_counts.size()) +
+                                 " sample counts for " + std::to_string(layout.n_traces) +
+                                 " traces");
+        }
+        m_counts = layout.trace_sample_counts;
+        for (uint32_t c : m_counts) {
+            m_ns = std::max<size_t>(m_ns, c);
+        }
+    } else if (m_ns == 0) {
         throw SegyWriteError("SEG-Y writer: layout has zero samples per trace");
     }
     if (m_ns > SIZE_MAX / 4) {
@@ -114,28 +127,29 @@ void SegyWriter::write_trace(const uint8_t* trace_header, const float* samples) 
     if (m_done) {
         throw SegyWriteError("SEG-Y writer: already committed or aborted");
     }
-    if (trace_header == nullptr || samples == nullptr) {
-        throw SegyWriteError("SEG-Y writer: null trace header or samples");
-    }
     if (m_written >= m_expected_traces) {
         throw SegyWriteError("SEG-Y writer: more traces than the layout declares (" +
                              std::to_string(m_expected_traces) + ")");
+    }
+    const size_t ns = m_variable ? m_counts[m_written] : m_ns;
+    if (trace_header == nullptr || (samples == nullptr && ns != 0)) {
+        throw SegyWriteError("SEG-Y writer: null trace header or samples");
     }
     try {
         write_bytes(trace_header, SEGY_TRACE_HEADER_SIZE);
         uint8_t* dst = m_buf.data();
         if (m_format == 1) {
-            for (size_t k = 0; k < m_ns; ++k) {
+            for (size_t k = 0; k < ns; ++k) {
                 store_u32(dst + 4 * k, utils::ieee_to_ibm(samples[k]), m_le);
             }
         } else {
-            for (size_t k = 0; k < m_ns; ++k) {
+            for (size_t k = 0; k < ns; ++k) {
                 uint32_t bits;
                 std::memcpy(&bits, samples + k, sizeof bits);
                 store_u32(dst + 4 * k, bits, m_le);
             }
         }
-        write_bytes(dst, m_ns * 4);
+        write_bytes(dst, ns * 4);
     } catch (...) {
         discard();
         throw;
@@ -187,19 +201,43 @@ void write_segy_like(const std::string& path, const uint8_t* src, size_t src_siz
         throw SegyWriteError("write_segy_like: null samples");
     }
     // Everything the copy reads must lie inside the source buffer.
-    if (layout.trace_stride != 0 && layout.n_traces > SIZE_MAX / layout.trace_stride) {
-        throw SegyWriteError("write_segy_like: layout size overflow");
-    }
-    const size_t trace_region = layout.n_traces * layout.trace_stride;
     const size_t avail = src_size - layout.data_offset;
-    if (avail < trace_region || avail - trace_region < layout.trailer_bytes) {
-        throw SegyWriteError("write_segy_like: layout does not fit the source buffer");
+    size_t trace_region = 0; // bytes from data_offset to the end of the last trace
+    if (layout.variable_length) {
+        if (layout.trace_offsets.size() != layout.n_traces ||
+            layout.trace_sample_counts.size() != layout.n_traces) {
+            throw SegyWriteError("write_segy_like: inconsistent variable-length layout");
+        }
+        for (size_t i = 0; i < layout.n_traces; ++i) {
+            const uint64_t off = layout.trace_offsets[i];
+            const uint64_t need =
+                SEGY_TRACE_HEADER_SIZE +
+                static_cast<uint64_t>(layout.trace_sample_counts[i]) * layout.bytes_per_sample;
+            if (off < layout.data_offset || off > src_size || need > src_size - off) {
+                throw SegyWriteError("write_segy_like: layout does not fit the source buffer");
+            }
+            trace_region = static_cast<size_t>(off + need - layout.data_offset);
+        }
+        if (avail < trace_region || avail - trace_region < layout.trailer_bytes) {
+            throw SegyWriteError("write_segy_like: layout does not fit the source buffer");
+        }
+    } else {
+        if (layout.trace_stride != 0 && layout.n_traces > SIZE_MAX / layout.trace_stride) {
+            throw SegyWriteError("write_segy_like: layout size overflow");
+        }
+        trace_region = layout.n_traces * layout.trace_stride;
+        if (avail < trace_region || avail - trace_region < layout.trailer_bytes) {
+            throw SegyWriteError("write_segy_like: layout does not fit the source buffer");
+        }
+    }
+    if (layout.n_traces != 0 && layout.samples_per_trace != 0 &&
+        layout.n_traces > SIZE_MAX / layout.samples_per_trace) {
+        throw SegyWriteError("write_segy_like: layout size overflow");
     }
 
     SegyWriter w(path, src, layout.data_offset, layout);
     for (size_t i = 0; i < layout.n_traces; ++i) {
-        w.write_trace(src + layout.data_offset + i * layout.trace_stride,
-                      samples + i * layout.samples_per_trace);
+        w.write_trace(src + layout.trace_offset(i), samples + i * layout.samples_per_trace);
     }
     w.commit(src + layout.data_offset + trace_region, layout.trailer_bytes);
 }

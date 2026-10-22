@@ -152,6 +152,50 @@ Bytes build_segy(const Gather& g) {
     return b;
 }
 
+// Variable-length rev 1 file (fixed-length flag 0): trace j keeps only its first
+// counts[j] samples of 'g' and says so in its header (bytes 115-116). The
+// binary header ns is the maximum, as many writers do.
+Bytes build_variable_segy(const Gather& g, const std::vector<size_t>& counts) {
+    size_t body = 0;
+    for (size_t c : counts) {
+        body += 240 + c * 4;
+    }
+    Bytes b(3600 + body, 0);
+    std::fill(b.begin(), b.begin() + 3200, uint8_t{0x40});
+    put(b, 3200 + 16, static_cast<uint64_t>(std::lround(g.dt * 1e6)), 2);
+    put(b, 3200 + 20, *std::max_element(counts.begin(), counts.end()), 2);
+    put(b, 3200 + 24, 5, 2);
+    b[3200 + 300] = 1;
+    put(b, 3200 + 302, 0, 2);
+    size_t off = 3600;
+    for (size_t j = 0; j < counts.size(); ++j) {
+        put(b, off + 0, j + 1, 4);
+        put(b, off + 20, 1000 + j, 4);
+        put(b, off + 114, counts[j], 2);
+        put(b, off + 116, static_cast<uint64_t>(std::lround(g.dt * 1e6)), 2);
+        put(b, off + 188, 100, 4);
+        put(b, off + 192, 200 + j, 4);
+        for (size_t i = 0; i < counts[j]; ++i) {
+            uint32_t bits;
+            std::memcpy(&bits, &g.samples[j * g.ns + i], 4);
+            put(b, off + 240 + 4 * i, bits, 4);
+        }
+        off += 240 + counts[j] * 4;
+    }
+    return b;
+}
+
+// Per-trace lengths between 300 and 512 (maximum reached), never all equal.
+std::vector<size_t> variable_counts(size_t nt) {
+    std::vector<size_t> c(nt);
+    for (size_t j = 0; j < nt; ++j) {
+        c[j] = 300 + (j * 37) % 213; // 300..512
+    }
+    c[0] = 512;
+    c[1] = 300;
+    return c;
+}
+
 void write_file(const std::string& path, const Bytes& b) {
     std::ofstream f(path, std::ios::binary);
     f.write(reinterpret_cast<const char*>(b.data()), static_cast<std::streamsize>(b.size()));
@@ -333,6 +377,129 @@ TEST(CliTest, FilterPadsNonPowerOfTwoGathersAndTakesDtOverride) {
     const SegyLayout lay = describe_segy(out.data(), out.size());
     EXPECT_EQ(lay.n_traces, 37u);
     EXPECT_EQ(lay.samples_per_trace, 300u);
+}
+
+TEST(CliTest, InspectReportsVariableLengthTraces) {
+    TempDir dir;
+    const Gather g = make_gather();
+    const std::vector<size_t> counts = variable_counts(g.nt);
+    const std::string vpath = dir.file("var.segy");
+    write_file(vpath, build_variable_segy(g, counts));
+
+    const RunResult v = run_cli("inspect " + quote(vpath));
+    ASSERT_EQ(v.exit_code, 0) << v.output;
+    EXPECT_NE(v.output.find("Variable-length traces: yes"), std::string::npos) << v.output;
+    EXPECT_NE(v.output.find("Min samples/trace:  300"), std::string::npos) << v.output;
+    EXPECT_NE(v.output.find("Max samples/trace:  512"), std::string::npos) << v.output;
+    EXPECT_NE(v.output.find("Traces:             64"), std::string::npos) << v.output;
+    EXPECT_NE(v.output.find("inline=100 crossline=263 cdp=1063"), std::string::npos) << v.output;
+
+    // A fixed-length file with the flag left at 0 is not variable.
+    Bytes fixed = build_segy(g);
+    put(fixed, 3200 + 302, 0, 2);
+    const std::string fpath = dir.file("fixed.segy");
+    write_file(fpath, fixed);
+    const RunResult f = run_cli("inspect " + quote(fpath));
+    ASSERT_EQ(f.exit_code, 0) << f.output;
+    EXPECT_NE(f.output.find("Variable-length traces: no"), std::string::npos) << f.output;
+    EXPECT_NE(f.output.find("Samples per trace:  512"), std::string::npos) << f.output;
+    EXPECT_EQ(f.output.find("Min samples/trace"), std::string::npos) << f.output;
+}
+
+TEST(CliTest, FilterVariableLengthPadsThenCropsEachTrace) {
+    TempDir dir;
+    const Gather g = make_gather();
+    const std::vector<size_t> counts = variable_counts(g.nt);
+    const Bytes src = build_variable_segy(g, counts);
+    const std::string in_path = dir.file("var.segy");
+    const std::string out_path = dir.file("out.segy");
+    write_file(in_path, src);
+
+    const RunResult r = run_cli("filter " + quote(in_path) + " " + quote(out_path) +
+                                " --dx 5 --vmax 1500 --taper 200");
+    ASSERT_EQ(r.exit_code, 0) << r.output;
+    EXPECT_NE(r.output.find("Filtered 64 traces x 512 samples"), std::string::npos) << r.output;
+    EXPECT_NE(r.output.find("Variable-length traces (300 to 512 samples)"), std::string::npos)
+        << r.output;
+    EXPECT_NE(r.output.find("cropped back to its own length"), std::string::npos) << r.output;
+
+    const Bytes out = read_file(out_path);
+    const SegyLayout in_lay = describe_segy(src.data(), src.size());
+    const SegyLayout out_lay = describe_segy(out.data(), out.size());
+    ASSERT_TRUE(out_lay.variable_length);
+    ASSERT_EQ(out_lay.n_traces, g.nt);
+    ASSERT_EQ(out.size(), src.size()); // same per-trace lengths, same sample format
+    ASSERT_EQ(0, std::memcmp(src.data(), out.data(), in_lay.data_offset));
+
+    // Reference: the same data zero-padded to a fixed 512-sample file, filtered
+    // with the same parameters. The variable result must equal it trace by
+    // trace over each trace's own length.
+    Gather padded = g;
+    for (size_t j = 0; j < g.nt; ++j) {
+        for (size_t i = counts[j]; i < g.ns; ++i) {
+            padded.samples[j * g.ns + i] = 0.0f;
+        }
+    }
+    const std::string ref_in = dir.file("padded.segy");
+    const std::string ref_out = dir.file("padded_out.segy");
+    write_file(ref_in, build_segy(padded));
+    ASSERT_EQ(run_cli("filter " + quote(ref_in) + " " + quote(ref_out) +
+                      " --dx 5 --vmax 1500 --taper 200")
+                  .exit_code,
+              0);
+    const Bytes ref = read_file(ref_out);
+    const SegyLayout ref_lay = describe_segy(ref.data(), ref.size());
+
+    for (size_t j = 0; j < g.nt; ++j) {
+        ASSERT_EQ(out_lay.trace_samples(j), counts[j]);
+        ASSERT_EQ(0, std::memcmp(src.data() + in_lay.trace_offset(j),
+                                 out.data() + out_lay.trace_offset(j), 240))
+            << "trace header " << j;
+        const auto got = read_trace_samples(out.data(), out.size(), out_lay, j);
+        const auto want = read_trace_samples(ref.data(), ref.size(), ref_lay, j);
+        ASSERT_EQ(got.size(), counts[j]);
+        for (size_t i = 0; i < got.size(); ++i) {
+            ASSERT_EQ(got[i], want[i]) << "trace " << j << " sample " << i;
+        }
+    }
+
+    // The slow event is still attenuated (trace-major rows of 512; the cropped
+    // tail of short traces is zero in the input and left out of the comparison).
+    std::vector<float> in_rows(g.ns * g.nt, 0.0f);
+    std::vector<float> out_rows(g.ns * g.nt, 0.0f);
+    for (size_t j = 0; j < g.nt; ++j) {
+        const auto a = read_trace_samples(src.data(), src.size(), in_lay, j);
+        const auto b = read_trace_samples(out.data(), out.size(), out_lay, j);
+        std::copy(a.begin(), a.end(), in_rows.begin() + static_cast<std::ptrdiff_t>(j * g.ns));
+        std::copy(b.begin(), b.end(), out_rows.begin() + static_cast<std::ptrdiff_t>(j * g.ns));
+    }
+    const double slow_in = rms(in_rows, g.ns, g.nt, 0, 300);
+    const double slow_out = rms(out_rows, g.ns, g.nt, 0, 300);
+    ASSERT_GT(slow_in, 1e-3);
+    EXPECT_LT(slow_out / slow_in, 0.3);
+}
+
+TEST(CliTest, VariableLengthFilesWithDamageFailCleanly) {
+    TempDir dir;
+    const Gather g = make_gather();
+    const std::vector<size_t> counts = variable_counts(g.nt);
+    Bytes b = build_variable_segy(g, counts);
+    b.resize(b.size() - 10); // last trace short
+    const std::string cut = dir.file("cut.segy");
+    write_file(cut, b);
+    EXPECT_EQ(run_cli("inspect " + quote(cut)).exit_code, 1);
+    EXPECT_EQ(
+        run_cli("filter " + quote(cut) + " " + quote(dir.file("o.segy")) + " --dx 5").exit_code, 1);
+    EXPECT_FALSE(fs::exists(dir.file("o.segy")));
+
+    // A per-trace count pointing far past the end of the file.
+    Bytes evil = build_variable_segy(g, counts);
+    put(evil, 3600 + 114, 65535, 2);
+    const std::string evil_path = dir.file("evil.segy");
+    write_file(evil_path, evil);
+    const RunResult r = run_cli("inspect " + quote(evil_path));
+    EXPECT_EQ(r.exit_code, 1);
+    EXPECT_NE(r.output.find("invalid SEG-Y"), std::string::npos) << r.output;
 }
 
 TEST(CliTest, FilterRefusesToExceedMemoryLimitAndSameFile) {
