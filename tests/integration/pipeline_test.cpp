@@ -33,8 +33,9 @@ void add_linear_event(ComplexSoA& data, size_t rows, size_t cols,
             
             // Ricker wavelet
             // Use std::exp explicitly
-            float val = amplitude * (1.0 - 2.0 * M_PI * M_PI * f_peak * f_peak * t * t) * 
-                        std::exp(-M_PI * M_PI * f_peak * f_peak * t * t);
+            float val = static_cast<float>(
+                amplitude * (1.0 - 2.0 * M_PI * M_PI * f_peak * f_peak * t * t) *
+                std::exp(-M_PI * M_PI * f_peak * f_peak * t * t));
             
             size_t idx = i * cols + j;
             if (idx >= data.count) {
@@ -109,8 +110,7 @@ TEST_F(PipelineTest, RejectsGroundRoll) {
     // 2. Filter
     apply_fk_filter(*data, rows, cols, params);
     
-    // 3. Inverse FFT
-    scratch.reset();
+    // 3. Inverse FFT (fft2d releases its scratch itself; no reset() needed)
     fft2d_inverse(data->real, data->imag, rows, cols, scratch);
     
     double energy_out = total_energy(*data, rows * cols);
@@ -137,7 +137,6 @@ TEST_F(PipelineTest, PreservesReflection) {
     
     apply_fk_filter(*data, rows, cols, params);
     
-    scratch.reset();
     fft2d_inverse(data->real, data->imag, rows, cols, scratch);
     
     double energy_out = total_energy(*data, rows * cols);
@@ -178,7 +177,6 @@ TEST_F(PipelineTest, SmallGrid) {
     basalt::MemoryArena scratch(rows * cols * sizeof(float) * 2 + 1024);
     fft2d_forward(data->real, data->imag, rows, cols, scratch);
     apply_fk_filter(*data, rows, cols, params);
-    scratch.reset();
     fft2d_inverse(data->real, data->imag, rows, cols, scratch);
     
     double energy_out = total_energy(*data, rows * cols);
