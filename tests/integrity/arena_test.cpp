@@ -1,5 +1,10 @@
 #include "basalt/arena.hpp"
 #include "basalt/kernel/complex_soa.hpp"
+
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
+
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -438,10 +443,23 @@ TEST(ComplexSoATest, RequiredArenaBytesSizesArenaExactly) {
 namespace {
 int g_dealloc_calls = 0;
 void* g_last_freed = nullptr;
+// The Windows C runtime has no std::aligned_alloc; use _aligned_malloc there.
+void* test_aligned_alloc(size_t alignment, size_t size) {
+#if defined(_WIN32)
+    return _aligned_malloc(size, alignment);
+#else
+    return std::aligned_alloc(alignment, size);
+#endif
+}
+
 void counting_free(void* p) {
     ++g_dealloc_calls;
     g_last_freed = p;
+#if defined(_WIN32)
+    _aligned_free(p);
+#else
     std::free(p);
+#endif
 }
 } // namespace
 
@@ -466,8 +484,8 @@ TEST(ArenaTest, MoveConstructorTransfersOwnership) {
 
 TEST(ArenaTest, MoveAssignmentFreesOldBlockAndTransfers) {
     g_dealloc_calls = 0;
-    void* raw1 = std::aligned_alloc(64, 1024);
-    void* raw2 = std::aligned_alloc(64, 2048);
+    void* raw1 = test_aligned_alloc(64, 1024);
+    void* raw2 = test_aligned_alloc(64, 2048);
     ASSERT_NE(raw1, nullptr);
     ASSERT_NE(raw2, nullptr);
     {
@@ -485,7 +503,7 @@ TEST(ArenaTest, MoveAssignmentFreesOldBlockAndTransfers) {
 
 TEST(ArenaTest, ExternalDeallocatorConstructor) {
     g_dealloc_calls = 0;
-    void* raw = std::aligned_alloc(64, 1024);
+    void* raw = test_aligned_alloc(64, 1024);
     ASSERT_NE(raw, nullptr);
     {
         basalt::MemoryArena arena(raw, 1024, &counting_free);
