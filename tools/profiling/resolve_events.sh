@@ -47,11 +47,12 @@ discover_perf_bin() {
   done
 
   local globbed
-  globbed="$(ls /usr/lib/linux-tools*/perf 2>/dev/null | head -n 1 || true)"
-  if [[ -n "$globbed" && -x "$globbed" ]]; then
-    printf "%s" "$globbed"
-    return 0
-  fi
+  for globbed in /usr/lib/linux-tools*/perf; do
+    if [[ -x "$globbed" ]]; then
+      printf "%s" "$globbed"
+      return 0
+    fi
+  done
 
   printf ""
   return 1
@@ -204,23 +205,25 @@ if [[ "${#UNSUPPORTED[@]}" -gt 0 ]]; then
   UNSUPPORTED_EVENTS="$(IFS=';'; echo "${UNSUPPORTED[*]}")"
 fi
 
-printf "PERF_BIN='%s'\n" "$PERF_BIN_RESOLVED"
-printf "PERF_AVAILABLE='%s'\n" "$PERF_AVAILABLE"
-printf "PERF_LIST_AVAILABLE='%s'\n" "$PERF_LIST_AVAILABLE"
-printf "GROUP_IPC='%s'\n" "$GROUP_IPC"
-printf "GROUP_CACHE='%s'\n" "$GROUP_CACHE"
-printf "GROUP_DRAM='%s'\n" "$GROUP_DRAM"
-printf "GROUP_SIMD='%s'\n" "$GROUP_SIMD"
-printf "GROUP_BRANCH='%s'\n" "$GROUP_BRANCH"
-printf "GROUP_FAULTS='%s'\n" "$GROUP_FAULTS"
-printf "GROUP_IPC_SOURCE='%s'\n" "$GROUP_IPC_SOURCE"
-printf "GROUP_CACHE_SOURCE='%s'\n" "$GROUP_CACHE_SOURCE"
-printf "GROUP_DRAM_SOURCE='%s'\n" "$GROUP_DRAM_SOURCE"
-printf "GROUP_SIMD_SOURCE='%s'\n" "$GROUP_SIMD_SOURCE"
-printf "GROUP_BRANCH_SOURCE='%s'\n" "$GROUP_BRANCH_SOURCE"
-printf "GROUP_FAULTS_SOURCE='%s'\n" "$GROUP_FAULTS_SOURCE"
-printf "UNSUPPORTED_EVENTS='%s'\n" "$UNSUPPORTED_EVENTS"
+# Values are written with %q so they stay valid shell when this file is sourced,
+# even if a value contains quotes, spaces or shell metacharacters.
+printf "PERF_BIN=%q\n" "$PERF_BIN_RESOLVED"
+printf "PERF_AVAILABLE=%q\n" "$PERF_AVAILABLE"
+printf "PERF_LIST_AVAILABLE=%q\n" "$PERF_LIST_AVAILABLE"
+printf "GROUP_IPC=%q\n" "$GROUP_IPC"
+printf "GROUP_CACHE=%q\n" "$GROUP_CACHE"
+printf "GROUP_DRAM=%q\n" "$GROUP_DRAM"
+printf "GROUP_SIMD=%q\n" "$GROUP_SIMD"
+printf "GROUP_BRANCH=%q\n" "$GROUP_BRANCH"
+printf "GROUP_FAULTS=%q\n" "$GROUP_FAULTS"
+printf "GROUP_IPC_SOURCE=%q\n" "$GROUP_IPC_SOURCE"
+printf "GROUP_CACHE_SOURCE=%q\n" "$GROUP_CACHE_SOURCE"
+printf "GROUP_DRAM_SOURCE=%q\n" "$GROUP_DRAM_SOURCE"
+printf "GROUP_SIMD_SOURCE=%q\n" "$GROUP_SIMD_SOURCE"
+printf "GROUP_BRANCH_SOURCE=%q\n" "$GROUP_BRANCH_SOURCE"
+printf "GROUP_FAULTS_SOURCE=%q\n" "$GROUP_FAULTS_SOURCE"
+printf "UNSUPPORTED_EVENTS=%q\n" "$UNSUPPORTED_EVENTS"
 
 for key in "${!RESOLVED[@]}"; do
-  printf "EVENT_%s='%s'\n" "${key^^}" "${RESOLVED[$key]}"
+  printf "EVENT_%s=%q\n" "${key^^}" "${RESOLVED[$key]}"
 done
