@@ -33,7 +33,7 @@ The project provides:
 - CMake 3.15 or newer
 - any x86_64 CPU: Basalt detects AVX2/FMA and AVX-512 at runtime and uses them when available, with portable scalar fallbacks otherwise. Set `BASALT_SIMD_MAX=scalar|avx2|avx512` to cap the instruction set (see `basalt/kernel/cpu_features.hpp`); configure with `-DBASALT_NATIVE_ARCH=ON` to build for the build machine's CPU (`-march=native`)
 
-Tested in CI: Linux with GCC and Clang. Windows (MSVC, MinGW) and macOS (x86_64 Clang) are expected to work but are not currently tested in CI.
+Tested in CI: Linux with GCC and Clang (including ASan/UBSan and TSan builds) and Windows with MSVC. MinGW and macOS (x86_64 Clang) are expected to work but are not currently tested in CI.
 
 ## Build
 
