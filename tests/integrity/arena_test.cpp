@@ -7,6 +7,7 @@
 #include <limits>
 #include <new>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 TEST(ArenaTest, AllocationBasic) {
@@ -144,6 +145,163 @@ TEST(ArenaTest, ResetAndReuseAlignment) {
     EXPECT_NE(ptr_after, nullptr);
     EXPECT_EQ(reinterpret_cast<uintptr_t>(ptr_after) % 64, 0);
     EXPECT_EQ(ptr_before, ptr_after);  // Should reuse same memory
+}
+
+// --- mark / rewind / ArenaScope ---
+
+TEST(ArenaTest, RewindReusesMemoryAfterMark) {
+    basalt::MemoryArena arena(4096);
+    ASSERT_NE(arena.allocate(100), nullptr);
+
+    const size_t m = arena.mark();
+    EXPECT_EQ(m, arena.bytes_used());
+    void* first = arena.allocate(256);
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(arena.allocate(512), nullptr);
+    EXPECT_GT(arena.bytes_used(), m);
+
+    arena.rewind(m);
+    EXPECT_EQ(arena.mark(), m);
+    EXPECT_EQ(arena.bytes_used(), m);
+    EXPECT_EQ(arena.bytes_used() + arena.bytes_remaining(), arena.total_size());
+
+    void* again = arena.allocate(256);
+    ASSERT_NE(again, nullptr);
+    EXPECT_EQ(again, first);
+}
+
+TEST(ArenaTest, RewindToZeroMatchesReset) {
+    basalt::MemoryArena arena(1024);
+    const size_t zero = arena.mark();
+    EXPECT_EQ(zero, 0u);
+    void* a = arena.allocate(64);
+    ASSERT_NE(a, nullptr);
+    arena.rewind(zero);
+    EXPECT_EQ(arena.bytes_used(), 0u);
+    EXPECT_EQ(arena.allocate(64), a);
+}
+
+TEST(ArenaTest, RewindToCurrentMarkIsNoOp) {
+    basalt::MemoryArena arena(1024);
+    ASSERT_NE(arena.allocate(64), nullptr);
+    const size_t used = arena.bytes_used();
+    arena.rewind(used);
+    EXPECT_EQ(arena.bytes_used(), used);
+}
+
+TEST(ArenaTest, RewindWithInvalidMarkThrows) {
+    basalt::MemoryArena arena(1024);
+    ASSERT_NE(arena.allocate(64), nullptr);
+    const size_t used = arena.bytes_used();
+
+    // Beyond the current offset: not a previous mark.
+    EXPECT_THROW(arena.rewind(used + 1), std::invalid_argument);
+    EXPECT_THROW(arena.rewind(std::numeric_limits<size_t>::max()), std::invalid_argument);
+    EXPECT_EQ(arena.bytes_used(), used);  // failed rewind changes nothing
+
+    // A mark taken before reset() is invalid after it.
+    const size_t high = arena.mark();
+    arena.reset();
+    EXPECT_THROW(arena.rewind(high), std::invalid_argument);
+    EXPECT_EQ(arena.bytes_used(), 0u);
+}
+
+TEST(ArenaTest, BytesUsedConsistentAcrossMarkRewind) {
+    basalt::MemoryArena arena(4096);
+    EXPECT_EQ(arena.bytes_used(), 0u);
+    const size_t m0 = arena.mark();
+    EXPECT_EQ(m0, 0u);
+
+    ASSERT_NE(arena.allocate(100), nullptr);
+    const size_t m1 = arena.mark();
+    EXPECT_GE(m1, 100u);
+    EXPECT_EQ(arena.bytes_used(), m1);
+
+    ASSERT_NE(arena.allocate(200), nullptr);
+    EXPECT_GT(arena.bytes_used(), m1);
+    EXPECT_EQ(arena.bytes_used() + arena.bytes_remaining(), arena.total_size());
+
+    arena.rewind(m1);
+    EXPECT_EQ(arena.bytes_used(), m1);
+    EXPECT_EQ(arena.bytes_used() + arena.bytes_remaining(), arena.total_size());
+
+    arena.rewind(m0);
+    EXPECT_EQ(arena.bytes_used(), 0u);
+    EXPECT_EQ(arena.bytes_remaining(), arena.total_size());
+}
+
+TEST(ArenaTest, ArenaScopeRewindsOnExit) {
+    basalt::MemoryArena arena(4096);
+    void* kept = arena.allocate(128);
+    ASSERT_NE(kept, nullptr);
+    const size_t before = arena.bytes_used();
+
+    void* inside = nullptr;
+    {
+        basalt::ArenaScope scope(arena);
+        inside = arena.allocate(256);
+        ASSERT_NE(inside, nullptr);
+        EXPECT_GT(arena.bytes_used(), before);
+    }
+    EXPECT_EQ(arena.bytes_used(), before);
+
+    // Memory from the scope is handed out again; memory before it is untouched.
+    EXPECT_EQ(arena.allocate(256), inside);
+    EXPECT_NE(kept, inside);
+}
+
+TEST(ArenaTest, ArenaScopeNests) {
+    basalt::MemoryArena arena(8192);
+    ASSERT_NE(arena.allocate(64), nullptr);
+    const size_t outer_base = arena.bytes_used();
+
+    {
+        basalt::ArenaScope outer(arena);
+        ASSERT_NE(arena.allocate(128), nullptr);
+        const size_t outer_used = arena.bytes_used();
+        void* inner_first = nullptr;
+        {
+            basalt::ArenaScope inner(arena);
+            inner_first = arena.allocate(512);
+            ASSERT_NE(inner_first, nullptr);
+            EXPECT_GT(arena.bytes_used(), outer_used);
+        }
+        // Inner scope gives back only its own allocation.
+        EXPECT_EQ(arena.bytes_used(), outer_used);
+        EXPECT_EQ(arena.allocate(512), inner_first);
+        arena.rewind(outer_used);
+    }
+    EXPECT_EQ(arena.bytes_used(), outer_base);
+}
+
+TEST(ArenaTest, ArenaScopeWithNoAllocationsIsNoOp) {
+    basalt::MemoryArena arena(1024);
+    ASSERT_NE(arena.allocate(32), nullptr);
+    const size_t used = arena.bytes_used();
+    {
+        basalt::ArenaScope scope(arena);
+    }
+    EXPECT_EQ(arena.bytes_used(), used);
+}
+
+TEST(ArenaTest, ArenaScopeIsNotCopyOrMovable) {
+    static_assert(!std::is_copy_constructible_v<basalt::ArenaScope>);
+    static_assert(!std::is_copy_assignable_v<basalt::ArenaScope>);
+    static_assert(!std::is_move_constructible_v<basalt::ArenaScope>);
+    static_assert(!std::is_move_assignable_v<basalt::ArenaScope>);
+    SUCCEED();
+}
+
+TEST(ArenaTest, ArenaScopeSurvivesResetInsideScope) {
+    // reset() inside a scope is documented as unsupported, but the destructor
+    // must not throw or underflow the offset when it happens.
+    basalt::MemoryArena arena(1024);
+    {
+        basalt::ArenaScope scope(arena);
+        ASSERT_NE(arena.allocate(64), nullptr);
+        arena.reset();
+    }
+    EXPECT_EQ(arena.bytes_used(), 0u);
 }
 
 

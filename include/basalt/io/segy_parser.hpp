@@ -23,9 +23,10 @@ public:
 // 'buffer'; a buffer that is too short throws SegyFormatError.
 // ---------------------------------------------------------------------------
 
-// Reads the 3200-byte textual header and returns it as ASCII text. EBCDIC
-// headers (the standard) are converted; headers that already look like ASCII
-// (common in rev 2 files) are passed through unchanged.
+// Reads the 3200-byte textual header and returns it as 7-bit ASCII text of the
+// same length. EBCDIC headers (the standard) are converted with cp037; headers
+// that already look like ASCII (common in rev 2 files) are passed through, with
+// any byte above 0x7F replaced by '?'. Detection uses utils::is_probably_ascii().
 // Requires size >= 3200.
 std::string parse_text_header(const void* buffer, size_t size);
 
@@ -75,6 +76,11 @@ struct SegyLayout {
 //    of -1 (variable) is resolved by scanning for the "((SEG: EndText))"
 //    stanza; if none is found before the end of the file, the file is rejected
 //  - rev 2 files declaring additional trace headers are rejected (unsupported)
+//  - rev 2 first_trace_offset (bytes 3521-3528), when non-zero, is the data
+//    start: it overrides the offset computed from the extended headers. It
+//    must lie past the header records and inside the buffer
+//  - rev 2 num_traces_in_file (bytes 3513-3520), when non-zero, must equal the
+//    computed trace count, otherwise SegyFormatError reports both numbers
 //  - size >= 3600 + n_ext * 3200 + trailer + n * (240 + ns * bytes_per_sample),
 //    and the bytes after the header block divide evenly into whole traces; a
 //    trailing partial trace is an error

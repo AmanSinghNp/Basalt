@@ -8,7 +8,13 @@
 namespace basalt {
 
 /// Bump-pointer arena. Allocations are never freed individually; reset()
-/// rewinds the whole arena.
+/// rewinds the whole arena, and mark()/rewind() (or the ArenaScope helper)
+/// rewind it to an earlier point.
+///
+/// Lifetime contract for mark()/rewind(): every pointer handed out after a
+/// mark is invalid once the arena is rewound to that mark (or to an earlier
+/// one), and the memory may be handed out again by later allocations. Pointers
+/// returned before the mark stay valid. reset() invalidates every pointer.
 ///
 /// Failure contract:
 ///   * allocate() / allocate_array() return nullptr when the arena is
@@ -53,6 +59,19 @@ public:
     /// power of two.
     [[nodiscard]] void* allocate(size_t size, size_t alignment = 64);
     void reset();
+
+    /// Returns the current allocation offset, to be passed to rewind() later.
+    /// A mark is only meaningful for the arena that produced it, and only
+    /// until the arena is reset().
+    [[nodiscard]] size_t mark() const noexcept { return m_offset; }
+
+    /// Rewinds the allocation offset to `mark`, which must be a value returned
+    /// by mark() on this arena and not yet passed over by reset(). Every
+    /// pointer allocated after that mark becomes invalid (see the lifetime
+    /// contract above). Throws std::invalid_argument if `mark` is greater than
+    /// the current offset, which means it cannot be a previous mark (for
+    /// example because reset() ran after it was taken).
+    void rewind(size_t mark);
 
     // Capacity introspection
     [[nodiscard]] size_t bytes_used() const noexcept { return m_offset; }
@@ -101,6 +120,32 @@ private:
     size_t m_total_size = 0;
     size_t m_offset = 0;
     DeallocatorFn m_deallocator = nullptr;
+};
+
+/// RAII helper: records the arena's offset on construction and rewinds to it
+/// on destruction, releasing everything allocated inside the scope. Scopes
+/// nest (inner scopes rewind to their own mark). The lifetime contract of
+/// MemoryArena::rewind() applies: pointers allocated inside the scope must not
+/// be used after it ends. Do not call MemoryArena::reset() while a scope is
+/// active; if the arena was reset, the destructor leaves the offset unchanged.
+class ArenaScope {
+public:
+    explicit ArenaScope(MemoryArena& arena) noexcept
+        : m_arena(arena), m_mark(arena.mark()) {}
+    ~ArenaScope() {
+        if (m_mark <= m_arena.bytes_used()) {
+            m_arena.rewind(m_mark);
+        }
+    }
+
+    ArenaScope(const ArenaScope&) = delete;
+    ArenaScope& operator=(const ArenaScope&) = delete;
+    ArenaScope(ArenaScope&&) = delete;
+    ArenaScope& operator=(ArenaScope&&) = delete;
+
+private:
+    MemoryArena& m_arena;
+    size_t m_mark;
 };
 
 } // namespace basalt
