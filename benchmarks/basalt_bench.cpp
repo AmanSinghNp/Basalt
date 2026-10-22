@@ -137,6 +137,8 @@ bool parse_simd_list(const std::string& text, std::vector<basalt::kernel::SimdMo
             out.push_back(basalt::kernel::SimdMode::AVX2);
         } else if (token == "avx512") {
             out.push_back(basalt::kernel::SimdMode::AVX512);
+        } else if (token == "scalar") {
+            out.push_back(basalt::kernel::SimdMode::Scalar);
         } else {
             return false;
         }
@@ -184,6 +186,7 @@ const char* simd_mode_name(basalt::kernel::SimdMode mode) {
     case basalt::kernel::SimdMode::Auto: return "auto";
     case basalt::kernel::SimdMode::AVX2: return "avx2";
     case basalt::kernel::SimdMode::AVX512: return "avx512";
+    case basalt::kernel::SimdMode::Scalar: return "scalar";
     }
     return "unknown";
 }
@@ -252,7 +255,7 @@ void print_usage() {
         << "Usage: basalt_bench [options]\n"
         << "  --sizes <csv>     Grid sizes (powers of two). Default: 1024\n"
         << "  --threads <csv>   Thread counts (>= 1). Default: 1\n"
-        << "  --simd <csv>      SIMD modes: auto,avx2,avx512. Default: auto\n"
+        << "  --simd <csv>      SIMD modes: auto,scalar,avx2,avx512. Default: auto\n"
         << "  --numa <csv>      NUMA modes: off,auto. Default: off\n"
         << "  --memory-policy <csv> Memory policy: default,bind-worker-buffers,bind-inputs-if-possible\n"
         << "  --shots <N>       Timed shots (>= 1). Default: 64\n"
@@ -308,7 +311,7 @@ ParseStatus parse_args(int argc, char** argv, Config& cfg) {
             }
         } else if (arg == "--simd") {
             if (!parse_simd_list(value, cfg.simd_modes)) {
-                return report_invalid(arg, value, "expected a comma-separated list of auto,avx2,avx512");
+                return report_invalid(arg, value, "expected a comma-separated list of auto,scalar,avx2,avx512");
             }
         } else if (arg == "--numa") {
             if (!parse_numa_list(value, cfg.numa_modes)) {

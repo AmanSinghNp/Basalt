@@ -19,6 +19,7 @@ option(BASALT_BUILD_TESTS      "Build the Basalt unit and integration tests"    
 option(BASALT_BUILD_BENCHMARKS "Build the Basalt benchmark executables"           ${BASALT_IS_TOP_LEVEL})
 option(BASALT_BUILD_CLI        "Build the basalt command line executable"         ON)
 option(BASALT_INSTALL          "Generate install rules and the CMake package"     ${BASALT_IS_TOP_LEVEL})
+option(BASALT_NATIVE_ARCH      "Compile Basalt itself with -march=native (non-portable binaries)" OFF)
 
 # Single-config generators: default to an optimized build when nothing was requested.
 if(BASALT_IS_TOP_LEVEL AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -40,12 +41,23 @@ find_package(Threads REQUIRED)
 
 # --- 2. Compiler Flags ---
 # Architecture flags live in ONE variable and are applied in ONE place
-# (basalt_configure_target below). A later phase replaces them with runtime dispatch.
+# (basalt_configure_target below). The baseline is plain x86-64 (SSE2): AVX2,
+# FMA and AVX-512 code carries per-function target attributes and is selected
+# at runtime (see include/basalt/kernel/cpu_features.hpp), so the library and
+# the CLI run on any x86-64 CPU. BASALT_NATIVE_ARCH=ON additionally compiles
+# everything for the build machine's CPU (runtime dispatch still applies, but
+# the binary may then fail to start on older CPUs).
 if(MSVC)
-    set(BASALT_ARCH_FLAGS /arch:AVX2)
+    set(BASALT_ARCH_FLAGS "")
+    if(BASALT_NATIVE_ARCH)
+        list(APPEND BASALT_ARCH_FLAGS /arch:AVX2)  # MSVC has no "native" switch
+    endif()
     set(BASALT_WARNING_FLAGS /W4 /permissive-)
 else()
-    set(BASALT_ARCH_FLAGS -mtune=generic -mavx2 -mfma)
+    set(BASALT_ARCH_FLAGS -mtune=generic)
+    if(BASALT_NATIVE_ARCH)
+        list(APPEND BASALT_ARCH_FLAGS -march=native)
+    endif()
     set(BASALT_WARNING_FLAGS -Wall -Wextra -Wpedantic -Wshadow -Wconversion)
 endif()
 
@@ -70,6 +82,7 @@ add_library(basalt_core
     src/kernel/transpose.cpp
     src/kernel/fft2d.cpp
     src/kernel/fft_avx.cpp
+    src/kernel/cpu_features.cpp
     src/kernel/transpose_avx.cpp
     src/core/arena.cpp
     src/filter/fk_filter.cpp

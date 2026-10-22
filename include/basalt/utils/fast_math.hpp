@@ -1,5 +1,7 @@
 #pragma once
 
+#include "basalt/kernel/cpu_features.hpp"
+
 #include <immintrin.h>
 #include <cmath>
 #include <limits>
@@ -15,7 +17,10 @@ namespace basalt::utils {
 /// Inputs are clamped to [-87, 88] internally, so out-of-range arguments
 /// saturate to exp(-87) (~1.6e-38) or exp(88) (~1.65e38) instead of producing
 /// garbage from exponent-field overflow. NaN inputs propagate (result is NaN).
-inline __m256 fast_exp_avx(__m256 x) {
+///
+/// Requires AVX2+FMA: callers must be BASALT_TARGET_AVX2 functions that run only
+/// when basalt::kernel::cpu_features().can_use_avx2() is true.
+BASALT_TARGET_AVX2 inline __m256 fast_exp_avx(__m256 x) {
     // Operand order matters: _mm256_min/max_ps return the SECOND operand when
     // either input is NaN, so x is passed second to let NaN propagate.
     x = _mm256_min_ps(_mm256_set1_ps(88.0f), x);
@@ -65,7 +70,8 @@ inline __m256 fast_exp_avx(__m256 x) {
 
 /// Fast Sigmoid: 1 / (1 + exp(-x))
 /// Inputs are clamped to [-87, 87]; NaN inputs propagate to NaN outputs.
-inline __m256 fast_sigmoid_avx(__m256 x) {
+/// Same AVX2+FMA calling requirement as fast_exp_avx.
+BASALT_TARGET_AVX2 inline __m256 fast_sigmoid_avx(__m256 x) {
     const __m256 one = _mm256_set1_ps(1.0f);
     const __m256 zero = _mm256_set1_ps(0.0f);
     

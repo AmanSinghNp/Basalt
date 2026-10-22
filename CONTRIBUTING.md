@@ -8,7 +8,7 @@ formatting, commit messages and benchmarks.
 - C++17 compiler: GCC or Clang on Linux (see the README for other platforms)
 - CMake 3.15 or newer (3.19 or newer to use `cmake --preset`)
 - Ninja (recommended)
-- x86_64 CPU with AVX2 and FMA
+- x86_64 CPU (AVX2 and FMA are used when present, scalar fallbacks otherwise)
 - clang-format 18
 
 ## Build

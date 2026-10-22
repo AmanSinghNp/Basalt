@@ -39,7 +39,11 @@ void apply_fk_filter(basalt::kernel::ComplexSoA& data,
 
 /// Apply the F-K filter with an explicit SIMD preference.
 /// Requests are best-effort and fall back to the best supported path when the
-/// requested ISA is unavailable in the current build or on the current CPU.
+/// requested ISA is unavailable on the current CPU (see cpu_features.hpp,
+/// including the BASALT_SIMD_MAX cap): AVX512 -> AVX2 -> Scalar.
+/// SimdMode::Auto picks the best available path; SimdMode::Scalar always runs
+/// the portable scalar implementation. All paths apply the same weights to
+/// about 1e-5 (the AVX paths use a polynomial exp approximation).
 void apply_fk_filter(basalt::kernel::ComplexSoA& data,
                      size_t rows, size_t cols,
                      const FKParams& params,

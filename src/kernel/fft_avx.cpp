@@ -1,5 +1,7 @@
 #include "basalt/kernel/fft_avx.hpp"
 #include "basalt/internal/fft_plan.hpp"
+#include "basalt/internal/simd_dispatch.hpp"
+#include "basalt/kernel/cpu_features.hpp"
 
 #include <immintrin.h>
 #include <utility>
@@ -9,7 +11,7 @@ namespace basalt::internal {
 namespace {
 
 /// Multiply n elements of real/imag by 'scale' (AVX2).
-void scale_avx(float* real, float* imag, size_t n, float scale_val) {
+BASALT_TARGET_AVX2 void scale_avx(float* real, float* imag, size_t n, float scale_val) {
     const __m256 scale = _mm256_set1_ps(scale_val);
     size_t i = 0;
     for (; i + 7 < n; i += 8) {
@@ -25,7 +27,7 @@ void scale_avx(float* real, float* imag, size_t n, float scale_val) {
 }
 
 /// In-register 8x8 transpose of eight __m256 rows.
-inline void transpose8x8_regs(__m256 (&r)[8]) {
+BASALT_TARGET_AVX2 inline void transpose8x8_regs(__m256 (&r)[8]) {
     const __m256 t0 = _mm256_unpacklo_ps(r[0], r[1]);
     const __m256 t1 = _mm256_unpackhi_ps(r[0], r[1]);
     const __m256 t2 = _mm256_unpacklo_ps(r[2], r[3]);
@@ -55,8 +57,8 @@ inline void transpose8x8_regs(__m256 (&r)[8]) {
 }
 
 /// Radix-2 butterfly on register pairs: (a, b) -> (a + t, a - t).
-inline void butterfly(__m256& ar, __m256& ai, __m256& br, __m256& bi,
-                      __m256 tr, __m256 ti) {
+BASALT_TARGET_AVX2 inline void butterfly(__m256& ar, __m256& ai, __m256& br, __m256& bi,
+                                         __m256 tr, __m256 ti) {
     const __m256 nar = _mm256_add_ps(ar, tr);
     const __m256 nai = _mm256_add_ps(ai, ti);
     br = _mm256_sub_ps(ar, tr);
@@ -71,7 +73,7 @@ inline void butterfly(__m256& ar, __m256& ai, __m256& br, __m256& bi,
 /// different blocks into register e, so all three stages become plain vector
 /// butterflies with constant twiddles (1, W4, W8^k).
 template <bool Inverse>
-void first_three_stages_avx(float* real, float* imag, size_t n) {
+BASALT_TARGET_AVX2 void first_three_stages_avx(float* real, float* imag, size_t n) {
     // |W8| components: cos(pi/4) = sin(pi/4).
     const __m256 c = _mm256_set1_ps(0.70710678118654752440f);
 
@@ -156,9 +158,10 @@ void first_three_stages_avx(float* real, float* imag, size_t n) {
     }
 }
 
-/// Unscaled AVX2/FMA transform for n >= 16. 'Inverse' conjugates the twiddles.
+/// Unscaled AVX2/FMA transform for n >= 16 (BASALT_TARGET_AVX2: run only when
+/// the CPU supports AVX2 and FMA). 'Inverse' conjugates the twiddles.
 template <bool Inverse>
-void fft_avx_core(float* real, float* imag, const FFTPlan& plan) {
+BASALT_TARGET_AVX2 void fft_avx_core(float* real, float* imag, const FFTPlan& plan) {
     const size_t n = plan.n;
 
     // --- Step 1: Bit-reversal permutation via the precomputed swap list ---
@@ -243,20 +246,18 @@ void fft_avx_core(float* real, float* imag, const FFTPlan& plan) {
     }
 }
 
-} // anonymous namespace
-
-void fft_rows_avx(float* real, float* imag, size_t rows, size_t cols,
-                  bool inverse, float scale) {
-    if (rows == 0 || cols < 2) {
-        // cols == 1: the transform is the identity; only the scale remains.
-        if (cols == 1 && scale != 1.0f) {
-            scale_avx(real, imag, rows, scale);
-        }
-        return;
+/// Multiply n elements of real/imag by 'scale' (portable).
+void scale_scalar(float* real, float* imag, size_t n, float scale_val) {
+    for (size_t i = 0; i < n; ++i) {
+        real[i] *= scale_val;
+        imag[i] *= scale_val;
     }
+}
 
-    // One plan lookup for the whole batch (not one per row).
-    const FFTPlanRef plan = fft_plan_for(cols);
+/// Row loop of the AVX2 path. The whole batch runs inside one target("avx2,fma")
+/// function so the kernels above inline into it.
+BASALT_TARGET_AVX2 void fft_rows_avx2_impl(float* real, float* imag, size_t rows, size_t cols,
+                                           bool inverse, float scale, const FFTPlan& plan) {
     const bool use_avx = cols >= 16;
 
     for (size_t r = 0; r < rows; ++r) {
@@ -264,15 +265,56 @@ void fft_rows_avx(float* real, float* imag, size_t rows, size_t cols,
         float* row_imag = imag + r * cols;
 
         if (!use_avx) {
-            fft_scalar_core(row_real, row_imag, *plan, inverse);
+            fft_scalar_core(row_real, row_imag, plan, inverse);
         } else if (inverse) {
-            fft_avx_core<true>(row_real, row_imag, *plan);
+            fft_avx_core<true>(row_real, row_imag, plan);
         } else {
-            fft_avx_core<false>(row_real, row_imag, *plan);
+            fft_avx_core<false>(row_real, row_imag, plan);
         }
         if (scale != 1.0f) {
             scale_avx(row_real, row_imag, cols, scale);
         }
+    }
+}
+
+/// Row loop of the portable path (CPUs without AVX2/FMA, or SimdMode capped).
+void fft_rows_scalar_impl(float* real, float* imag, size_t rows, size_t cols,
+                          bool inverse, float scale, const FFTPlan& plan) {
+    for (size_t r = 0; r < rows; ++r) {
+        float* row_real = real + r * cols;
+        float* row_imag = imag + r * cols;
+        fft_scalar_core(row_real, row_imag, plan, inverse);
+        if (scale != 1.0f) {
+            scale_scalar(row_real, row_imag, cols, scale);
+        }
+    }
+}
+
+} // anonymous namespace
+
+void fft_rows_avx(float* real, float* imag, size_t rows, size_t cols,
+                  bool inverse, float scale) {
+    // One dispatch decision per call (not per row).
+    const bool avx2 = kernel::detail::use_avx2();
+
+    if (rows == 0 || cols < 2) {
+        // cols == 1: the transform is the identity; only the scale remains.
+        if (cols == 1 && scale != 1.0f) {
+            if (avx2) {
+                scale_avx(real, imag, rows, scale);
+            } else {
+                scale_scalar(real, imag, rows, scale);
+            }
+        }
+        return;
+    }
+
+    // One plan lookup for the whole batch (not one per row).
+    const FFTPlanRef plan = fft_plan_for(cols);
+    if (avx2) {
+        fft_rows_avx2_impl(real, imag, rows, cols, inverse, scale, *plan);
+    } else {
+        fft_rows_scalar_impl(real, imag, rows, cols, inverse, scale, *plan);
     }
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "basalt/filter/fk_filter.hpp"
+#include "basalt/kernel/cpu_features.hpp"
 #include "basalt/kernel/simd_mode.hpp"
 #include "basalt/utils/fast_math.hpp"
 
@@ -20,8 +21,17 @@ FKFilterExecutionPlan make_execution_plan(size_t rows, size_t cols);
 /// Throw std::invalid_argument for unusable parameters / buffers.
 void validate_params(const FKParams& params);
 void validate_buffer(const basalt::kernel::ComplexSoA& data, size_t rows, size_t cols);
-bool cpu_supports_avx512_filter();
 
+/// Portable scalar f-k filter (float arithmetic, SSE2 baseline). Same weight
+/// formula as the AVX paths but evaluated with std::exp instead of the
+/// polynomial approximation, so weights agree with the AVX paths to ~1e-5.
+void apply_fk_filter_scalar(basalt::kernel::ComplexSoA& data,
+                            size_t rows, size_t cols,
+                            const FKParams& params);
+
+// The AVX2 / AVX-512 entry points below require AVX2+FMA (and AVX-512F/DQ for
+// the latter). apply_fk_filter dispatches on cpu_features(); never call them
+// directly without that check.
 void apply_fk_filter_avx2(basalt::kernel::ComplexSoA& data,
                           size_t rows, size_t cols,
                           const FKParams& params,
@@ -62,7 +72,7 @@ struct FKBandConsts {
     __m256 vmax;
 };
 
-inline FKBandConsts make_band_consts(const FKParams& params) {
+BASALT_TARGET_AVX2 inline FKBandConsts make_band_consts(const FKParams& params) {
     FKBandConsts c;
     c.steep = _mm256_set1_ps(10.0f / static_cast<float>(params.taper_width));
     c.vmin = _mm256_set1_ps(static_cast<float>(params.mute_vel_min));
@@ -72,7 +82,7 @@ inline FKBandConsts make_band_consts(const FKParams& params) {
 
 /// Pass weight for signed apparent velocity v: 1 - S((v-min)s) * S((max-v)s),
 /// i.e. ~0 inside [min, max] and ~1 outside, with sigmoid tapers at both edges.
-inline __m256 band_weight_ps(__m256 vel, const FKBandConsts& c) {
+BASALT_TARGET_AVX2 inline __m256 band_weight_ps(__m256 vel, const FKBandConsts& c) {
     const __m256 lo = basalt::utils::fast_sigmoid_avx(
         _mm256_mul_ps(_mm256_sub_ps(vel, c.vmin), c.steep));
     const __m256 hi = basalt::utils::fast_sigmoid_avx(
@@ -85,8 +95,8 @@ inline __m256 band_weight_ps(__m256 vel, const FKBandConsts& c) {
 /// pre-check so the second evaluation is skipped for ordinary vectors.
 /// k == 0 means infinite apparent velocity, which always passes (weight 1);
 /// this includes DC (f == 0, k == 0).
-inline __m256 fk_weight_ps(__m256 vf, __m256 vk, __m256 sym_mask, bool any_sym,
-                           const FKBandConsts& c) {
+BASALT_TARGET_AVX2 inline __m256 fk_weight_ps(__m256 vf, __m256 vk, __m256 sym_mask, bool any_sym,
+                                             const FKBandConsts& c) {
     const __m256 vel = _mm256_div_ps(vf, vk);
     __m256 w = band_weight_ps(vel, c);
     if (any_sym) {
@@ -98,7 +108,7 @@ inline __m256 fk_weight_ps(__m256 vf, __m256 vk, __m256 sym_mask, bool any_sym,
     return _mm256_blendv_ps(w, _mm256_set1_ps(1.0f), k_is_zero);
 }
 
-inline __m256 absolute_ps(__m256 value) {
+BASALT_TARGET_AVX2 inline __m256 absolute_ps(__m256 value) {
     const __m256 mask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
     return _mm256_and_ps(value, mask);
 }

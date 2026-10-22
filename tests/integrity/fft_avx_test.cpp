@@ -1,4 +1,6 @@
 #include "basalt/kernel/fft_avx.hpp"
+#include "basalt/internal/simd_dispatch.hpp"
+#include "basalt/kernel/cpu_features.hpp"
 #include "basalt/kernel/fft.hpp"
 #include "basalt/kernel/cpu_state.hpp"
 #include "basalt/kernel/complex_soa.hpp"
@@ -7,13 +9,20 @@
 #include "basalt/arena.hpp"
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <cstdint>
 #include <immintrin.h>
 #include <limits>
+#include <cstdlib>
 #include <random>
 #include <stdexcept>
+#include <string>
+#include <thread>
+#if defined(__linux__)
+#include <unistd.h>
+#endif
 #include <vector>
 
 #ifndef M_PI
@@ -449,4 +458,230 @@ TEST(FFTAvxTest, EnergyPreservation) {
     freq_energy /= static_cast<double>(n);
 
     EXPECT_NEAR(freq_energy, time_energy, time_energy * 1e-4);
+}
+
+// ---------- Runtime CPU features and dispatch ----------
+
+namespace {
+
+std::string lower_env(const char* name) {
+    const char* v = std::getenv(name);
+    std::string out = v ? v : "";
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return out;
+}
+
+const char* cap_name(SimdMode m) {
+    switch (m) {
+    case SimdMode::Auto: return "auto";
+    case SimdMode::AVX2: return "avx2";
+    case SimdMode::AVX512: return "avx512";
+    case SimdMode::Scalar: return "scalar";
+    }
+    return "?";
+}
+
+} // namespace
+
+TEST(CpuFeaturesTest, IsStableAndThreadSafe) {
+    const CpuFeatures* first = &cpu_features();
+    EXPECT_EQ(first, &cpu_features());
+    std::vector<const CpuFeatures*> seen(8, nullptr);
+    std::vector<std::thread> threads;
+    for (size_t t = 0; t < seen.size(); ++t) {
+        threads.emplace_back([&seen, t] { seen[t] = &cpu_features(); });
+    }
+    for (auto& th : threads) th.join();
+    for (const CpuFeatures* p : seen) {
+        EXPECT_EQ(p, first);
+    }
+}
+
+TEST(CpuFeaturesTest, EnvOverrideRespected) {
+    // Also run as a child process with BASALT_SIMD_MAX set (see the test below).
+    const CpuFeatures& f = cpu_features();
+    const std::string cap = lower_env("BASALT_SIMD_MAX");
+    if (cap == "scalar") {
+        EXPECT_FALSE(f.avx2);
+        EXPECT_FALSE(f.fma);
+        EXPECT_FALSE(f.avx512f);
+        EXPECT_FALSE(f.avx512dq);
+        EXPECT_FALSE(f.avx512bw);
+        EXPECT_FALSE(f.avx512vl);
+        EXPECT_FALSE(f.can_use_avx2());
+    } else if (cap == "avx2") {
+        EXPECT_FALSE(f.avx512f);
+        EXPECT_FALSE(f.avx512dq);
+        EXPECT_FALSE(f.avx512bw);
+        EXPECT_FALSE(f.avx512vl);
+        EXPECT_FALSE(f.can_use_avx512());
+    }
+#if (defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
+    // Whatever is reported must really be supported by the CPU: the cap only removes features.
+    if (f.avx2) { EXPECT_TRUE(__builtin_cpu_supports("avx2")); }
+    if (f.fma) { EXPECT_TRUE(__builtin_cpu_supports("fma")); }
+    if (f.avx512f) { EXPECT_TRUE(__builtin_cpu_supports("avx512f")); }
+    if (f.avx512dq) { EXPECT_TRUE(__builtin_cpu_supports("avx512dq")); }
+    if (f.avx512bw) { EXPECT_TRUE(__builtin_cpu_supports("avx512bw")); }
+    if (f.avx512vl) { EXPECT_TRUE(__builtin_cpu_supports("avx512vl")); }
+    if (cap != "scalar" && cap != "avx2") {
+        // No effective cap: detection equals the compiler's own answer.
+        EXPECT_EQ(f.avx2, static_cast<bool>(__builtin_cpu_supports("avx2")));
+        EXPECT_EQ(f.fma, static_cast<bool>(__builtin_cpu_supports("fma")));
+        EXPECT_EQ(f.avx512f, static_cast<bool>(__builtin_cpu_supports("avx512f")));
+        EXPECT_EQ(f.avx512dq, static_cast<bool>(__builtin_cpu_supports("avx512dq")));
+        EXPECT_EQ(f.avx512bw, static_cast<bool>(__builtin_cpu_supports("avx512bw")));
+        EXPECT_EQ(f.avx512vl, static_cast<bool>(__builtin_cpu_supports("avx512vl")));
+    }
+#endif
+    // The derived predicates agree with the raw flags.
+    EXPECT_EQ(f.can_use_avx2(), f.avx2 && f.fma);
+    EXPECT_EQ(f.can_use_avx512(), f.avx2 && f.fma && f.avx512f && f.avx512dq);
+}
+
+#if defined(__linux__)
+TEST(CpuFeaturesTest, EnvVariableIsParsedByChildProcess) {
+    // cpu_features() is computed once per process, so the parsing of
+    // BASALT_SIMD_MAX is exercised in fresh child processes of this binary.
+    char exe[4096] = {};
+    const ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    ASSERT_GT(len, 0);
+    for (const char* value : {"scalar", "SCALAR", "avx2", "Avx2", "avx512", "bogus", ""}) {
+        const std::string cmd = std::string("BASALT_SIMD_MAX='") + value + "' '" + exe +
+            "' --gtest_filter=CpuFeaturesTest.EnvOverrideRespected >/dev/null 2>&1";
+        EXPECT_EQ(std::system(cmd.c_str()), 0) << "BASALT_SIMD_MAX=" << value;
+    }
+}
+#endif
+
+TEST(CpuFeaturesTest, DispatchLevelsHonourCaps) {
+    using namespace basalt::kernel::detail;
+    const SimdLevel hardware = max_simd_level();
+    {
+        ScopedSimdCap cap(SimdMode::Scalar);
+        EXPECT_EQ(max_simd_level(), SimdLevel::Scalar);
+        EXPECT_FALSE(use_avx2());
+        for (SimdMode m : {SimdMode::Auto, SimdMode::AVX2, SimdMode::AVX512, SimdMode::Scalar}) {
+            EXPECT_EQ(resolve_simd_level(m), SimdLevel::Scalar) << cap_name(m);
+        }
+    }
+    {
+        ScopedSimdCap cap(SimdMode::AVX2);
+        EXPECT_LE(max_simd_level(), SimdLevel::AVX2);
+        EXPECT_EQ(resolve_simd_level(SimdMode::AVX512), resolve_simd_level(SimdMode::AVX2));
+        EXPECT_EQ(resolve_simd_level(SimdMode::Scalar), SimdLevel::Scalar);
+    }
+    EXPECT_EQ(max_simd_level(), hardware);  // scoped caps restore the previous state
+    EXPECT_EQ(simd_cap_for_testing(), SimdMode::Auto);
+    // Explicit requests never exceed the hardware level; Scalar is always honoured.
+    EXPECT_LE(resolve_simd_level(SimdMode::AVX2), SimdLevel::AVX2);
+    EXPECT_EQ(resolve_simd_level(SimdMode::Scalar), SimdLevel::Scalar);
+    EXPECT_EQ(resolve_simd_level(SimdMode::Auto), hardware);
+    // Nested caps restore in order.
+    {
+        ScopedSimdCap outer(SimdMode::Scalar);
+        {
+            ScopedSimdCap inner(SimdMode::AVX2);
+            EXPECT_EQ(simd_cap_for_testing(), SimdMode::AVX2);
+        }
+        EXPECT_EQ(simd_cap_for_testing(), SimdMode::Scalar);
+    }
+}
+
+// ---------- Every kernel under every cap ----------
+
+class SimdCapParamTest : public ::testing::TestWithParam<SimdMode> {};
+
+INSTANTIATE_TEST_SUITE_P(
+    Caps, SimdCapParamTest,
+    ::testing::Values(SimdMode::Scalar, SimdMode::AVX2, SimdMode::AVX512),
+    [](const ::testing::TestParamInfo<SimdMode>& param_info) { return std::string(cap_name(param_info.param)); });
+
+TEST_P(SimdCapParamTest, ExplicitFftMatchesReferenceAndRoundTrips) {
+    basalt::kernel::detail::ScopedSimdCap cap(GetParam());
+    for (size_t n = 1; n <= 1024; n *= 2) {
+        std::vector<float> in_re(n), in_im(n);
+        fill_random(in_re, in_im, static_cast<uint32_t>(n * 7 + 1));
+
+        std::vector<double> ref_re, ref_im;
+        reference_dft(in_re, in_im, ref_re, ref_im, -1);
+
+        std::vector<float> re = in_re, im = in_im;
+        fft_forward_avx(re.data(), im.data(), n);
+        EXPECT_LE(rel_l2_error(re.data(), im.data(), ref_re, ref_im), fft_error_bound(n))
+            << "forward n=" << n << " cap=" << cap_name(GetParam());
+
+        fft_inverse_avx(re.data(), im.data(), n);
+        EXPECT_LE(rel_l2_error(re.data(), im.data(), in_re.data(), in_im.data(), n),
+                  2.0 * fft_error_bound(n))
+            << "round trip n=" << n << " cap=" << cap_name(GetParam());
+    }
+}
+
+TEST_P(SimdCapParamTest, LargeFftAgreesWithScalarKernel) {
+    basalt::kernel::detail::ScopedSimdCap cap(GetParam());
+    for (const size_t n : {size_t{4096}, size_t{65536}}) {
+        std::vector<float> in_re(n), in_im(n);
+        fill_random(in_re, in_im, 99);
+        std::vector<float> ref_re = in_re, ref_im = in_im;
+        fft_forward(ref_re.data(), ref_im.data(), n);
+
+        std::vector<float> re = in_re, im = in_im;
+        fft_forward_avx(re.data(), im.data(), n);
+        EXPECT_LE(rel_l2_error(re.data(), im.data(), ref_re.data(), ref_im.data(), n),
+                  2.0 * fft_error_bound(n)) << "n=" << n;
+
+        if (GetParam() == SimdMode::Scalar) {
+            // The capped "AVX" entry point runs the very same scalar kernel.
+            EXPECT_EQ(re, ref_re) << "n=" << n;
+            EXPECT_EQ(im, ref_im) << "n=" << n;
+        }
+    }
+}
+
+TEST_P(SimdCapParamTest, ExplicitTransposeMatchesScalar) {
+    basalt::kernel::detail::ScopedSimdCap cap(GetParam());
+    const std::pair<size_t, size_t> shapes[] = {{1, 1}, {1, 9}, {9, 1}, {7, 13}, {8, 8}, {16, 24},
+                                                {33, 65}, {100, 37}, {128, 64}, {257, 129}};
+    for (const auto& shape : shapes) {
+        const size_t rows = shape.first, cols = shape.second;
+        std::vector<float> src(rows * cols);
+        for (size_t i = 0; i < src.size(); ++i) src[i] = static_cast<float>(i) * 0.25f;
+        std::vector<float> expect(rows * cols);
+        transpose_tiled(src.data(), expect.data(), rows, cols);
+        for (const size_t tile : {size_t{0}, size_t{8}, size_t{17}, size_t{128}}) {
+            std::vector<float> dst(rows * cols, -1.0f);
+            transpose_tiled_avx(src.data(), dst.data(), rows, cols, tile);
+            EXPECT_EQ(dst, expect) << rows << "x" << cols << " tile " << tile
+                                   << " cap=" << cap_name(GetParam());
+        }
+    }
+}
+
+TEST_P(SimdCapParamTest, Explicit8x8BlockTranspose) {
+    basalt::kernel::detail::ScopedSimdCap cap(GetParam());
+    constexpr size_t src_stride = 13, dst_stride = 11;
+    std::vector<float> src(8 * src_stride);
+    for (size_t i = 0; i < src.size(); ++i) src[i] = static_cast<float>(i);
+    std::vector<float> dst(8 * dst_stride, -1.0f);
+    transpose_8x8_avx(src.data(), dst.data(), src_stride, dst_stride);
+    for (size_t i = 0; i < 8; ++i) {
+        for (size_t j = 0; j < 8; ++j) {
+            ASSERT_EQ(dst[j * dst_stride + i], src[i * src_stride + j]) << i << "," << j;
+        }
+        // Columns beyond the 8x8 block are not written.
+        for (size_t j = 8; j < dst_stride; ++j) {
+            ASSERT_EQ(dst[i * dst_stride + j], -1.0f);
+        }
+    }
+}
+
+TEST_P(SimdCapParamTest, ExplicitCallsStillValidateArguments) {
+    basalt::kernel::detail::ScopedSimdCap cap(GetParam());
+    std::vector<float> buf(64, 0.0f);
+    EXPECT_THROW(fft_forward_avx(buf.data(), buf.data() + 1, 3), std::invalid_argument);
+    EXPECT_THROW(fft_inverse_avx(nullptr, buf.data(), 8), std::invalid_argument);
+    EXPECT_THROW(transpose_tiled_avx(buf.data(), buf.data(), 8, 8), std::invalid_argument);
+    EXPECT_NO_THROW(transpose_tiled_avx(nullptr, nullptr, 0, 8));
 }

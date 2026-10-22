@@ -14,6 +14,7 @@
 #include "basalt/io/segy_parser.hpp"
 #include "basalt/io/segy_writer.hpp"
 #include "basalt/kernel/complex_soa.hpp"
+#include "basalt/kernel/cpu_features.hpp"
 #include "basalt/kernel/cpu_state.hpp"
 #include "basalt/kernel/fft2d.hpp"
 
@@ -82,18 +83,17 @@ void print_usage(std::ostream& os) {
 // ---------------------------------------------------------------------------
 
 void print_cpu_capabilities() {
-    std::cout << "CPU features (runtime):\n";
-#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
-    __builtin_cpu_init();
-    const auto yn = [](int supported) { return supported ? "yes" : "no"; };
-    std::cout << "  sse4.2:  " << yn(__builtin_cpu_supports("sse4.2")) << "\n";
-    std::cout << "  avx:     " << yn(__builtin_cpu_supports("avx")) << "\n";
-    std::cout << "  avx2:    " << yn(__builtin_cpu_supports("avx2")) << "\n";
-    std::cout << "  fma:     " << yn(__builtin_cpu_supports("fma")) << "\n";
-    std::cout << "  avx512f: " << yn(__builtin_cpu_supports("avx512f")) << "\n";
-#else
-    std::cout << "  (runtime detection unavailable on this compiler/architecture)\n";
-#endif
+    const basalt::kernel::CpuFeatures& cpu = basalt::kernel::cpu_features();
+    const auto yn = [](bool supported) { return supported ? "yes" : "no"; };
+    std::cout << "CPU features (runtime, after BASALT_SIMD_MAX):\n";
+    std::cout << "  avx2:     " << yn(cpu.avx2) << "\n";
+    std::cout << "  fma:      " << yn(cpu.fma) << "\n";
+    std::cout << "  avx512f:  " << yn(cpu.avx512f) << "\n";
+    std::cout << "  avx512dq: " << yn(cpu.avx512dq) << "\n";
+    const char* path = cpu.can_use_avx512() ? "avx512"
+                       : cpu.can_use_avx2() ? "avx2"
+                                            : "scalar";
+    std::cout << "Kernel path: " << path << "\n";
 }
 
 int cmd_info(const std::vector<std::string>& args) {
