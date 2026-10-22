@@ -3,6 +3,7 @@
 #include "basalt/arena.hpp"
 #include "basalt/filter/fk_filter.hpp"
 #include "basalt/internal/numa_memory.hpp"
+#include "basalt/internal/numa_topology.hpp"
 #include "basalt/internal/thread_pool.hpp"
 #include "basalt/kernel/fft2d.hpp"
 #include "basalt/kernel/simd_mode.hpp"
@@ -46,6 +47,10 @@ struct BatchExecutionStats {
 class BatchExecutor {
 public:
     explicit BatchExecutor(const ExecutionOptions& options = {});
+
+    /// Runs all jobs and waits for them. Throws the first error raised by a job (invalid
+    /// job description, capacity exceeded, ...); jobs not yet started when a failure is seen
+    /// are skipped. Not safe to call concurrently on the same executor.
     BatchExecutionStats run(const std::vector<BatchJob>& jobs,
                             std::vector<double>* latencies_ms = nullptr);
 
@@ -55,6 +60,9 @@ public:
                       bool numa_enabled,
                       MemoryPolicy memory_policy);
 
+        /// `home_node` is the kernel NUMA node id used for binding (not a dense index).
+        /// The blocks own the memory; the arenas only borrow it, so a throw while building
+        /// later members releases everything built so far.
         NumaMemoryBlock data_block;
         NumaMemoryBlock scratch_block;
         basalt::MemoryArena data_arena;
@@ -65,11 +73,21 @@ public:
     };
 
 private:
+    /// Validates a job against the per-worker capacity and returns rows * cols.
+    /// Throws std::invalid_argument / std::runtime_error.
+    static size_t validate_job(const BatchJob& job, size_t max_elements);
+
     static void process_job(const BatchJob& job,
                             WorkerBuffers& buffers,
                             basalt::kernel::SimdMode simd_mode);
 
+    WorkerBuffers& buffers_for_current_thread();
+
     ExecutionOptions m_options;
+    NumaTopology m_topology;
+    bool m_numa_active = false;
+    /// One slot per worker (slot 0 only in inline mode). Declared before m_pool so the
+    /// workers are joined before the buffers go away.
     std::vector<std::unique_ptr<WorkerBuffers>> m_buffers;
     std::unique_ptr<ThreadPool> m_pool;
 };
