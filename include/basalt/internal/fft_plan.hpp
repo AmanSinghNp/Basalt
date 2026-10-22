@@ -74,4 +74,19 @@ void fft_scalar_core(float* real, float* imag, const FFTPlan& plan, bool inverse
 void fft_rows_avx(float* real, float* imag, size_t rows, size_t cols,
                   bool inverse, float scale);
 
+/// Strip width (columns per strip, a power of two <= cols) used by
+/// fft_cols_strips; the caller must provide buffers of rows * width floats.
+size_t fft_cols_strip_width(size_t rows, size_t cols);
+
+/// Column transform without transposes: applies an unscaled FFT of length 'rows'
+/// to every column of the row-major rows x cols matrix, then multiplies by
+/// 'scale'. Columns are processed in strips of 'width' adjacent columns through
+/// the contiguous buffers buf_real / buf_imag (rows * width floats each, any
+/// contents). With AVX2 the SIMD lanes are the columns of a strip.
+/// Preconditions: rows and cols powers of two, width a power of two <= cols
+/// (width >= 8 and <= 64 enables the AVX2 path), pointers valid and distinct.
+void fft_cols_strips(float* real, float* imag, size_t rows, size_t cols,
+                     bool inverse, float scale,
+                     float* buf_real, float* buf_imag, size_t width);
+
 } // namespace basalt::internal

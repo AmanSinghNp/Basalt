@@ -30,6 +30,13 @@ ALLOWLIST = [
     "first_three_stages_avx<",
     "fft_avx_core<",
     "fft_rows_avx2_impl(",
+    "cmul<",
+    "col_stages_12<",
+    "col_stage_r2<",
+    "col_stages_r4<",
+    "col_stages<",
+    "col_fft_substrip_avx<",
+    "fft_cols_strips_avx2_impl<",
     # src/kernel/transpose_avx.cpp
     "transpose_8x8_avx_impl(",
     "transpose_tiled_avx2_impl(",

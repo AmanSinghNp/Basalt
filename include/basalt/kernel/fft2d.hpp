@@ -9,7 +9,12 @@ namespace basalt::kernel {
 enum class FFT2DSchedule {
     Auto,
     LegacyColumnFirst,
-    FourStepRowFirst
+    FourStepRowFirst,
+    /// Row FFTs in place, then column FFTs without transposes: strips of
+    /// adjacent columns are gathered into a small contiguous buffer and
+    /// transformed with the SIMD lanes running across columns. 'transpose_tile'
+    /// is ignored. Needs far less scratch than the transpose schedules.
+    RowFirstColumnStrips
 };
 
 struct FFT2DConfig {
@@ -20,8 +25,10 @@ struct FFT2DConfig {
 /// Upper bound on the scratch arena bytes one fft2d_forward / fft2d_inverse
 /// call can need for a rows x cols transform: two float planes of rows*cols
 /// elements, each with worst-case alignment slack and MemoryArena's trailing
-/// alias padding. Every schedule needs the same amount today; 'config' is part
-/// of the signature so future schedules can differ. Returns 0 for an empty
+/// alias padding. The transpose schedules need exactly this much; the
+/// RowFirstColumnStrips schedule needs at most this (two buffers of rows * min(cols, 64)
+/// floats), so the bound holds for every schedule. 'config' is part of the
+/// signature so future schedules can differ. Returns 0 for an empty
 /// matrix and SIZE_MAX if the size does not fit in size_t.
 /// Size the scratch arena with at least this many bytes (on top of anything
 /// else the caller allocates from the same arena).

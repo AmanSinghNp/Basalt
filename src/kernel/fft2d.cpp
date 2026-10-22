@@ -49,6 +49,21 @@ void fft2d_four_step_row_first(float* real, float* imag,
     transpose_pair(tmp_real, tmp_imag, real, imag, cols, rows, tile);
 }
 
+void fft2d_row_first_column_strips(float* real, float* imag,
+                                   size_t rows, size_t cols,
+                                   basalt::MemoryArena& scratch,
+                                   bool inverse, float final_scale) {
+    // Rows in place, then the columns in strips (no transposes). The combined
+    // scale is applied once, when the column pass writes its results back.
+    // The strip buffers are taken first so bad_alloc leaves the data untouched.
+    const size_t width = internal::fft_cols_strip_width(rows, cols);
+    float* buf_real = allocate_plane(scratch, rows * width);
+    float* buf_imag = allocate_plane(scratch, rows * width);
+    internal::fft_rows_avx(real, imag, rows, cols, inverse, 1.0f);
+    internal::fft_cols_strips(real, imag, rows, cols, inverse, final_scale,
+                              buf_real, buf_imag, width);
+}
+
 bool is_pow2(size_t v) {
     return v != 0 && (v & (v - 1)) == 0;
 }
@@ -84,21 +99,28 @@ void fft2d_impl(float* real, float* imag,
     // --- Acquire scratch (throws std::bad_alloc, data still untouched) ---
     // Scratch is handed back on every exit path; caller allocations are kept.
     basalt::ArenaScope scope(scratch);
-    float* tmp_real = allocate_plane(scratch, total);
-    float* tmp_imag = allocate_plane(scratch, total);
 
     // Single combined scale for the inverse (exact: both factors are powers of two).
     const float final_scale = inverse ? 1.0f / static_cast<float>(total) : 1.0f;
     const size_t tile = resolved.transpose_tile;
 
     switch (resolved.schedule) {
-    case basalt::kernel::FFT2DSchedule::LegacyColumnFirst:
+    case basalt::kernel::FFT2DSchedule::LegacyColumnFirst: {
+        float* tmp_real = allocate_plane(scratch, total);
+        float* tmp_imag = allocate_plane(scratch, total);
         fft2d_legacy_column_first(real, imag, rows, cols, tmp_real, tmp_imag,
                                   inverse, final_scale, tile);
         break;
-    case basalt::kernel::FFT2DSchedule::FourStepRowFirst:
+    }
+    case basalt::kernel::FFT2DSchedule::FourStepRowFirst: {
+        float* tmp_real = allocate_plane(scratch, total);
+        float* tmp_imag = allocate_plane(scratch, total);
         fft2d_four_step_row_first(real, imag, rows, cols, tmp_real, tmp_imag,
                                   inverse, final_scale, tile);
+        break;
+    }
+    case basalt::kernel::FFT2DSchedule::RowFirstColumnStrips:
+        fft2d_row_first_column_strips(real, imag, rows, cols, scratch, inverse, final_scale);
         break;
     case basalt::kernel::FFT2DSchedule::Auto:
         // resolved_fft2d_config never returns Auto; reject rather than skip silently.

@@ -108,6 +108,7 @@ const char* schedule_name(FFT2DSchedule s) {
     case FFT2DSchedule::Auto: return "Auto";
     case FFT2DSchedule::LegacyColumnFirst: return "Legacy";
     case FFT2DSchedule::FourStepRowFirst: return "FourStep";
+    case FFT2DSchedule::RowFirstColumnStrips: return "Strips";
     }
     return "?";
 }
@@ -175,7 +176,7 @@ INSTANTIATE_TEST_SUITE_P(
                           Shape2D{16, 32}, Shape2D{8, 256}, Shape2D{256, 8},
                           Shape2D{128, 512}, Shape2D{256, 256}),
         ::testing::Values(FFT2DSchedule::LegacyColumnFirst, FFT2DSchedule::FourStepRowFirst,
-                          FFT2DSchedule::Auto),
+                          FFT2DSchedule::RowFirstColumnStrips, FFT2DSchedule::Auto),
         ::testing::Values(size_t{96}, size_t{13}, size_t{128})
     ),
     [](const ::testing::TestParamInfo<AccuracyParam>& param_info) {
@@ -193,7 +194,7 @@ TEST(FFT2DTest, ForwardOfPositivePlaneWaveLandsInBinK0L0) {
     constexpr size_t rows = 32, cols = 64, total = rows * cols;
     constexpr size_t k0 = 3, l0 = 5;
     for (FFT2DSchedule sched : {FFT2DSchedule::LegacyColumnFirst, FFT2DSchedule::FourStepRowFirst,
-                                FFT2DSchedule::Auto}) {
+                                FFT2DSchedule::RowFirstColumnStrips, FFT2DSchedule::Auto}) {
         std::vector<float> re(total), im(total);
         fill_plane_wave(re, im, rows, cols, k0, l0);
         basalt::MemoryArena scratch(fft2d_scratch_bytes(rows, cols));
@@ -219,7 +220,8 @@ TEST(FFT2DTest, InverseOfKnownSpectrum) {
     // Also pins the single 1/(rows*cols) scaling of the inverse.
     constexpr size_t rows = 16, cols = 32, total = rows * cols;
     constexpr size_t k0 = 2, l0 = 7;
-    for (FFT2DSchedule sched : {FFT2DSchedule::LegacyColumnFirst, FFT2DSchedule::FourStepRowFirst}) {
+    for (FFT2DSchedule sched : {FFT2DSchedule::LegacyColumnFirst, FFT2DSchedule::FourStepRowFirst,
+                                FFT2DSchedule::RowFirstColumnStrips}) {
         std::vector<float> re(total, 0.0f), im(total, 0.0f);
         re[k0 * cols + l0] = 2.0f;
         im[k0 * cols + l0] = -1.0f;
@@ -257,22 +259,19 @@ TEST(FFT2DTest, InverseOfFlatSpectrumIsDelta) {
 TEST(FFT2DAutoConfigTest, ChoosesExpectedConfigPerSizeClass) {
     using basalt::internal::default_fft2d_config;
     struct Case { size_t rows, cols; FFT2DSchedule sched; size_t tile; };
+    // Every shape resolves to the transpose-free column-strip schedule.
     const Case cases[] = {
-        // Exact tuned entries (unchanged).
-        {256, 256, FFT2DSchedule::FourStepRowFirst, 128},
-        {512, 512, FFT2DSchedule::LegacyColumnFirst, 128},
-        {1024, 1024, FFT2DSchedule::LegacyColumnFirst, 96},
-        {2048, 2048, FFT2DSchedule::FourStepRowFirst, 96},
-        {4096, 4096, FFT2DSchedule::FourStepRowFirst, 96},
-        // Size classes.
-        {8, 8, FFT2DSchedule::LegacyColumnFirst, 128},
-        {128, 512, FFT2DSchedule::LegacyColumnFirst, 128},
-        {512, 1024, FFT2DSchedule::LegacyColumnFirst, 128},   // 2^19 elements
-        {1024, 2048, FFT2DSchedule::LegacyColumnFirst, 96},   // 2^21 elements
-        {4096, 1024, FFT2DSchedule::LegacyColumnFirst, 96},
-        {1024, 4096, FFT2DSchedule::LegacyColumnFirst, 96},
-        {8192, 512, FFT2DSchedule::LegacyColumnFirst, 96},
-        {1, 1 << 20, FFT2DSchedule::LegacyColumnFirst, 96},
+        {256, 256, FFT2DSchedule::RowFirstColumnStrips, 128},
+        {512, 512, FFT2DSchedule::RowFirstColumnStrips, 128},
+        {1024, 1024, FFT2DSchedule::RowFirstColumnStrips, 128},
+        {2048, 2048, FFT2DSchedule::RowFirstColumnStrips, 128},
+        {4096, 4096, FFT2DSchedule::RowFirstColumnStrips, 128},
+        {8, 8, FFT2DSchedule::RowFirstColumnStrips, 128},
+        {128, 512, FFT2DSchedule::RowFirstColumnStrips, 128},
+        {4096, 1024, FFT2DSchedule::RowFirstColumnStrips, 128},
+        {1024, 4096, FFT2DSchedule::RowFirstColumnStrips, 128},
+        {8192, 512, FFT2DSchedule::RowFirstColumnStrips, 128},
+        {1, 1 << 20, FFT2DSchedule::RowFirstColumnStrips, 128},
     };
     for (const Case& c : cases) {
         const FFT2DConfig cfg = default_fft2d_config(c.rows, c.cols);
@@ -365,6 +364,19 @@ TEST(FFT2DScratchTest, TooSmallScratchThrowsBadAllocAndLeavesDataUntouched) {
     basalt::MemoryArena tiny(64);
     EXPECT_THROW(fft2d_forward(re.data(), im.data(), rows, cols, tiny), std::bad_alloc);
     EXPECT_EQ(re, in_re);
+
+    // Every explicit schedule fails before touching the data (the column-strip
+    // schedule must not run its row pass before its buffers are secured).
+    for (FFT2DSchedule sched : {FFT2DSchedule::LegacyColumnFirst, FFT2DSchedule::FourStepRowFirst,
+                                FFT2DSchedule::RowFirstColumnStrips}) {
+        EXPECT_THROW(fft2d_forward(re.data(), im.data(), rows, cols, tiny, FFT2DConfig{sched, 64}),
+                     std::bad_alloc) << schedule_name(sched);
+        EXPECT_THROW(fft2d_inverse(re.data(), im.data(), rows, cols, tiny, FFT2DConfig{sched, 64}),
+                     std::bad_alloc) << schedule_name(sched);
+        EXPECT_EQ(re, in_re) << schedule_name(sched);
+        EXPECT_EQ(im, in_im) << schedule_name(sched);
+        EXPECT_EQ(tiny.bytes_used(), 0u) << schedule_name(sched);
+    }
 }
 
 TEST(FFT2DScratchTest, SharedArenaKeepsCallerAllocationsAndRewinds) {
@@ -440,6 +452,9 @@ TEST(FFT2DValidationTest, NonPowerOfTwoDimensionsThrowAndLeaveDataUntouched) {
                      std::invalid_argument) << s.rows << "x" << s.cols;
         EXPECT_THROW(fft2d_forward(re.data(), im.data(), s.rows, s.cols, scratch,
                                    FFT2DConfig{FFT2DSchedule::FourStepRowFirst, 64}),
+                     std::invalid_argument) << s.rows << "x" << s.cols;
+        EXPECT_THROW(fft2d_forward(re.data(), im.data(), s.rows, s.cols, scratch,
+                                   FFT2DConfig{FFT2DSchedule::RowFirstColumnStrips, 64}),
                      std::invalid_argument) << s.rows << "x" << s.cols;
         EXPECT_EQ(re, std::vector<float>(total, 1.0f));
         EXPECT_EQ(im, std::vector<float>(total, 2.0f));
@@ -623,6 +638,8 @@ TEST(FFT2DTest, ScheduleVariantsMatch) {
     std::vector<float> legacy_imag = input_imag;
     std::vector<float> four_real = input_real;
     std::vector<float> four_imag = input_imag;
+    std::vector<float> strips_real = input_real;
+    std::vector<float> strips_imag = input_imag;
     std::vector<float> auto_real = input_real;
     std::vector<float> auto_imag = input_imag;
 
@@ -642,15 +659,24 @@ TEST(FFT2DTest, ScheduleVariantsMatch) {
     }
     {
         basalt::MemoryArena scratch(arena_bytes);
+        fft2d_forward(
+            strips_real.data(), strips_imag.data(), rows, cols, scratch,
+            FFT2DConfig{FFT2DSchedule::RowFirstColumnStrips, 128}
+        );
+    }
+    {
+        basalt::MemoryArena scratch(arena_bytes);
         fft2d_forward(auto_real.data(), auto_imag.data(), rows, cols, scratch);
     }
 
     // Different schedules sum in a different order: agree to the FFT error bound.
     EXPECT_LE(rel_l2_error(four_real, four_imag, legacy_real, legacy_imag),
               fft2d_error_bound(rows, cols));
-    // Auto resolves to Legacy/128 for this size, so it must match bit for bit.
-    EXPECT_EQ(auto_real, legacy_real);
-    EXPECT_EQ(auto_imag, legacy_imag);
+    EXPECT_LE(rel_l2_error(strips_real, strips_imag, legacy_real, legacy_imag),
+              fft2d_error_bound(rows, cols));
+    // Auto resolves to the column-strip schedule for this size, so it must match bit for bit.
+    EXPECT_EQ(auto_real, strips_real);
+    EXPECT_EQ(auto_imag, strips_imag);
 }
 
 // ---------- Runtime dispatch: every cap must give correct transforms ----------
@@ -674,7 +700,8 @@ TEST_P(FFT2DSimdCapTest, MatchesDoublePrecisionReferenceAndRoundTrips) {
                               {256, 256}};
     for (const Shape2D& shape : shapes) {
         for (FFT2DSchedule schedule : {FFT2DSchedule::LegacyColumnFirst,
-                                       FFT2DSchedule::FourStepRowFirst, FFT2DSchedule::Auto}) {
+                                       FFT2DSchedule::FourStepRowFirst,
+                                       FFT2DSchedule::RowFirstColumnStrips, FFT2DSchedule::Auto}) {
             const FFT2DConfig config{schedule, 96};
             const size_t rows = shape.rows, cols = shape.cols, total = rows * cols;
             std::vector<float> in_re(total), in_im(total);
@@ -693,6 +720,45 @@ TEST_P(FFT2DSimdCapTest, MatchesDoublePrecisionReferenceAndRoundTrips) {
             EXPECT_LE(rel_l2_error(re, im, in_re, in_im), 2.0 * fft2d_error_bound(rows, cols))
                 << "round trip " << rows << "x" << cols << " " << schedule_name(schedule);
         }
+    }
+}
+
+TEST_P(FFT2DSimdCapTest, ColumnStripsMatchReferenceOnAllStageShapes) {
+    // Column lengths 1..4096 cover every stage grouping of the strip kernel
+    // (fused first two stages, radix-2^2 pairs, a trailing single stage, and
+    // the cache-blocked / whole-strip phases); widths 1..512 cover the scalar
+    // strips (< 8 columns), one 8-lane group and multi-strip matrices.
+    basalt::kernel::detail::ScopedSimdCap cap(GetParam());
+    const Shape2D shapes[] = {{1, 1}, {2, 1}, {4, 1}, {2, 8}, {8, 4}, {4, 8}, {16, 4}, {64, 2},
+                              {32, 16}, {128, 8}, {256, 16}, {512, 64}, {1024, 4}, {2048, 8},
+                              {4096, 2}, {256, 128}, {64, 512}, {8, 2048}, {128, 128}, {512, 32}};
+    for (const Shape2D& shape : shapes) {
+        const FFT2DConfig config{FFT2DSchedule::RowFirstColumnStrips, 0};
+        const size_t rows = shape.rows, cols = shape.cols, total = rows * cols;
+        std::vector<float> in_re(total), in_im(total);
+        fill_random(in_re, in_im, static_cast<uint32_t>(rows * 31 + cols));
+
+        std::vector<double> ref_re, ref_im;
+        reference_dft2d(in_re, in_im, rows, cols, ref_re, ref_im);
+
+        std::vector<float> re = in_re, im = in_im;
+        basalt::MemoryArena scratch(fft2d_scratch_bytes(rows, cols, config));
+        fft2d_forward(re.data(), im.data(), rows, cols, scratch, config);
+        EXPECT_LE(rel_l2_error(re, im, ref_re, ref_im), fft2d_error_bound(rows, cols))
+            << "forward " << rows << "x" << cols;
+        EXPECT_EQ(scratch.bytes_used(), 0u);
+
+        fft2d_inverse(re.data(), im.data(), rows, cols, scratch, config);
+        EXPECT_LE(rel_l2_error(re, im, in_re, in_im), 2.0 * fft2d_error_bound(rows, cols))
+            << "round trip " << rows << "x" << cols;
+
+        // Inverse of the reference spectrum must give back the input (checks the
+        // conjugated twiddles and the 1/(rows*cols) scale independently).
+        std::vector<float> spec_re(ref_re.begin(), ref_re.end());
+        std::vector<float> spec_im(ref_im.begin(), ref_im.end());
+        fft2d_inverse(spec_re.data(), spec_im.data(), rows, cols, scratch, config);
+        EXPECT_LE(rel_l2_error(spec_re, spec_im, in_re, in_im), 2.0 * fft2d_error_bound(rows, cols))
+            << "inverse " << rows << "x" << cols;
     }
 }
 
