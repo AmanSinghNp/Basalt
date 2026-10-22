@@ -37,14 +37,14 @@ Tested in CI: Linux with GCC and Clang. Windows (MSVC, MinGW) and macOS (x86_64 
 
 ## Build
 
-With CMake presets (CMake 3.19 or newer for `--preset`):
+With CMake presets (CMake 3.21 or newer for `--preset`):
 
 ```bash
 cmake --preset gcc-release
 cmake --build --preset gcc-release
 ```
 
-Available presets are `gcc-release`, `gcc-debug`, `clang-debug` and `msvc-debug`. Build output goes to `build/<preset>/`.
+Available configure presets are `gcc-release`, `gcc-debug`, `gcc-asan`, `gcc-tsan`, `clang-release`, `clang-debug` and `msvc` (build with `msvc-debug` or `msvc-release`). Build output goes to `build/<preset>/`.
 
 Or configure manually:
 
@@ -111,7 +111,6 @@ params.taper_width = 100.0;
 
 basalt::filter::apply_fk_filter(data, rows, cols, params);
 
-scratch.reset();
 basalt::kernel::fft2d_inverse(data.real, data.imag, rows, cols, scratch, fft_config);
 ```
 

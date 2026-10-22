@@ -56,13 +56,10 @@ constexpr size_t fft2d_scratch_bytes(size_t rows, size_t cols,
 ///
 /// Scratch memory: every call takes two rows*cols float planes from 'scratch'
 /// (see fft2d_scratch_bytes). If the arena cannot supply them, std::bad_alloc
-/// is thrown before any data is modified. MemoryArena has no mark/rewind API,
-/// so the scratch is released as follows: if the arena is empty (bytes_used()
-/// == 0) when the call starts, it is reset again when the call returns, so
-/// repeated forward/inverse calls on a dedicated scratch arena need no manual
-/// reset(). If the arena already holds other allocations, the scratch stays
-/// allocated after the call and the caller must reset() or provide room for
-/// every call.
+/// is thrown before any data is modified. The scratch is taken inside an
+/// ArenaScope, so the arena is rewound to its entry state when the call returns
+/// or throws: allocations the caller made before the call stay valid, and
+/// repeated calls on the same arena need no manual reset().
 
 /// In-place 2D forward FFT with the Auto schedule.
 void fft2d_forward(float* real, float* imag,

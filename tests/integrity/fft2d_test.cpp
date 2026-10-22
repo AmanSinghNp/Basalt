@@ -367,31 +367,42 @@ TEST(FFT2DScratchTest, TooSmallScratchThrowsBadAllocAndLeavesDataUntouched) {
     EXPECT_EQ(re, in_re);
 }
 
-TEST(FFT2DScratchTest, SharedArenaExhaustionThrowsCleanlyAndResetRecovers) {
+TEST(FFT2DScratchTest, SharedArenaKeepsCallerAllocationsAndRewinds) {
     constexpr size_t rows = 16, cols = 16, total = rows * cols;
     std::vector<float> in_re(total), in_im(total);
     fill_random(in_re, in_im, 7u);
 
-    // The arena already holds a caller allocation, so fft2d cannot know a safe
-    // rewind point and its scratch stays allocated (documented). Room for
-    // exactly one call: the second one must throw bad_alloc, not crash.
+    // The arena already holds a caller allocation. fft2d must leave it intact
+    // and hand its own scratch back on return, so it can be called repeatedly
+    // with room for exactly one call's scratch.
     basalt::MemoryArena arena(fft2d_scratch_bytes(rows, cols) + 256);
     float* mine = arena.allocate_array<float>(8);
     ASSERT_NE(mine, nullptr);
+    for (size_t i = 0; i < 8; ++i) {
+        mine[i] = static_cast<float>(i);
+    }
     const size_t used_before = arena.bytes_used();
 
     std::vector<float> re = in_re, im = in_im;
     fft2d_forward(re.data(), im.data(), rows, cols, arena);
-    EXPECT_GT(arena.bytes_used(), used_before);
-    const std::vector<float> after_first_re = re, after_first_im = im;
-
-    EXPECT_THROW(fft2d_forward(re.data(), im.data(), rows, cols, arena), std::bad_alloc);
-    EXPECT_EQ(re, after_first_re);   // failed call must not modify data
-    EXPECT_EQ(im, after_first_im);
-
-    arena.reset();
-    EXPECT_NO_THROW(fft2d_inverse(re.data(), im.data(), rows, cols, arena));
+    EXPECT_EQ(arena.bytes_used(), used_before);
+    fft2d_inverse(re.data(), im.data(), rows, cols, arena);
+    EXPECT_EQ(arena.bytes_used(), used_before);
     EXPECT_LE(rel_l2_error(re, im, in_re, in_im), 3.0 * fft2d_error_bound(rows, cols));
+    for (size_t i = 0; i < 8; ++i) {
+        EXPECT_EQ(mine[i], static_cast<float>(i));
+    }
+
+    // Too little room left after the caller's allocation: throws, data and
+    // arena state untouched.
+    basalt::MemoryArena cramped(fft2d_scratch_bytes(rows, cols));
+    ASSERT_NE(cramped.allocate_array<float>(64), nullptr);
+    const size_t cramped_used = cramped.bytes_used();
+    const std::vector<float> before_re = re, before_im = im;
+    EXPECT_THROW(fft2d_forward(re.data(), im.data(), rows, cols, cramped), std::bad_alloc);
+    EXPECT_EQ(re, before_re);
+    EXPECT_EQ(im, before_im);
+    EXPECT_EQ(cramped.bytes_used(), cramped_used);
 }
 
 TEST(FFT2DScratchTest, ScratchBytesHelper) {

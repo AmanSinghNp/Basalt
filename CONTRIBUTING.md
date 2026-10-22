@@ -6,7 +6,7 @@ formatting, commit messages and benchmarks.
 ## Requirements
 
 - C++17 compiler: GCC or Clang on Linux (see the README for other platforms)
-- CMake 3.15 or newer (3.19 or newer to use `cmake --preset`)
+- CMake 3.15 or newer (3.21 or newer to use `cmake --preset`)
 - Ninja (recommended)
 - x86_64 CPU (AVX2 and FMA are used when present, scalar fallbacks otherwise)
 - clang-format 18
@@ -20,8 +20,9 @@ cmake --preset gcc-release
 cmake --build --preset gcc-release
 ```
 
-Other presets: `gcc-debug`, `clang-debug` and `msvc-debug`. Build output goes to
-`build/<preset>/`. Sanitizer presets `gcc-asan` and `gcc-tsan` are being added.
+Other presets: `gcc-debug`, `gcc-asan`, `gcc-tsan`, `clang-release`, `clang-debug` and
+`msvc` (build presets `msvc-debug` and `msvc-release`). Build output goes to
+`build/<preset>/`.
 
 The build options are:
 

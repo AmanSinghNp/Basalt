@@ -12,27 +12,6 @@ namespace basalt::kernel {
 
 namespace {
 
-/// Releases the scratch taken by one fft2d call. MemoryArena exposes no
-/// mark/rewind, so the only safe restore is a full reset(), and that is only
-/// correct when the arena was empty on entry (nothing else of the caller's can
-/// live in it). Otherwise the guard leaves the arena untouched.
-class ScratchGuard {
-public:
-    explicit ScratchGuard(basalt::MemoryArena& arena)
-        : m_arena(arena), m_reset_on_exit(arena.bytes_used() == 0) {}
-    ~ScratchGuard() {
-        if (m_reset_on_exit) {
-            m_arena.reset();
-        }
-    }
-    ScratchGuard(const ScratchGuard&) = delete;
-    ScratchGuard& operator=(const ScratchGuard&) = delete;
-
-private:
-    basalt::MemoryArena& m_arena;
-    bool m_reset_on_exit;
-};
-
 float* allocate_plane(basalt::MemoryArena& scratch, size_t total) {
     float* p = scratch.allocate_array<float>(total);
     if (p == nullptr) {
@@ -103,7 +82,8 @@ void fft2d_impl(float* real, float* imag,
     const basalt::kernel::FFT2DConfig resolved = basalt::internal::resolved_fft2d_config(config, rows, cols);
 
     // --- Acquire scratch (throws std::bad_alloc, data still untouched) ---
-    ScratchGuard guard(scratch);
+    // Scratch is handed back on every exit path; caller allocations are kept.
+    basalt::ArenaScope scope(scratch);
     float* tmp_real = allocate_plane(scratch, total);
     float* tmp_imag = allocate_plane(scratch, total);
 

@@ -99,7 +99,8 @@ When benchmarking AVX-512, compare checksum fields across `avx2` and `avx512` ro
 
 Toolchain matrix:
 - GCC/Clang: optimized AVX-512 f-k filter path is available when CPU features are present.
-- MSVC or non-supporting builds: explicit AVX-512 requests degrade safely to the AVX2 path.
+- MSVC: the AVX-512 path is selected through CPUID/XGETBV detection (not yet exercised in CI).
+- CPUs without AVX-512F/DQ: explicit AVX-512 requests degrade to the AVX2 path, and CPUs without AVX2/FMA use the scalar kernels. `BASALT_SIMD_MAX=scalar|avx2|avx512` caps the path for testing.
 
 ## Known Limitations
 - AVX-512 is currently applied only to the f-k filter path.
