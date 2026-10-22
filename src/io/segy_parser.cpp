@@ -376,6 +376,21 @@ SegyLayout describe_segy(const uint8_t* data, size_t size) {
             fail("SEG-Y invalid number of extended textual headers " + std::to_string(n_ext));
         }
     }
+
+    // Rev 2 first_trace_offset (0 = unknown). The standard defines it as the
+    // byte offset of the first trace, so a non-zero value overrides the
+    // position computed from the header records.
+    if (lay.revision_major >= 2 && b.first_trace_offset != 0) {
+        if (b.first_trace_offset < pos) {
+            fail("SEG-Y first trace offset " + std::to_string(b.first_trace_offset) +
+                 " lies inside the file headers (end of headers at " + std::to_string(pos) + ")");
+        }
+        if (b.first_trace_offset > size) {
+            fail("SEG-Y first trace offset " + std::to_string(b.first_trace_offset) +
+                 " lies beyond the end of the " + std::to_string(size) + "-byte buffer");
+        }
+        pos = b.first_trace_offset;
+    }
     lay.data_offset = to_size_t(pos, "data offset");
 
     // Rev 2 trailer stanzas follow the last trace.
@@ -401,6 +416,13 @@ SegyLayout describe_segy(const uint8_t* data, size_t size) {
     lay.trace_stride = to_size_t(stride, "trace stride");
     lay.n_traces = to_size_t(trace_region / stride, "trace count");
     lay.trailer_bytes = to_size_t(trailer, "trailer bytes");
+
+    // Rev 2 number of traces in file (0 = unknown).
+    if (lay.revision_major >= 2 && b.num_traces_in_file != 0 &&
+        b.num_traces_in_file != static_cast<uint64_t>(lay.n_traces)) {
+        fail("SEG-Y rev 2 header declares " + std::to_string(b.num_traces_in_file) +
+             " traces but the file holds " + std::to_string(lay.n_traces));
+    }
     return lay;
 }
 

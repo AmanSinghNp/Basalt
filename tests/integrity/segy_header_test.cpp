@@ -55,6 +55,8 @@ struct Spec {
     uint32_t max_additional = 0;  // rev 2 additional trace headers
     uint32_t marker_override = 0; // nonzero: raw value written (BE) at offset 96 instead of auto
     int endtext = 0;              // terminate the last ext record with EndText: 1 ASCII, 2 EBCDIC
+    uint64_t num_traces_field = 0; // rev 2 number of traces in file (bytes 3513-3520), 0 = unknown
+    uint64_t first_trace_field = 0; // rev 2 byte offset of first trace (bytes 3521-3528), 0 = unknown
 };
 
 constexpr size_t kBin = 3200; // start of binary header
@@ -129,6 +131,8 @@ Bytes build_segy(const Spec& s) {
                                                  : static_cast<int16_t>(s.ext_records)),
         2, s.le);
     put(b, kBin + 306, s.max_additional, 4, s.le);
+    put(b, kBin + 312, s.num_traces_field, 8, s.le);
+    put(b, kBin + 320, s.first_trace_field, 8, s.le);
     put(b, kBin + 328, static_cast<uint32_t>(s.trailer_field), 4, s.le);
 
     if (s.endtext != 0 && s.ext_records > 0) {
@@ -786,6 +790,111 @@ TEST(SegyHeaderTest, Rev2TrailerAndAdditionalTraceHeaders) {
     extra.max_additional = 1;
     Bytes fe = build_segy(extra);
     EXPECT_THROW(describe_segy(fe.data(), fe.size()), SegyFormatError);
+}
+
+TEST(SegyHeaderTest, Rev2NumTracesInFileMatchesComputedCount) {
+    Spec s;
+    s.rev_major = 2;
+    s.traces = 3;
+
+    // Zero means unknown and is accepted.
+    Bytes unknown = build_segy(s);
+    EXPECT_EQ(describe_segy(unknown.data(), unknown.size()).n_traces, 3u);
+
+    // Matching count is accepted.
+    s.num_traces_field = 3;
+    Bytes match = build_segy(s);
+    EXPECT_EQ(describe_segy(match.data(), match.size()).n_traces, 3u);
+
+    // Matching count also holds with extended headers and a trailer.
+    Spec full = s;
+    full.ext_records = 2;
+    full.endtext = 1;
+    full.trailer_field = 1;
+    full.trailer_records = 1;
+    Bytes fb = build_segy(full);
+    EXPECT_EQ(describe_segy(fb.data(), fb.size()).n_traces, 3u);
+}
+
+TEST(SegyHeaderTest, Rev2NumTracesInFileMismatchThrows) {
+    Spec s;
+    s.rev_major = 2;
+    s.traces = 3;
+    s.num_traces_field = 5;
+    Bytes file = build_segy(s);
+    try {
+        (void)describe_segy(file.data(), file.size());
+        ADD_FAILURE() << "expected SegyFormatError for a trace count mismatch";
+    } catch (const SegyFormatError& e) {
+        const std::string msg = e.what();
+        EXPECT_NE(msg.find("declares 5 traces"), std::string::npos) << msg;
+        EXPECT_NE(msg.find("holds 3"), std::string::npos) << msg;
+    }
+
+    // Rev 1 does not define the field, so a garbage value is ignored.
+    Spec r1 = s;
+    r1.rev_major = 1;
+    Bytes f1 = build_segy(r1);
+    EXPECT_EQ(describe_segy(f1.data(), f1.size()).n_traces, 3u);
+}
+
+TEST(SegyHeaderTest, Rev2FirstTraceOffsetMatchesComputedStart) {
+    Spec s;
+    s.rev_major = 2;
+    s.ext_records = 2;
+    s.traces = 2;
+    s.first_trace_field = 3600 + 2 * 3200; // same as the computed start
+    Bytes file = build_segy(s);
+    SegyLayout lay = describe_segy(file.data(), file.size());
+    EXPECT_EQ(lay.data_offset, 3600u + 2u * 3200u);
+    EXPECT_EQ(lay.n_traces, 2u);
+}
+
+TEST(SegyHeaderTest, Rev2FirstTraceOffsetOverridesComputedStart) {
+    // Three traces with 64 bytes of filler between the binary header and the
+    // first trace. The declared offset (3664) is the true data start.
+    Spec s;
+    s.rev_major = 2;
+    s.traces = 3;
+    s.num_traces_field = 3;
+    const Bytes base = build_segy(s);
+    constexpr size_t kPad = 64;
+    Bytes file(base.begin(), base.begin() + 3600);
+    file.insert(file.end(), kPad, static_cast<uint8_t>(0xEE));
+    file.insert(file.end(), base.begin() + 3600, base.end());
+    put(file, kBin + 320, 3600 + kPad, 8, false); // rev 2 field, big-endian file
+
+    SegyLayout lay = describe_segy(file.data(), file.size());
+    EXPECT_EQ(lay.data_offset, 3600u + kPad);
+    EXPECT_EQ(lay.n_traces, 3u);
+    for (size_t t = 0; t < 3; ++t) {
+        SegyTraceHeader th = read_trace_header(file.data(), file.size(), lay, t);
+        EXPECT_EQ(th.trace_seq_file, static_cast<int32_t>(t + 1));
+        std::vector<float> v = read_trace_samples(file.data(), file.size(), lay, t);
+        for (size_t k = 0; k < 4; ++k) {
+            EXPECT_EQ(v[k], expected_sample(5, t, k));
+        }
+    }
+
+    // Without the declared offset the padding looks like a partial trace.
+    Bytes unset = file;
+    put(unset, kBin + 320, 0, 8, false);
+    EXPECT_THROW(describe_segy(unset.data(), unset.size()), SegyFormatError);
+
+    // Offsets that fall inside the headers or beyond the buffer are rejected.
+    Bytes inside = file;
+    put(inside, kBin + 320, 3599, 8, false);
+    EXPECT_THROW(describe_segy(inside.data(), inside.size()), SegyFormatError);
+    Bytes beyond = file;
+    put(beyond, kBin + 320, file.size() + 1, 8, false);
+    EXPECT_THROW(describe_segy(beyond.data(), beyond.size()), SegyFormatError);
+
+    // Rev 1 ignores the field entirely.
+    Spec r1;
+    r1.rev_major = 1;
+    r1.first_trace_field = 3599;
+    Bytes f1 = build_segy(r1);
+    EXPECT_EQ(describe_segy(f1.data(), f1.size()).data_offset, 3600u);
 }
 
 TEST(SegyHeaderTest, AsciiTextHeaderFileDescribes) {
