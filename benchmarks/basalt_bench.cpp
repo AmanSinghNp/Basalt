@@ -209,6 +209,7 @@ const char* schedule_name(basalt::kernel::FFT2DSchedule schedule) {
     case basalt::kernel::FFT2DSchedule::Auto: return "auto";
     case basalt::kernel::FFT2DSchedule::LegacyColumnFirst: return "legacy-column-first";
     case basalt::kernel::FFT2DSchedule::FourStepRowFirst: return "four-step-row-first";
+    case basalt::kernel::FFT2DSchedule::RowFirstColumnStrips: return "row-first-column-strips";
     }
     return "unknown";
 }

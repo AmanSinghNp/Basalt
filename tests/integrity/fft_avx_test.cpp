@@ -1,4 +1,5 @@
 #include "basalt/kernel/fft_avx.hpp"
+#include "basalt/internal/fft_plan.hpp"
 #include "basalt/internal/simd_dispatch.hpp"
 #include "basalt/kernel/cpu_features.hpp"
 #include "basalt/kernel/fft.hpp"
@@ -637,6 +638,61 @@ TEST_P(SimdCapParamTest, LargeFftAgreesWithScalarKernel) {
             EXPECT_EQ(re, ref_re) << "n=" << n;
             EXPECT_EQ(im, ref_im) << "n=" << n;
         }
+    }
+}
+
+TEST_P(SimdCapParamTest, ColumnStripsMatchPerColumnFft) {
+    // fft_cols_strips (the transpose-free column pass of fft2d) against the 1D
+    // scalar kernel applied to each extracted column, for every strip width the
+    // AVX2 path dispatches on, both directions and a non-trivial scale.
+    basalt::kernel::detail::ScopedSimdCap cap(GetParam());
+    struct Case { size_t rows, cols, width; };
+    const Case cases[] = {
+        {2, 4, 4}, {8, 2, 2}, {16, 1, 1}, {4, 8, 8}, {64, 8, 8}, {64, 16, 16}, {128, 32, 32},
+        {256, 64, 64}, {32, 128, 64}, {512, 64, 32}, {1024, 64, 16}, {4096, 64, 64},
+        {2048, 128, 8}, {1, 16, 16},
+    };
+    for (const Case& c : cases) {
+        for (const bool inverse : {false, true}) {
+            for (const float scale : {1.0f, 0.25f}) {
+                const size_t total = c.rows * c.cols;
+                std::vector<float> in_re(total), in_im(total);
+                fill_random(in_re, in_im, static_cast<uint32_t>(c.rows * 13 + c.cols + c.width));
+
+                // Reference: per-column scalar FFT (inverse = conj(fft(conj(x)))), then scale.
+                std::vector<float> ref_re = in_re, ref_im = in_im;
+                for (size_t col = 0; col < c.cols; ++col) {
+                    std::vector<float> cr(c.rows), ci(c.rows);
+                    for (size_t r = 0; r < c.rows; ++r) {
+                        cr[r] = in_re[r * c.cols + col];
+                        ci[r] = inverse ? -in_im[r * c.cols + col] : in_im[r * c.cols + col];
+                    }
+                    fft_forward(cr.data(), ci.data(), c.rows);
+                    for (size_t r = 0; r < c.rows; ++r) {
+                        ref_re[r * c.cols + col] = cr[r] * scale;
+                        ref_im[r * c.cols + col] = (inverse ? -ci[r] : ci[r]) * scale;
+                    }
+                }
+
+                std::vector<float> re = in_re, im = in_im;
+                std::vector<float> buf_re(c.rows * c.width, 7.0f), buf_im(c.rows * c.width, -7.0f);
+                basalt::internal::fft_cols_strips(re.data(), im.data(), c.rows, c.cols, inverse,
+                                                  scale, buf_re.data(), buf_im.data(), c.width);
+                EXPECT_LE(rel_l2_error(re.data(), im.data(), ref_re.data(), ref_im.data(), total),
+                          2.0 * fft_error_bound(c.rows))
+                    << c.rows << "x" << c.cols << " width " << c.width
+                    << (inverse ? " inverse" : " forward") << " scale " << scale
+                    << " cap=" << cap_name(GetParam());
+            }
+        }
+    }
+
+    // The advertised strip width is a power of two that fits the matrix.
+    for (const size_t cols : {size_t{1}, size_t{2}, size_t{8}, size_t{64}, size_t{4096}}) {
+        const size_t w = basalt::internal::fft_cols_strip_width(256, cols);
+        EXPECT_GE(w, 1u);
+        EXPECT_LE(w, cols);
+        EXPECT_EQ(w & (w - 1), 0u);
     }
 }
 

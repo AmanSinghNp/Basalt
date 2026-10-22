@@ -6,10 +6,9 @@
 
 namespace basalt::internal {
 
-/// Tuned schedule/tile choice for a rows x cols transform. Exact tuned entries
-/// exist for 256x256, 512x512, 1024x1024 and square sizes >= 2048; every other
-/// shape is chosen by size class (total element count), so rectangular
-/// matrices such as 4096x1024 or 8192x512 get a sensible config too.
+/// Schedule/tile choice for a rows x cols transform. Every shape currently
+/// gets RowFirstColumnStrips (measured fastest at all sizes, see fft2d_auto.cpp);
+/// the parameters stay so size classes can return if a future schedule needs them.
 basalt::kernel::FFT2DConfig default_fft2d_config(size_t rows, size_t cols);
 
 /// Returns 'config' unchanged unless its schedule is Auto, in which case the

@@ -144,17 +144,11 @@ void run_direct_pipeline_safe(std::vector<float>& real,
 } // namespace
 
 TEST(FFT2DAutoPolicyTest, MatchesLockedTuningTable) {
-    const auto small = basalt::internal::default_fft2d_config(256, 256);
-    EXPECT_EQ(small.schedule, basalt::kernel::FFT2DSchedule::FourStepRowFirst);
-    EXPECT_EQ(small.transpose_tile, 128u);
-
-    const auto medium = basalt::internal::default_fft2d_config(1024, 1024);
-    EXPECT_EQ(medium.schedule, basalt::kernel::FFT2DSchedule::LegacyColumnFirst);
-    EXPECT_EQ(medium.transpose_tile, 96u);
-
-    const auto large = basalt::internal::default_fft2d_config(2048, 2048);
-    EXPECT_EQ(large.schedule, basalt::kernel::FFT2DSchedule::FourStepRowFirst);
-    EXPECT_EQ(large.transpose_tile, 96u);
+    for (const size_t n : {size_t{256}, size_t{1024}, size_t{2048}}) {
+        const auto cfg = basalt::internal::default_fft2d_config(n, n);
+        EXPECT_EQ(cfg.schedule, basalt::kernel::FFT2DSchedule::RowFirstColumnStrips) << n;
+        EXPECT_EQ(cfg.transpose_tile, 128u) << n;
+    }
 }
 
 TEST(TaskQueueTest, ConcurrentPushPopPreservesCount) {
