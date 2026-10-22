@@ -79,3 +79,6 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 - CMake install and package export support for downstream consumers
 - Integrity and integration test coverage across kernel, filter, runtime, I/O, and pipeline paths
 - Performance reporting document and release-oriented project documentation
+
+[Unreleased]: https://github.com/AmanSinghNp/Basalt/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/AmanSinghNp/Basalt/releases/tag/v0.1.0
