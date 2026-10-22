@@ -63,6 +63,7 @@ endfunction()
 add_library(basalt_core
     src/io/segy_parser.cpp
     src/io/file_mapping.cpp
+    src/io/segy_writer.cpp
     src/utils/ebcdic.cpp
     src/utils/trace_utils.cpp
     src/kernel/fft.cpp
@@ -202,12 +203,19 @@ if(BASALT_BUILD_TESTS)
         tests/integrity/fft_avx_test.cpp
         tests/integrity/fk_filter_test.cpp
         tests/integrity/runtime_test.cpp
+        tests/integrity/segy_writer_test.cpp
         tests/integration/benchmark_contract_test.cpp
+        tests/integration/cli_test.cpp
         tests/integration/pipeline_test.cpp
     )
 
     target_link_libraries(basalt_tests PRIVATE basalt_core GTest::gtest_main)
     basalt_configure_target(basalt_tests)
+
+    if(TARGET basalt)
+        add_dependencies(basalt_tests basalt)
+        target_compile_definitions(basalt_tests PRIVATE BASALT_CLI_PATH="$<TARGET_FILE:basalt>")
+    endif()
 
     if(TARGET basalt_bench)
         add_dependencies(basalt_tests basalt_bench)
