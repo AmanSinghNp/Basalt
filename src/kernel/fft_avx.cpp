@@ -24,6 +24,138 @@ void scale_avx(float* real, float* imag, size_t n, float scale_val) {
     }
 }
 
+/// In-register 8x8 transpose of eight __m256 rows.
+inline void transpose8x8_regs(__m256 (&r)[8]) {
+    const __m256 t0 = _mm256_unpacklo_ps(r[0], r[1]);
+    const __m256 t1 = _mm256_unpackhi_ps(r[0], r[1]);
+    const __m256 t2 = _mm256_unpacklo_ps(r[2], r[3]);
+    const __m256 t3 = _mm256_unpackhi_ps(r[2], r[3]);
+    const __m256 t4 = _mm256_unpacklo_ps(r[4], r[5]);
+    const __m256 t5 = _mm256_unpackhi_ps(r[4], r[5]);
+    const __m256 t6 = _mm256_unpacklo_ps(r[6], r[7]);
+    const __m256 t7 = _mm256_unpackhi_ps(r[6], r[7]);
+
+    const __m256 u0 = _mm256_shuffle_ps(t0, t2, 0x44);
+    const __m256 u1 = _mm256_shuffle_ps(t0, t2, 0xEE);
+    const __m256 u2 = _mm256_shuffle_ps(t1, t3, 0x44);
+    const __m256 u3 = _mm256_shuffle_ps(t1, t3, 0xEE);
+    const __m256 u4 = _mm256_shuffle_ps(t4, t6, 0x44);
+    const __m256 u5 = _mm256_shuffle_ps(t4, t6, 0xEE);
+    const __m256 u6 = _mm256_shuffle_ps(t5, t7, 0x44);
+    const __m256 u7 = _mm256_shuffle_ps(t5, t7, 0xEE);
+
+    r[0] = _mm256_permute2f128_ps(u0, u4, 0x20);
+    r[1] = _mm256_permute2f128_ps(u1, u5, 0x20);
+    r[2] = _mm256_permute2f128_ps(u2, u6, 0x20);
+    r[3] = _mm256_permute2f128_ps(u3, u7, 0x20);
+    r[4] = _mm256_permute2f128_ps(u0, u4, 0x31);
+    r[5] = _mm256_permute2f128_ps(u1, u5, 0x31);
+    r[6] = _mm256_permute2f128_ps(u2, u6, 0x31);
+    r[7] = _mm256_permute2f128_ps(u3, u7, 0x31);
+}
+
+/// Radix-2 butterfly on register pairs: (a, b) -> (a + t, a - t).
+inline void butterfly(__m256& ar, __m256& ai, __m256& br, __m256& bi,
+                      __m256 tr, __m256 ti) {
+    const __m256 nar = _mm256_add_ps(ar, tr);
+    const __m256 nai = _mm256_add_ps(ai, ti);
+    br = _mm256_sub_ps(ar, tr);
+    bi = _mm256_sub_ps(ai, ti);
+    ar = nar;
+    ai = nai;
+}
+
+/// Stages 1-3 (block sizes 2, 4, 8) for n a multiple of 64, fully vectorised.
+/// Each group of 64 consecutive complex values is viewed as an 8x8 matrix (one
+/// 8-point block per row); an in-register transpose puts element e of eight
+/// different blocks into register e, so all three stages become plain vector
+/// butterflies with constant twiddles (1, W4, W8^k).
+template <bool Inverse>
+void first_three_stages_avx(float* real, float* imag, size_t n) {
+    // |W8| components: cos(pi/4) = sin(pi/4).
+    const __m256 c = _mm256_set1_ps(0.70710678118654752440f);
+
+    for (size_t base = 0; base < n; base += 64) {
+        __m256 re[8];
+        __m256 im[8];
+        for (size_t b = 0; b < 8; ++b) {
+            re[b] = _mm256_loadu_ps(real + base + 8 * b);
+            im[b] = _mm256_loadu_ps(imag + base + 8 * b);
+        }
+        transpose8x8_regs(re);
+        transpose8x8_regs(im);
+
+        // Stage 1: pairs (0,1) (2,3) (4,5) (6,7), twiddle 1.
+        for (size_t e = 0; e < 8; e += 2) {
+            butterfly(re[e], im[e], re[e + 1], im[e + 1], re[e + 1], im[e + 1]);
+        }
+
+        // Stage 2: pairs (0,2) (1,3) (4,6) (5,7); twiddles 1 and W4.
+        // W4 = -i (forward) or +i (inverse): t = (xi, -xr) or (-xi, xr).
+        for (size_t e = 0; e < 8; e += 4) {
+            butterfly(re[e], im[e], re[e + 2], im[e + 2], re[e + 2], im[e + 2]);
+            const __m256 xr = re[e + 3];
+            const __m256 xi = im[e + 3];
+            if constexpr (Inverse) {
+                butterfly(re[e + 1], im[e + 1], re[e + 3], im[e + 3],
+                          _mm256_sub_ps(_mm256_setzero_ps(), xi), xr);
+            } else {
+                butterfly(re[e + 1], im[e + 1], re[e + 3], im[e + 3],
+                          xi, _mm256_sub_ps(_mm256_setzero_ps(), xr));
+            }
+        }
+
+        // Stage 3: pairs (0,4) (1,5) (2,6) (3,7); twiddles 1, W8, W4, W8^3.
+        butterfly(re[0], im[0], re[4], im[4], re[4], im[4]);
+        {
+            const __m256 xr = re[5];
+            const __m256 xi = im[5];
+            const __m256 sum = _mm256_add_ps(xr, xi);
+            const __m256 dif = _mm256_sub_ps(xr, xi);
+            if constexpr (Inverse) {   // W8 = c + c*i
+                butterfly(re[1], im[1], re[5], im[5],
+                          _mm256_mul_ps(c, dif), _mm256_mul_ps(c, sum));
+            } else {                   // W8 = c - c*i
+                butterfly(re[1], im[1], re[5], im[5],
+                          _mm256_mul_ps(c, sum), _mm256_mul_ps(c, _mm256_sub_ps(_mm256_setzero_ps(), dif)));
+            }
+        }
+        {
+            const __m256 xr = re[6];
+            const __m256 xi = im[6];
+            if constexpr (Inverse) {
+                butterfly(re[2], im[2], re[6], im[6],
+                          _mm256_sub_ps(_mm256_setzero_ps(), xi), xr);
+            } else {
+                butterfly(re[2], im[2], re[6], im[6],
+                          xi, _mm256_sub_ps(_mm256_setzero_ps(), xr));
+            }
+        }
+        {
+            const __m256 xr = re[7];
+            const __m256 xi = im[7];
+            const __m256 sum = _mm256_add_ps(xr, xi);
+            const __m256 dif = _mm256_sub_ps(xr, xi);
+            if constexpr (Inverse) {   // W8^3 = -c + c*i
+                butterfly(re[3], im[3], re[7], im[7],
+                          _mm256_sub_ps(_mm256_setzero_ps(), _mm256_mul_ps(c, sum)),
+                          _mm256_mul_ps(c, dif));
+            } else {                   // W8^3 = -c - c*i
+                butterfly(re[3], im[3], re[7], im[7],
+                          _mm256_mul_ps(c, _mm256_sub_ps(_mm256_setzero_ps(), dif)),
+                          _mm256_sub_ps(_mm256_setzero_ps(), _mm256_mul_ps(c, sum)));
+            }
+        }
+
+        transpose8x8_regs(re);
+        transpose8x8_regs(im);
+        for (size_t b = 0; b < 8; ++b) {
+            _mm256_storeu_ps(real + base + 8 * b, re[b]);
+            _mm256_storeu_ps(imag + base + 8 * b, im[b]);
+        }
+    }
+}
+
 /// Unscaled AVX2/FMA transform for n >= 16. 'Inverse' conjugates the twiddles.
 template <bool Inverse>
 void fft_avx_core(float* real, float* imag, const FFTPlan& plan) {
@@ -42,7 +174,14 @@ void fft_avx_core(float* real, float* imag, const FFTPlan& plan) {
     }
 
     // --- Step 2: Butterfly stages ---
-    for (size_t s = 1; s <= plan.log2n; ++s) {
+    // Stages 1-3 have half_m < 8 and no room for a vector across j; for
+    // n >= 64 they run as a fused, fully vectorised pass (see above).
+    size_t first_stage = 1;
+    if (n >= 64) {
+        first_three_stages_avx<Inverse>(real, imag, n);
+        first_stage = 4;
+    }
+    for (size_t s = first_stage; s <= plan.log2n; ++s) {
         const size_t m = size_t{1} << s;
         const size_t half_m = m >> 1;
         const float* tw_real = plan.tw_real.data() + (half_m - 1);
